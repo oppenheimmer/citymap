@@ -1,106 +1,89 @@
 # Citymap
 
-Visualize city roads using OpenStreetMap data and WebGL.
-
-The root app still uses Vue 3 and Vite 2. An in-progress Svelte 5, Vite 8,
-and TypeScript replacement lives in `prototype/`; see
-[the migration plan and status log](MODERNIZATION_PLAN.md). Hosting targets are
-Vercel for the frontend/search function and Cloudflare R2 for versioned datasets.
-This is a development checkpoint, **not a deployment-ready release**.
+Create, customize, share and export city road maps from OpenStreetMap.
+The app uses **Svelte 5, Vite 8 and TypeScript**, with worker-based geometry
+preparation and the existing WebGL renderer. Vercel serves the frontend and
+search function; versioned city datasets are read directly from Cloudflare R2.
+See [the modernization plan and progress log](MODERNIZATION_PLAN.md).
 
 ## Development
 
 ```sh
 nvm use
 npm ci
-npm run prototype:install
 npm run dev
+```
+
+Use Node 24 LTS. Open `http://localhost:8080`. Explicit city search uses the local
+`/api/search` proxy; a small synthetic sample works without provider requests.
+Copy `.env.example` to `.env.local` to configure providers. Development uses an
+in-memory search cache/limiter. Production public Nominatim requires shared
+private R2 state, or configure a managed Nominatim-compatible search provider.
+
+```sh
+npm run check
+npm run lint
+npm test
+npm run data:codegen -- --check
 npm run build
 npm run preview
 ```
 
-Use Node 24 LTS (also selected for CI and Vercel). Development and preview run at
-`http://localhost:8080`. The combined build serves Vue at `/` and the Svelte
-prototype at `/prototype/`. Both dependency installs above are required to build.
-For Svelte development, use `npm run prototype:dev` and open
-`http://localhost:8081/prototype/`. Native Node TypeScript support runs the data
-tools; `data:check` performs their separate static type check.
+`build` produces `dist/`, including only the small sample. The old Vue app is
+preserved in Git history at `10584c3`; it is no longer shipped. Road preparation
+and SVG export run in workers, the renderer and export UI load on demand, and
+optional IndexedDB geometry caching is bounded independently from saved designs.
+Legacy query links and configured version-1 caches remain supported.
 
-Road data loads through Overpass. An optional protobuf cache can be configured
-with `VITE_AREA_SERVER`; no cache endpoint is configured by default.
-
-## City-data tooling and checks
+## Browser validation
 
 ```sh
-npm run data:codegen -- --check
-npm run data:check
-npm test
-npm run data:pilot
-npm run data:benchmark
+npm exec -- playwright install chromium
+npm run build:test
+npm run test:browser
 ```
 
-The pilot generates and validates three **synthetic** road grids in `.city-data/`.
-It makes no provider requests or uploads. The benchmark compares version 1,
-version-2 single files, and independent chunks. See the
-[input contract and local commands](docs/CITY_DATA.md),
-[recorded benchmark](docs/benchmarks/20261007-city-data.md), and
-[R2/Vercel deployment setup](docs/DEPLOYMENT.md).
+The test build includes larger synthetic fixtures and a mocked R2 origin;
+**use `npm run build` for deployment**. Tests cover customization, pan/zoom,
+Unicode labels, PNG/SVG downloads, search/live fallback, sharing/local caching,
+cancellation, scene cleanup, missing WebGL, complete R2 loading and corruption.
 
-The root Vue UI reads version 1. The prototype implements worker loading for
-`VITE_CITY_DATA_BASE_URL` version-2 manifests/chunks, the optional version-1
-`VITE_AREA_SERVER`, and live Overpass. It also contains local geometry caching,
-complete design links, saved designs, customization, and PNG/SVG export.
-Browser parity is not yet established.
-
-## Migration checkpoint: October 7, 2026
-
-- Local generator/codegen checks, TypeScript checks, 43 unit cases, Svelte checking,
-  and both production builds pass on Node 24.21.0.
-- Four Chromium browser workflows now pass: rendering/customization/PNG/SVG,
-  search/live loading/share/local cache, cancellation/repeated-switch cleanup, and
-  unavailable-WebGL handling. The earlier context-loss failure was reproduced in
-  the original renderer and isolated to the host software graphics runtime.
-  Local validation uses Mesa Vulkan; GPU performance and other browsers remain
-  unverified. Temporary tracing is removed and explicit context release restored.
-- `api/search.ts` implements the Vercel search proxy. Public Nominatim in production
-  requires shared private R2 state (`R2_SEARCH_BUCKET`, `R2_ACCOUNT_ID`,
-  `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`); an alternative provider can use
-  `SEARCH_PROVIDER_URL` and optional `SEARCH_PROVIDER_API_KEY`. Set `APP_ORIGIN`
-  to identify the application. Local prototype development uses an in-memory store.
-- `tools/city-data/publish.ts` contains an initial ordered publisher and catalog
-  writer. Remote publishing, failure-path tests, and catalog replacement safeguards
-  are pending. No datasets or infrastructure have been deployed.
-- CI installs both dependency trees and runs data/server/Svelte/unit/browser
-  checks with the combined build. `npm test` includes all 43 unit cases.
-  Lint remains unconfigured,
-  `prototype:benchmark` points to a missing script, and synthetic benchmark
-  fixtures currently enter the prototype build. These are release blockers.
-
-Additional checkpoint checks (after installing both dependency trees):
-
-```sh
-npm run prototype:check
-npx tsc --project tsconfig.server.json
-node --test tests/*.test.ts
-npm exec --prefix prototype -- playwright install chromium
-npm run prototype:test
-```
-
-For a host whose bundled SwiftShader crashes, a tested local alternative is:
+Optional overrides for a host whose bundled SwiftShader GPU process crashes:
 
 ```sh
 PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser \
 PLAYWRIGHT_CHROMIUM_BACKEND=vulkan \
 VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-LIBGL_ALWAYS_SOFTWARE=1 EGL_PLATFORM=surfaceless npm run prototype:test
+LIBGL_ALWAYS_SOFTWARE=1 EGL_PLATFORM=surfaceless npm run test:browser
 ```
 
-These overrides affect tests only and require the indicated browser/Mesa install.
-The next implementation step is to broaden cache/export regression coverage and
-promote the validated Svelte workflows to the root app. Toolchain/CI cleanup, a reproducible browser
-comparison, publisher verification, and deployment validation follow. The
-[deployment guide](docs/DEPLOYMENT.md) describes the earlier data-tool milestone;
-it is not yet a complete release runbook for this prototype.
+These affect tests only and require the indicated browser/Mesa installation.
+Local Chromium functional checks pass with software rendering; other browser and
+GPU performance checks remain in the release plan.
+
+## City-data tooling
+
+```sh
+npm run data:pilot
+npm run data:benchmark
+npm run data:build -- --input tests/fixtures/schema-edges.json --output .city-data/edges
+npm run data:validate -- --output .city-data/edges --manifest <manifest-object-key>
+```
+
+The pilot builds three **synthetic** grids with no provider requests or uploads.
+See the [input contract](docs/CITY_DATA.md) and
+[recorded format benchmark](docs/benchmarks/20261007-city-data.md).
+The initial publisher is at `tools/city-data/publish.ts`; remote publishing and
+catalog replacement safeguards are still being validated.
+
+## Deployment status
+
+The Svelte root app, build and Vercel search endpoint are implemented. Static
+checks, unit tests and Chromium workflow checks pass. R2/Vercel provisioning,
+real-city extraction, publisher failure-path checks, browser performance
+comparison and cross-browser validation remain unfinished. Nothing has been
+deployed to an account. See [deployment setup](docs/DEPLOYMENT.md) and the plan's
+`RUNNING CHANGES` for current evidence and remaining work.
 
 ## License
 

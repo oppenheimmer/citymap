@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bbox, boundaryFromNominatim, DEFAULT_DESIGN, id, overpassQuery } from '../prototype/src/lib/domain.ts';
-import { osmGeometry } from '../prototype/src/lib/geometry.ts';
-import { parseUrl, shareUrl } from '../prototype/src/lib/url-state.ts';
-import Grid from '../src/lib/Grid.js';
+import { bbox, boundaryFromNominatim, DEFAULT_DESIGN, id, overpassQuery } from '../src/lib/domain.ts';
+import { osmGeometry } from '../src/lib/geometry.ts';
+import { parseUrl, shareUrl } from '../src/lib/url-state.ts';
+import Grid from './fixtures/legacy/Grid.js';
 
 test('typed boundary IDs and area offsets preserve large integers', () => {
   const result = boundaryFromNominatim({ osm_type: 'relation', osm_id: '9007199254740993', display_name: 'Large ID city', boundingbox: ['35', '36', '139', '140'] });

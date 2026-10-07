@@ -14,6 +14,7 @@ const development = memoryStore();
 
 export async function search(query: string, signal: AbortSignal, options: SearchOptions): Promise<unknown[]> {
   const q = query.trim();
+  // eslint-disable-next-line no-control-regex -- Reject control characters in submitted search text.
   if (!q || q.length > 256 || /[\u0000-\u001f]/.test(q)) throw new SearchError('Enter a city name of at most 256 characters.', 400);
   const provider = new URL(options.provider);
   if (!(provider.protocol === 'https:' || provider.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(provider.hostname)) || provider.username || provider.password) throw new SearchError('Invalid search provider configuration.', 503);

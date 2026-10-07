@@ -9,7 +9,14 @@
     "verbatimModuleSyntax": true,
     "erasableSyntaxOnly": true,
     "skipLibCheck": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["src/lib/data/**/*.ts", "src/proto/*.d.*", "tools/city-data/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "src/lib/data/**/*.ts",
+    "src/proto/*.d.*",
+    "tools/city-data/**/*.ts",
+    "tests/*.test.ts"
+  ]
 }

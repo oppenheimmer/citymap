@@ -17,9 +17,7 @@ stats.html
 .env*
 !.env.example
 prototype/node_modules/
-prototype/public/fixtures/
-prototype/test-results/
-prototype/playwright-report/
+/public/fixtures/
 
 /test-results/
 /playwright-report/

@@ -9,15 +9,8 @@
     "node": "24.x"
   },
   "scripts": {
-    "dev": "vite",
-    "build": "npm run build:legacy && npm run prototype:build",
-    "build:legacy": "vite build",
-    "prototype:install": "npm ci --prefix prototype",
-    "prototype:dev": "npm run dev --prefix prototype",
-    "prototype:check": "npm run check --prefix prototype",
-    "prototype:build": "npm run build --prefix prototype",
-    "prototype:test": "npm test --prefix prototype",
-    "prototype:benchmark": "npm run benchmark --prefix prototype",
+    "dev": "npm run fixtures && vite",
+    "build": "npm run fixtures && vite build",
     "preview": "vite preview --port 8080",
     "data:codegen": "node tools/city-data/codegen.mjs",
     "data:check": "tsc --project tsconfig.data.json",
@@ -26,31 +19,34 @@
     "data:pilot": "node tools/city-data/cli.ts pilot",
     "data:benchmark": "node tools/city-data/benchmark.ts",
     "test": "node --test tests/*.test.ts",
-    "start": "vite",
-    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore",
-    "server:check": "tsc --project tsconfig.server.json"
+    "start": "npm run dev",
+    "lint": "eslint .",
+    "server:check": "tsc --project tsconfig.server.json",
+    "fixtures": "node tools/browser-fixtures.ts",
+    "check": "svelte-check --tsconfig ./tsconfig.json && npm run data:check && npm run server:check",
+    "test:browser": "playwright test",
+    "build:test": "VITE_TEST_FIXTURES=1 VITE_CITY_DATA_BASE_URL=http://127.0.0.1:4173/data npm run build"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
     "d3-geo": "^3.0.1",
-    "d3-require": "^1.3.0",
-    "ngraph.events": "^1.2.1",
     "pbf": "^3.2.1",
-    "query-state": "^4.3.0",
-    "tinycolor2": "^1.4.2",
-    "vue": "^3.2.37",
-    "w-gl": "^0.21.0"
+    "svelte": "^5.57.2",
+    "w-gl": "0.21.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@playwright/test": "^1.57.0",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@types/d3-geo": "^3.1.1",
     "@types/node": "^24.19.1",
     "@types/pbf": "^3.0.5",
-    "@vitejs/plugin-vue": "^2.3.1",
-    "eslint": "^8.5.0",
-    "eslint-plugin-vue": "^8.2.0",
-    "rollup-plugin-visualizer": "^5.6.0",
-    "stylus": "^0.58.1",
-    "stylus-loader": "^7.0.0",
+    "eslint": "^10.0.0",
+    "eslint-plugin-svelte": "^3.0.0",
+    "globals": "^17.0.0",
+    "svelte-check": "^4.7.6",
     "typescript": "^5.9.3",
-    "vite": "^2.9.5"
+    "typescript-eslint": "^8.56.0",
+    "vite": "^8.3.3"
   }
 }
