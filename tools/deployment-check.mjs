@@ -30,7 +30,7 @@ if (entry) {
 }
 for (const name of ['roads.worker-', 'svg.worker-', 'SceneController-', 'exports-']) check(files.some(file => file.startsWith(name)), `${name} lazy artifact`);
 const fixtures = await readdir('dist/fixtures');
-check(fixtures.every(file => ['small.json', 'catalog.json'].includes(file)), 'Only small sample ships');
+check(fixtures.length === 1 && fixtures[0] === 'small.json', 'Only small sample ships');
 check((await stat('dist/fixtures/small.json')).size < 100_000, 'Sample under 100 KB');
 const config = JSON.parse(await readFile('vercel.json', 'utf8'));
 check(config.outputDirectory === 'dist' && config.installCommand === 'npm ci', 'Vercel single-package build');

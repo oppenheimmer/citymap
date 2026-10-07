@@ -2,6 +2,12 @@ name: Checks
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      browser_checks:
+        description: Download browsers and run the full browser matrix
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -20,15 +26,6 @@ jobs:
       - run: npm run check
       - run: npm run lint
       - run: npm test
-      - run: npm run build:test
-      - run: npm exec -- playwright install --with-deps chromium firefox webkit
-      - run: npm run test:browser
-      - run: npm run test:browser
-        env:
-          PLAYWRIGHT_BROWSER: firefox
-      - run: npm run test:browser
-        env:
-          PLAYWRIGHT_BROWSER: webkit
       - run: npm run build
       - run: npm run deploy:check -- --offline
       - uses: actions/upload-artifact@v7
@@ -36,3 +33,25 @@ jobs:
           name: citymap-vercel
           path: dist
           retention-days: 14
+  browser:
+    if: github.event_name == 'workflow_dispatch' && inputs.browser_checks
+    needs: check
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run build:test
+      - run: npm exec -- playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run test:browser

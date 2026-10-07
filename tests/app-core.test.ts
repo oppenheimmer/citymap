@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { bbox, boundaryFromNominatim, DEFAULT_DESIGN, id, overpassQuery } from '../src/lib/domain.ts';
 import { osmGeometry } from '../src/lib/geometry.ts';
 import { parseUrl, shareUrl } from '../src/lib/url-state.ts';
-import Grid from './fixtures/legacy/Grid.js';
 
 test('typed boundary IDs and area offsets preserve large integers', () => {
   const result = boundaryFromNominatim({ osm_type: 'relation', osm_id: '9007199254740993', display_name: 'Large ID city', boundingbox: ['35', '36', '139', '140'] });
@@ -43,10 +42,11 @@ const elements = [
   { type: 'node' as const, id: '3', lon: 139.02, lat: 35.01 },
   { type: 'way' as const, id: '10', nodes: ['1', '2', '3'] },
 ];
-test('worker geometry is equivalent to the existing renderer projection', () => {
+test('worker geometry preserves the recorded projection coordinates', () => {
   const geometry = osmGeometry({ elements });
-  const expected: number[] = [];
-  Grid.fromOSMResponse(elements).forEachWay((from, to) => expected.push(from.x, from.y, to.x, to.y));
+  // Fixed coordinates recorded from the migration baseline; no old renderer code is needed.
+  const expected = [-632.0178578849882, -928.7823110199533, 480, -249.99999999720603,
+    480, -249.99999999720603, 1592.0178578849882, 428.8237967430614];
   assert.equal(geometry.segments, 2);
   expected.forEach((value, index) => assert.ok(Math.abs(Math.fround(value) - geometry.positions[index]) < 0.002));
 });

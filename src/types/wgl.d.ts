@@ -28,5 +28,4 @@ declare module 'w-gl' {
     dispose(): void;
   }
   export function createScene(canvas: HTMLCanvasElement, options?: { devicePixelRatio?: number; allowRotation?: boolean; allowPinchRotation?: boolean; size?: { width: number; height: number }; wglContextOptions?: WebGLContextAttributes }): Scene;
-  export function toSVG(scene: Scene, settings?: { open?: () => string; close?: () => string }): string;
 }

@@ -19,7 +19,6 @@
     "data:pilot": "node tools/city-data/cli.ts pilot",
     "data:benchmark": "node tools/city-data/benchmark.ts",
     "test": "node --test tests/*.test.ts",
-    "start": "npm run dev",
     "lint": "eslint .",
     "server:check": "tsc --project tsconfig.server.json",
     "fixtures": "node tools/browser-fixtures.ts",

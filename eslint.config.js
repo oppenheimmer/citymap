@@ -5,7 +5,7 @@ import globals from 'globals';
 import svelteConfig from './svelte.config.js';
 
 export default [
-  { ignores: ['dist/**', 'node_modules/**', 'prototype/**', 'public/fixtures/**', '.city-data/**', 'src/proto/**', 'tests/fixtures/legacy/**', 'test-results/**', 'playwright-report/**'] },
+  { ignores: ['dist/**', 'node_modules/**', 'public/fixtures/**', '.city-data/**', '.benchmarks/**', 'src/proto/**', 'test-results/**', 'playwright-report/**'] },
   js.configs.recommended,
   ...ts.configs.recommended,
   ...svelte.configs.recommended,

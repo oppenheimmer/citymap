@@ -7,7 +7,7 @@ import type { CityInput } from './city-data/build.ts';
 const root = fileURLToPath(new URL('../public/fixtures/', import.meta.url));
 await rm(root, { recursive: true, force: true });
 await mkdir(root, { recursive: true });
-const catalog = [];
+let generated = 0;
 for (const fixture of PILOT_CASES.filter(f => process.env.VITE_TEST_FIXTURES === '1' || f.name === 'small')) {
   const half = fixture.roads / 2;
   const elements: Record<string, unknown>[] = [];
@@ -35,16 +35,15 @@ for (const fixture of PILOT_CASES.filter(f => process.env.VITE_TEST_FIXTURES ===
   const input: CityInput = {
     metadata: {
       city_key: `osm-relation-${fixture.id}`, name: `${fixture.name[0].toUpperCase()}${fixture.name.slice(1)} synthetic grid`, country: 'ZZ', area_ids: [],
-      source: { kind: 'synthetic', url: 'https://example.invalid/citymap/prototype-grid', sha256: sha256(stableJson(elements)), snapshot_at: '2026-10-07T00:00:00.000Z' },
-      boundary: { osm_type: 'relation', osm_id: fixture.id, version: '1', sha256: sha256(`prototype-grid/${fixture.id}/${extent}`), policy: 'preselected-complete-ways' },
+      source: { kind: 'synthetic', url: 'https://example.invalid/citymap/browser-grid', sha256: sha256(stableJson(elements)), snapshot_at: '2026-10-07T00:00:00.000Z' },
+      boundary: { osm_type: 'relation', osm_id: fixture.id, version: '1', sha256: sha256(`browser-grid/${fixture.id}/${extent}`), policy: 'preselected-complete-ways' },
       built_at: '2026-10-07T00:00:00.000Z',
     }, elements,
   };
   // Reuse the generator's string-ID, coordinate, node-reference and segment validation.
-  const built = buildDataset(input);
+  buildDataset(input);
   const file = `${fixture.name}.json`;
   await writeFile(new URL(file, `file://${root}`), stableJson(input) + '\n');
-  catalog.push({ id: fixture.id, name: input.metadata.name, size: fixture.name, roadCount: fixture.roads, segmentCount: built.manifest.segment_count, source: 'synthetic', sourceDate: input.metadata.source.snapshot_at, file });
+  generated++;
 }
-await writeFile(new URL('catalog.json', `file://${root}`), stableJson({ version: 1, cities: catalog }) + '\n');
-console.log(`Generated ${catalog.length} validated browser fixtures`);
+console.log(`Generated ${generated} validated browser fixtures`);
