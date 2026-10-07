@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package citymap.v2;
 
-// Proposed cache format. The application currently reads place.proto version 1.
+// Version-2 local cache tools use this format. The current UI reads place.proto version 1.
 message CityRoadChunk {
   uint32 schema_version = 1;
   string city_key = 2;

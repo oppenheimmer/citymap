@@ -12,3 +12,7 @@ yarn-error.log*
 *.njsproj
 *.sln
 stats.html
+.city-data/
+.vercel/
+.env*
+!.env.example

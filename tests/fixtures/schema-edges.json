@@ -1,0 +1,90 @@
+{
+  "metadata": {
+    "city_key": "osm-relation-90071992547409931234",
+    "name": "Synthetic schema edge cases",
+    "country": "ZZ",
+    "area_ids": [
+      "3600000010"
+    ],
+    "source": {
+      "kind": "synthetic",
+      "url": "https://example.invalid/citymap/schema-edges",
+      "sha256": "d1f2138d477402da6ffc8f9f422cac23ba1a6a1a62dab278b886beec205d18b6",
+      "snapshot_at": "2026-10-07T00:00:00.000Z"
+    },
+    "boundary": {
+      "osm_type": "relation",
+      "osm_id": "90071992547409931234",
+      "version": "1",
+      "sha256": "e8a933becdbdf7fe793784f9ea1b77826d817f33817a9dc635b4f153db52d047",
+      "policy": "preselected-complete-ways"
+    },
+    "built_at": "2026-10-07T00:00:00.000Z"
+  },
+  "elements": [
+    {
+      "type": "node",
+      "id": "1",
+      "lon": 0,
+      "lat": 0
+    },
+    {
+      "type": "node",
+      "id": "2",
+      "lon": -1e-7,
+      "lat": -1e-7
+    },
+    {
+      "type": "node",
+      "id": "3",
+      "lon": 139.1234567,
+      "lat": 35.7654321
+    },
+    {
+      "type": "node",
+      "id": "4",
+      "lon": -180,
+      "lat": -90
+    },
+    {
+      "type": "node",
+      "id": "5",
+      "lon": 180,
+      "lat": 90
+    },
+    {
+      "type": "node",
+      "id": "90071992547409931235",
+      "lon": -179.9999999,
+      "lat": 0
+    },
+    {
+      "type": "way",
+      "id": "90071992547409931236",
+      "nodes": [
+        "1",
+        "2",
+        "3"
+      ],
+      "tags": {
+        "highway": "future_road_class",
+        "bridge": "viaduct",
+        "layer": "-2"
+      }
+    },
+    {
+      "type": "way",
+      "id": "90071992547409931237",
+      "nodes": [
+        "4",
+        "5",
+        "90071992547409931235"
+      ],
+      "tags": {
+        "highway": "path",
+        "tunnel": "yes",
+        "layer": "1"
+      }
+    }
+  ]
+}

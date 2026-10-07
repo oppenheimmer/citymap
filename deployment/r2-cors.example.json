@@ -1,0 +1,9 @@
+[
+  {
+    "AllowedOrigins": ["https://citymap.example.com", "http://localhost:8080"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["If-None-Match", "If-Modified-Since"],
+    "ExposeHeaders": ["ETag", "Content-Encoding", "CF-Cache-Status"],
+    "MaxAgeSeconds": 3600
+  }
+]

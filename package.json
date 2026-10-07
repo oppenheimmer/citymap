@@ -4,9 +4,21 @@
   "description": "Visualization of all roads in a city",
   "license": "MIT",
   "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "preview": "vite preview --port 8080",
+    "data:codegen": "node tools/city-data/codegen.mjs",
+    "data:check": "tsc --project tsconfig.data.json",
+    "data:build": "node tools/city-data/cli.ts build",
+    "data:validate": "node tools/city-data/cli.ts validate",
+    "data:pilot": "node tools/city-data/cli.ts pilot",
+    "data:benchmark": "node tools/city-data/benchmark.ts",
+    "test": "node --test tests/city-data.test.ts",
     "start": "vite",
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
   },
@@ -21,12 +33,15 @@
     "w-gl": "^0.21.0"
   },
   "devDependencies": {
+    "@types/node": "^24.19.1",
+    "@types/pbf": "^3.0.5",
     "@vitejs/plugin-vue": "^2.3.1",
     "eslint": "^8.5.0",
     "eslint-plugin-vue": "^8.2.0",
     "rollup-plugin-visualizer": "^5.6.0",
     "stylus": "^0.58.1",
     "stylus-loader": "^7.0.0",
+    "typescript": "^5.9.3",
     "vite": "^2.9.5"
   }
 }
