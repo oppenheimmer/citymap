@@ -16,3 +16,7 @@ stats.html
 .vercel/
 .env*
 !.env.example
+prototype/node_modules/
+prototype/public/fixtures/
+prototype/test-results/
+prototype/playwright-report/

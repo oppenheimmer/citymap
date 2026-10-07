@@ -10,7 +10,14 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "npm run build:legacy && npm run prototype:build",
+    "build:legacy": "vite build",
+    "prototype:install": "npm ci --prefix prototype",
+    "prototype:dev": "npm run dev --prefix prototype",
+    "prototype:check": "npm run check --prefix prototype",
+    "prototype:build": "npm run build --prefix prototype",
+    "prototype:test": "npm test --prefix prototype",
+    "prototype:benchmark": "npm run benchmark --prefix prototype",
     "preview": "vite preview --port 8080",
     "data:codegen": "node tools/city-data/codegen.mjs",
     "data:check": "tsc --project tsconfig.data.json",
@@ -23,6 +30,7 @@
     "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
   },
   "dependencies": {
+    "aws4fetch": "^1.0.20",
     "d3-geo": "^3.0.1",
     "d3-require": "^1.3.0",
     "ngraph.events": "^1.2.1",
