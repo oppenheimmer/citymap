@@ -59,9 +59,11 @@ build-time configuration and require rebuilding when changed.
 
 Public [Nominatim policy](https://operations.osmfoundation.org/policies/nominatim/)
 requires explicit search submission, identification, caching and an aggregate
-one-request-per-second limit. Production public search fails closed without
+one-request-per-second limit. The initial release uses public Nominatim plus a private R2 cache/shared limiter.
+Production public search fails closed without
 private shared R2 storage. A conditional lease serializes requests across Vercel
-instances and imposes a cooldown after completion; concurrent callers receive
+instances and imposes a cooldown after completion; search has a 22-second total
+budget with up to three seconds for lease cleanup; concurrent callers receive
 429/Retry-After. Development memory state is not the production limiter.
 A managed/self-hosted provider can use its own service limits without the public
 limiter. New queries can wait or fail during provider/storage outages; cached
@@ -155,5 +157,5 @@ Check CORS, MIME/encoding, immutable caching, repeat-request cache hits, decoded
 SHA-256, and short pointer freshness with the actual app origin. Use a real small
 city input before expanding the catalog. The [browser comparison](benchmarks/20261007-browser.md)
 uses synthetic fixtures and software graphics; it is not a delivery or native
-GPU benchmark. Local Chromium checks pass; Firefox/WebKit/physical-device and
-remote preview verification remain required release evidence.
+GPU benchmark. Local Chromium and Firefox checks pass; WebKit, physical-device and remote
+preview verification remain required release evidence.

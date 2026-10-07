@@ -59,9 +59,10 @@ LIBGL_ALWAYS_SOFTWARE=1 EGL_PLATFORM=surfaceless npm run test:browser
 ```
 
 These affect tests only and require the indicated browser/Mesa installation.
-Local Chromium functional checks pass with software rendering. Set
+Local Chromium and Firefox functional checks pass with software rendering. Set
 `PLAYWRIGHT_BROWSER=firefox` or `webkit` to run the same suite after installing
-that browser; their local downloads and native GPU checks remain incomplete.
+that browser; WebKit currently requires a supported isolated runtime; native GPU checks remain
+incomplete.
 
 ## City-data tooling
 

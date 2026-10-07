@@ -90,7 +90,7 @@ test('cancellation rejects stale work and repeated switching releases resources'
     const original = HTMLCanvasElement.prototype.getContext;
     const contexts: WebGLRenderingContext[] = [];
     Object.defineProperty(window, 'testContexts', { value: contexts });
-    HTMLCanvasElement.prototype.getContext = function(...args: Parameters<typeof original>) {
+    HTMLCanvasElement.prototype.getContext = function(this: HTMLCanvasElement, ...args: Parameters<typeof original>) {
       const context = original.apply(this, args);
       if (args[0] === 'webgl' && context && !contexts.includes(context as WebGLRenderingContext)) contexts.push(context as WebGLRenderingContext);
       return context;
@@ -112,7 +112,7 @@ test('cancellation rejects stale work and repeated switching releases resources'
 test('no WebGL reports a usable error', async ({ page }) => {
   await page.addInitScript(() => {
     const original = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function(...args: Parameters<typeof original>) { return args[0].includes('webgl') ? null : original.apply(this, args); } as typeof original;
+    HTMLCanvasElement.prototype.getContext = function(this: HTMLCanvasElement, ...args: Parameters<typeof original>) { return args[0].includes('webgl') ? null : original.apply(this, args); } as typeof original;
   });
   await page.goto('/');
   await page.getByText('Try a sample map', { exact: true }).click();

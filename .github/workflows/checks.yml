@@ -21,11 +21,17 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build:test
-      - run: npm exec -- playwright install --with-deps chromium
+      - run: npm exec -- playwright install --with-deps chromium firefox webkit
       - run: npm run test:browser
+      - run: npm run test:browser
+        env:
+          PLAYWRIGHT_BROWSER: firefox
+      - run: npm run test:browser
+        env:
+          PLAYWRIGHT_BROWSER: webkit
       - run: npm run build
       - run: npm run deploy:check -- --offline
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: citymap-vercel
           path: dist

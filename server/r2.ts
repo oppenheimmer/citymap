@@ -46,19 +46,19 @@ export class R2 {
 }
 
 export interface JSONStore {
-  read(key: string): Promise<{ value: unknown; etag: string } | undefined>;
-  comparePut(key: string, value: unknown, etag?: string): Promise<boolean>;
+  read(key: string, signal?: AbortSignal): Promise<{ value: unknown; etag: string } | undefined>;
+  comparePut(key: string, value: unknown, etag?: string, signal?: AbortSignal): Promise<boolean>;
 }
 export function r2Store(client: R2): JSONStore {
   return {
-    async read(key) {
-      const response = await client.request('GET', key, undefined, {}, AbortSignal.timeout(8000), 1024 * 1024);
+    async read(key, signal) {
+      const response = await client.request('GET', key, undefined, {}, signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), 1024 * 1024);
       if (response.status === 404) return;
       if (response.status !== 200 || !response.headers.get('ETag')) throw new Error('Private search storage unavailable');
       return { value: JSON.parse(response.body.toString('utf8')), etag: response.headers.get('ETag')! };
     },
-    async comparePut(key, value, etag) {
-      const response = await client.request('PUT', key, Buffer.from(JSON.stringify(value)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(etag ? { 'If-Match': etag } : { 'If-None-Match': '*' }) }, AbortSignal.timeout(8000), 1024 * 1024);
+    async comparePut(key, value, etag, signal) {
+      const response = await client.request('PUT', key, Buffer.from(JSON.stringify(value)), { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(etag ? { 'If-Match': etag } : { 'If-None-Match': '*' }) }, signal ? AbortSignal.any([signal, AbortSignal.timeout(8000)]) : AbortSignal.timeout(8000), 1024 * 1024);
       if ([409, 412].includes(response.status)) return false;
       if (![200, 201].includes(response.status)) throw new Error('Private search storage unavailable');
       return true;

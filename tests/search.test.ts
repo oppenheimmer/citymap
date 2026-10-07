@@ -44,3 +44,20 @@ test('malformed queries and insecure remote providers are rejected before fetch'
   await assert.rejects(search('', new AbortController().signal, { provider, contact }));
   await assert.rejects(search('test', new AbortController().signal, { provider: 'http://remote.example.com/search', contact }));
 });
+
+
+test('cancelled public search propagates abort to storage/provider and releases with a separate budget', async () => {
+  const backing = memoryStore();
+  const signals: AbortSignal[] = [];
+  const store = {
+    async read(key: string, signal?: AbortSignal) { if (signal) signals.push(signal); return backing.read(key); },
+    async comparePut(key: string, value: unknown, etag?: string, signal?: AbortSignal) { if (signal) signals.push(signal); return backing.comparePut(key, value, etag); },
+  };
+  const abort = new AbortController();
+  const fetcher = (async (_url, init) => { abort.abort(new DOMException('Cancelled', 'AbortError')); init!.signal!.throwIfAborted(); return new Response('[]'); }) as typeof fetch;
+  await assert.rejects(search('Cancel lease test', abort.signal, { provider: 'https://nominatim.openstreetmap.org/search', contact: 'https://citymap.example', store, fetch: fetcher }), /Cancelled/);
+  assert.ok(signals.some(signal => signal.aborted));
+  assert.ok(!signals.at(-1)!.aborted);
+  const lock = await backing.read('locks/public-nominatim.json');
+  assert.equal((lock!.value as { token: string }).token, '');
+});

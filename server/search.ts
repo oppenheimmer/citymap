@@ -14,6 +14,8 @@ export interface SearchOptions { provider: string; contact: string; apiKey?: str
 const development = memoryStore();
 
 export async function search(query: string, signal: AbortSignal, options: SearchOptions): Promise<unknown[]> {
+  // Leave time for lease release inside the 30-second Vercel function budget.
+  signal = AbortSignal.any([signal, AbortSignal.timeout(22_000)]);
   const q = query.trim();
   // eslint-disable-next-line no-control-regex -- Reject control characters in submitted search text.
   if (!q || q.length > 256 || /[\u0000-\u001f]/.test(q)) throw new SearchError('Enter a city name of at most 256 characters.', 400);
@@ -24,19 +26,19 @@ export async function search(query: string, signal: AbortSignal, options: Search
   if (isPublic && !store) throw new SearchError('Search is not configured. Set a managed provider or private R2 search storage.', 503);
   const now = options.now || Date.now;
   const cacheKey = `search/v1/${createHash('sha256').update(`${provider.href}\n${q.toLowerCase()}`).digest('hex')}.json`;
-  const cached = await store?.read(cacheKey);
+  const cached = await store?.read(cacheKey, signal);
   const cacheValue = cached?.value as { expires?: number; results?: unknown[] } | undefined;
   if (cacheValue?.expires && cacheValue.expires > now() && Array.isArray(cacheValue.results)) return cacheValue.results;
   const lockKey = 'locks/public-nominatim.json';
   let token: string | undefined;
   if (isPublic) {
-    const previous = await store!.read(lockKey);
+    const previous = await store!.read(lockKey, signal);
     const lock = previous?.value as Lock | undefined;
     if (lock && (typeof lock.token !== 'string' || !Number.isFinite(lock.until) || !Number.isFinite(lock.next))) throw new SearchError('Search rate storage is invalid.', 503);
     const wait = Math.max(lock?.until || 0, lock?.next || 0) - now();
     if (wait > 0) throw new SearchError('Search is busy. Retry shortly.', 429, Math.max(1, Math.ceil(wait / 1000)));
     token = randomUUID();
-    if (!await store!.comparePut(lockKey, { token, until: now() + 60_000, next: 0 }, previous?.etag)) throw new SearchError('Search is busy. Retry shortly.', 429, 1);
+    if (!await store!.comparePut(lockKey, { token, until: now() + 60_000, next: 0 }, previous?.etag, signal)) throw new SearchError('Search is busy. Retry shortly.', 429, 1);
   }
   try {
     const url = new URL(provider);
@@ -50,13 +52,14 @@ export async function search(query: string, signal: AbortSignal, options: Search
     const results: unknown = JSON.parse(text, (key: string, value: unknown, context?: { source?: string }) => key === 'osm_id' && typeof value === 'number' && !Number.isSafeInteger(value) && context?.source ? context.source : value);
     if (!Array.isArray(results) || results.length > 100) throw new SearchError('Search returned an invalid response.', 502);
     // A cache write failure must not discard an otherwise valid provider result.
-    await store?.comparePut(cacheKey, { expires: now() + 7 * 24 * 60 * 60 * 1000, results }, cached?.etag).catch(() => false);
+    await store?.comparePut(cacheKey, { expires: now() + 7 * 24 * 60 * 60 * 1000, results }, cached?.etag, signal).catch(() => false);
     return results;
   } finally {
     if (token) {
       try {
-        const held = await store!.read(lockKey);
-        if ((held?.value as Lock | undefined)?.token === token) await store!.comparePut(lockKey, { token: '', until: 0, next: now() + 1100 }, held?.etag);
+        const release = AbortSignal.timeout(3000);
+        const held = await store!.read(lockKey, release);
+        if ((held?.value as Lock | undefined)?.token === token) await store!.comparePut(lockKey, { token: '', until: 0, next: now() + 1100 }, held?.etag, release);
       } catch { /* A failed release remains protected by the expiring lease. */ }
     }
   }
