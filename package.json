@@ -25,7 +25,10 @@
     "fixtures": "node tools/browser-fixtures.ts",
     "check": "svelte-check --tsconfig ./tsconfig.json && npm run data:check && npm run server:check",
     "test:browser": "playwright test",
-    "build:test": "VITE_TEST_FIXTURES=1 VITE_CITY_DATA_BASE_URL=http://127.0.0.1:4173/data npm run build"
+    "build:test": "VITE_TEST_FIXTURES=1 VITE_CITY_DATA_BASE_URL=http://127.0.0.1:4173/data npm run build",
+    "data:publish": "node tools/city-data/publish.ts",
+    "benchmark:browser": "node tools/browser-benchmark.mjs",
+    "deploy:check": "node tools/deployment-check.mjs"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",

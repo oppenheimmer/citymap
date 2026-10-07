@@ -1,3 +1,4 @@
+import { responseBytes } from '../src/lib/data/response-body.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { R2, memoryStore, r2Config, r2Store } from './r2.ts';
@@ -44,7 +45,7 @@ export async function search(query: string, signal: AbortSignal, options: Search
     if (options.apiKey) headers.Authorization = `Bearer ${options.apiKey}`;
     const response = await (options.fetch || fetch)(url, { headers, signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) });
     if (!response.ok) throw new SearchError('The search provider is unavailable. Retry later.', response.status === 429 ? 429 : 502, response.status === 429 ? Math.max(1, Number(response.headers.get('Retry-After')) || 5) : undefined);
-    const text = await response.text();
+    const text = new TextDecoder().decode(await responseBytes(response, 1024 * 1024));
     if (text.length > 1024 * 1024) throw new SearchError('Search returned an oversized response.', 502);
     const results: unknown = JSON.parse(text, (key: string, value: unknown, context?: { source?: string }) => key === 'osm_id' && typeof value === 'number' && !Number.isSafeInteger(value) && context?.source ? context.source : value);
     if (!Array.isArray(results) || results.length > 100) throw new SearchError('Search returned an invalid response.', 502);

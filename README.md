@@ -26,6 +26,7 @@ npm run lint
 npm test
 npm run data:codegen -- --check
 npm run build
+npm run deploy:check -- --offline
 npm run preview
 ```
 
@@ -58,8 +59,9 @@ LIBGL_ALWAYS_SOFTWARE=1 EGL_PLATFORM=surfaceless npm run test:browser
 ```
 
 These affect tests only and require the indicated browser/Mesa installation.
-Local Chromium functional checks pass with software rendering; other browser and
-GPU performance checks remain in the release plan.
+Local Chromium functional checks pass with software rendering. Set
+`PLAYWRIGHT_BROWSER=firefox` or `webkit` to run the same suite after installing
+that browser; their local downloads and native GPU checks remain incomplete.
 
 ## City-data tooling
 
@@ -73,15 +75,17 @@ npm run data:validate -- --output .city-data/edges --manifest <manifest-object-k
 The pilot builds three **synthetic** grids with no provider requests or uploads.
 See the [input contract](docs/CITY_DATA.md) and
 [recorded format benchmark](docs/benchmarks/20261007-city-data.md).
-The initial publisher is at `tools/city-data/publish.ts`; remote publishing and
-catalog replacement safeguards are still being validated.
+Use `npm run data:publish -- --root .city-data --manifest <object-key>` for an
+offline publication plan. Ordered uploads, read-back verification, conditional
+pointers and complete catalog coverage are regression-tested; see the deployment
+guide before using `--execute`.
 
 ## Deployment status
 
 The Svelte root app, build and Vercel search endpoint are implemented. Static
 checks, unit tests and Chromium workflow checks pass. R2/Vercel provisioning,
-real-city extraction, publisher failure-path checks, browser performance
-comparison and cross-browser validation remain unfinished. Nothing has been
+real-city extraction, actual delivery checks and cross-browser validation remain
+unverified. Publisher failure paths are tested; a [synthetic browser comparison](docs/benchmarks/20261007-browser.md) records the measured improvements and limits. Nothing has been
 deployed to an account. See [deployment setup](docs/DEPLOYMENT.md) and the plan's
 `RUNNING CHANGES` for current evidence and remaining work.
 

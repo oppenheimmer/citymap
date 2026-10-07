@@ -87,8 +87,8 @@ const DESIGNS = 'citymap:designs:v1';
 const RECENTS = 'citymap:recents:v1';
 function read<T>(key: string): T[] { try { const value = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(value) ? value.slice(0, 20) : []; } catch { return []; } }
 function write(key: string, value: unknown): boolean { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } }
-export function designs(): SavedDesign[] { return read<SavedDesign>(DESIGNS).filter(value => typeof value.id === 'string' && typeof value.name === 'string' && value.boundary && value.design?.label); }
-export function recents(): Boundary[] { return read<Boundary>(RECENTS).filter(value => typeof value.key === 'string' && typeof value.name === 'string'); }
+export function designs(): SavedDesign[] { return read<SavedDesign>(DESIGNS).filter(value => value && typeof value.id === 'string' && typeof value.name === 'string' && value.boundary && value.design?.label); }
+export function recents(): Boundary[] { return read<Boundary>(RECENTS).filter(value => value && typeof value.key === 'string' && typeof value.name === 'string'); }
 export function remember(boundary: Boundary) { write(RECENTS, [boundary, ...recents().filter(value => value.key !== boundary.key)].slice(0, 10)); }
 export function saveDesign(boundary: Boundary, design: Design): boolean {
   const record: SavedDesign = { id: crypto.randomUUID(), name: design.label.text || boundary.name, boundary, design, savedAt: new Date().toISOString() };

@@ -7,6 +7,7 @@
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   import { request } from './lib/request.ts';
   import { parseUrl, shareUrl } from './lib/url-state.ts';
+  import { responseJson } from './lib/data/response-body.ts';
   import { clearCityCache, designs, recents, remember, removeDesign, saveDesign } from './lib/city-storage.ts';
   import type { SavedDesign } from './lib/city-storage.ts';
 
@@ -85,7 +86,7 @@
         const endpoint = new URL(providers.search, location.origin);
         endpoint.searchParams.set('q', text); endpoint.searchParams.set('format', 'json'); endpoint.searchParams.set('limit', '8');
         const response = await request(endpoint.href, { signal }, 25_000);
-        const data: unknown = await response.json();
+        const data: unknown = await responseJson(response, 1024 * 1024);
         if (!Array.isArray(data)) throw new Error('Search returned an invalid response. Check the configured provider.');
         places = data.flatMap(row => { try { return [boundaryFromNominatim(row)]; } catch { return []; } });
         searchCache.set(text.toLowerCase(), places);
@@ -184,7 +185,7 @@
         <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><label for="label-opacity">Label opacity</label><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity}><label for="size">Label size</label><input id="size" type="range" min="10" max="128" bind:value={design.label.size}><p class="hint">Drag the map label or focus it and use arrow keys.</p></fieldset>
       </details>
       <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button></div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
-      <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose(selected!, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
+      <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose({ ...selected!, revision: undefined, manifestSha256: undefined }, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
         {#if source}<p>{source.local ? 'Local cache' : ({ r2: 'R2 cache', legacy: 'Legacy cache', live: 'Live OpenStreetMap data', fixture: 'Synthetic sample' }[source.kind])}<br>Source date: {date(source.snapshotAt)}<br>Downloaded: {date(source.downloadedAt)}</p>{/if}
         <label for="bbox">Bounding box: south, west, north, east</label><input id="bbox" bind:value={bboxText} placeholder="35.6,139.6,35.8,139.8"><button onclick={boxLoad}>Load bounding box</button>
       </details>

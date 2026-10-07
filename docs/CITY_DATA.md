@@ -3,8 +3,9 @@
 This milestone supplies a reproducible local generator, typed protobuf adapter,
 manifest validator, synthetic pilot, and format benchmark. Generated objects go
 into `.city-data/`, which is ignored by Git and excluded from the Vercel `dist`
-build. Every command runs locally; uploading is a later publisher milestone.
-The Vue application continues to use `place.proto` version 1.
+build. Generation and validation run locally; `data:publish` adds explicit R2
+publishing after a dry-run. The Svelte worker reads version 2 and preserves
+configured `place.proto` version-1 sources.
 
 ## Commands
 
@@ -58,7 +59,8 @@ clipping remain separate work described in the modernization plan.
 Coordinates are quantized to E7 integers. Longitudes stay in `[-180, 180]`, and
 bounds use ordered min/max values; a crossing of the antimeridian has conservative
 wide bounds. The payload preserves the signed delta across that crossing.
-Projection/wrapping and polar rendering still need browser validation.
+The worker uses short-span antimeridian projection; extreme polar rendering is
+rejected where Mercator cannot represent a finite road point.
 
 Roads sort deterministically by first longitude, first latitude, and string ID.
 Object property and element ordering do not affect bytes. The revision is a full
@@ -129,3 +131,12 @@ the handwritten declarations aligned; never edit the generated codec directly.
 Version-1 schema/codec field meanings are preserved. CI runs code-generation
 verification, TypeScript checking, deterministic tests and the production build
 on Node 24.
+
+
+## Remote publication
+
+`npm run data:publish -- --root <output-path> --manifest <object-key>` is an
+offline dry-run. Add `--execute` with batch R2 configuration to upload, verify
+immutable objects and update latest conditionally. `--catalog` requires the
+complete city set and protects against lost coverage. See the exact ordering,
+credentials, concurrency and rollback rules in [DEPLOYMENT.md](DEPLOYMENT.md).

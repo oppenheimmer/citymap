@@ -1,4 +1,5 @@
 import Pbf from 'pbf';
+import { responseBytes } from '../lib/data/response-body.ts';
 import { place } from '../proto/place.js';
 import { decodeChunk, geometryStats, manifestKey, roadPoints, validateManifest } from '../lib/data/city-cache.ts';
 import type { CityManifest } from '../lib/data/city-types.ts';
@@ -35,11 +36,11 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   const pointer = load.boundary.revision && load.boundary.manifestSha256 ? {
     pointer_version: 1, city_key: cityKey, dataset_revision: load.boundary.revision,
     manifest: manifestKey(cityKey, load.boundary.revision), manifest_sha256: load.boundary.manifestSha256,
-  } : await (await request(`${base}/v2/cities/${cityKey}/latest.json`, { signal: abort.signal, cache: 'no-cache' }, 20_000)).json();
+  } : JSON.parse(new TextDecoder().decode(await responseBytes(await request(`${base}/v2/cities/${cityKey}/latest.json`, { signal: abort.signal, cache: 'no-cache' }, 20_000), 16 * 1024)));
   assert(pointer.pointer_version === 1 && pointer.city_key === cityKey && /^[a-f0-9]{64}$/.test(pointer.dataset_revision) && pointer.manifest === manifestKey(cityKey, pointer.dataset_revision) && /^[a-f0-9]{64}$/.test(pointer.manifest_sha256), 'Invalid city pointer');
   r2RevisionSelected = true;
   const manifestResponse = await request(`${base}/${pointer.manifest}`, { signal: abort.signal }, 20_000);
-  const manifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
+  const manifestBytes = await responseBytes(manifestResponse, 16 * 1024 * 1024);
   assert(manifestBytes.byteLength < 16 * 1024 * 1024 && await checksum(manifestBytes) === pointer.manifest_sha256, 'City manifest checksum mismatch');
   const value: unknown = JSON.parse(new TextDecoder().decode(manifestBytes));
   validateManifest(value);
@@ -57,7 +58,7 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   for (let start = 0; start < chunks.length; start += 2) {
     const received = await Promise.all(chunks.slice(start, start + 2).map(async descriptor => {
       const response = await request(`${base}/${descriptor.key}`, { signal: abort.signal });
-      const decoded = new Uint8Array(await response.arrayBuffer());
+      const decoded = await responseBytes(response, 64 * 1024 * 1024);
       assert(decoded.byteLength === descriptor.decoded_bytes && await checksum(decoded) === descriptor.decoded_sha256, 'Cached chunk checksum/size mismatch');
       return { descriptor, chunk: decodeChunk(decoded) };
     }));
@@ -88,7 +89,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.fixtureUrl) {
     progress({ stage: 'download', message: 'Loading sample roads…' });
     const response = await request(load.fixtureUrl, { signal: abort.signal });
-    const data = await response.json();
+    const data = JSON.parse(new TextDecoder().decode(await responseBytes(response, MAX_BYTES)));
     progress({ stage: 'project', message: 'Preparing sample geometry…' });
     const geometry = osmGeometry(data);
     sendChunk(geometry.positions, geometry.bounds, 0);
@@ -108,7 +109,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
     try {
       progress({ stage: 'download', message: 'Loading the legacy city cache…' });
       const response = await request(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { signal: abort.signal });
-      const data = place.read(new Pbf(new Uint8Array(await response.arrayBuffer())));
+      const data = place.read(new Pbf(await responseBytes(response, 64 * 1024 * 1024)));
       assert(data.version === 1, 'Unsupported legacy cache version');
       const elements = [ ...data.nodes.map(node => ({ ...node, type: 'node' })), ...data.ways.map((way, index) => ({ ...way, id: String(index + 1), type: 'way' })) ];
       const geometry = osmGeometry({ elements });
@@ -124,7 +125,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   const length = Number(response.headers.get('Content-Length'));
   assert(!length || length <= MAX_BYTES, 'This download exceeds the response limit. Choose a smaller area.');
   if (length > LARGE_BYTES && !load.allowLarge) { await response.body?.cancel(); scope.postMessage({ type: 'large', bytes: length }); throw new Error('Large download needs confirmation'); }
-  const data = await response.json();
+  const data = JSON.parse(new TextDecoder().decode(await responseBytes(response, MAX_BYTES)));
   if (typeof data.remark === 'string') throw new Error('The road provider could not complete this query. Retry or choose a smaller area.');
   progress({ stage: 'project', message: 'Indexing and projecting roads…', bytes: length || undefined });
   const geometry = osmGeometry(data);

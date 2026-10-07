@@ -38,11 +38,26 @@ test('render, pan/zoom, colors, Unicode labels and PNG/SVG downloads', async ({ 
   const svg = await readFile((await (await svgDownload).path())!, 'utf8');
   expect(svg).toContain('東京 &amp; &lt;City&gt;'); expect(svg).toContain('OpenStreetMap contributors'); expect(svg).toContain('<path');
   expect(svg).not.toMatch(/undefined|NaN|Infinity/);
+  expect((svg.match(/M[-0-9]/g) || []).length).toBe(512);
+  expect(await page.evaluate(source => new DOMParser().parseFromString(source, 'image/svg+xml').querySelector('parsererror')?.textContent, svg)).toBeUndefined();
   const pngDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download PNG' }).click();
   const png = await readFile((await (await pngDownload).path())!);
   expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
   expect(png.readUInt32BE(16)).toBe(Math.round(box.width)); expect(png.readUInt32BE(20)).toBe(Math.round(box.height));
+  const pixels = await page.evaluate(async bytes => {
+    const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
+    const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+    const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close();
+    const sample = ctx.getImageData(Math.floor(canvas.width * 0.3), Math.floor(canvas.height * 0.3), Math.floor(canvas.width * 0.4), Math.floor(canvas.height * 0.4)).data;
+    let roads = 0; for (let i = 0; i < sample.length; i += 4) if (sample[i] < 100 && sample[i + 1] < 100 && sample[i + 2] < 100 && sample[i + 3] > 0) roads++;
+    return { roads, cornerAlpha: ctx.getImageData(0, 0, 1, 1).data[3] };
+  }, [...png]);
+  expect(pixels.roads).toBeGreaterThan(500); expect(pixels.cornerAlpha).toBe(255);
+  await page.getByLabel('Transparent background', { exact: true }).check();
+  const transparentDownload = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PNG' }).click();
+  const transparent = await readFile((await (await transparentDownload).path())!);
+  expect(await page.evaluate(async bytes => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close(); return ctx.getImageData(0, 0, 1, 1).data[3]; }, [...transparent])).toBe(0);
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   expect(errors).toEqual([]);
 });
@@ -152,4 +167,22 @@ for (const failure of ['hash', 'missing-chunk'] as const) test(`R2 ${failure} fa
   await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeDisabled();
   expect(live).toBe(0);
   await expect(page.locator('canvas')).toHaveCount(0);
+});
+
+
+test.describe('touch layout and unavailable local storage', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: process.env.PLAYWRIGHT_BROWSER !== 'firefox' });
+  test('sample rendering and customization survive storage denial on a narrow screen', async ({ page }) => {
+    await page.addInitScript(() => {
+      Object.defineProperty(window, 'indexedDB', { get() { throw new DOMException('Denied', 'SecurityError'); } });
+      Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Denied', 'SecurityError'); } });
+    });
+    await page.goto('/'); await sample(page);
+    await page.getByLabel('Label text', { exact: true }).fill('Mobile city');
+    await expect(page.getByRole('button', { name: 'Move map label with arrow keys or drag' })).toHaveText('Mobile city');
+    await page.getByRole('button', { name: 'Save design', exact: true }).click();
+    await expect(page.locator('aside [role=status]')).toContainText('Local storage is unavailable');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await expect(page.locator('canvas')).toBeVisible();
+  });
 });

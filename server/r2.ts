@@ -16,10 +16,13 @@ export class R2 {
     this.config = config;
     this.signer = new AwsClient({ accessKeyId: config.accessKeyId, secretAccessKey: config.secretAccessKey, region: 'auto', service: 's3', retries: 0 });
   }
-  async request(method: 'GET' | 'HEAD' | 'PUT', key: string, body?: Buffer, headers: Record<string, string> = {}, signal?: AbortSignal, limit = 64 * 1024 * 1024): Promise<R2Response> {
+  async sign(method: 'GET' | 'HEAD' | 'PUT', key: string, body?: Buffer, headers: Record<string, string> = {}): Promise<Request> {
     if (!key || key.startsWith('/') || key.includes('\\') || key.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid R2 object key');
     const url = `https://${this.config.accountId}.r2.cloudflarestorage.com/${this.config.bucket}/${key.split('/').map(encodeURIComponent).join('/')}`;
-    const signed = await this.signer.sign(url, { method, headers, body: body ? new Uint8Array(body) : undefined });
+    return this.signer.sign(url, { method, headers: { ...headers, ...(body ? { 'Content-Length': String(body.byteLength) } : {}) }, body: body ? new Uint8Array(body) : undefined });
+  }
+  async request(method: 'GET' | 'HEAD' | 'PUT', key: string, body?: Buffer, headers: Record<string, string> = {}, signal?: AbortSignal, limit = 64 * 1024 * 1024): Promise<R2Response> {
+    const signed = await this.sign(method, key, body, headers);
     const timeout = AbortSignal.timeout(120_000);
     const abort = signal ? AbortSignal.any([signal, timeout]) : timeout;
     return new Promise((resolve, reject) => {
