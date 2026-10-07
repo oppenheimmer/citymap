@@ -16,7 +16,12 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - run: npm run prototype:install
       - run: npm run data:codegen -- --check
       - run: npm run data:check
       - run: npm test
+      - run: npm run server:check
+      - run: npm run prototype:check
       - run: npm run build
+      - run: npm exec --prefix prototype -- playwright install --with-deps chromium
+      - run: npm run prototype:test

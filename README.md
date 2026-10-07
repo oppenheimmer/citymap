@@ -56,10 +56,12 @@ Browser parity is not yet established.
 
 - Local generator/codegen checks, TypeScript checks, 43 unit cases, Svelte checking,
   and both production builds pass on Node 24.21.0.
-- Browser validation remains blocked by WebGL context loss during map loading;
-  three browser cases fail and the no-WebGL case passes. Exports and repeated-switch
-  cleanup have not passed. Temporary renderer
-  diagnostics and a disabled explicit context-release hook remain in the prototype.
+- Four Chromium browser workflows now pass: rendering/customization/PNG/SVG,
+  search/live loading/share/local cache, cancellation/repeated-switch cleanup, and
+  unavailable-WebGL handling. The earlier context-loss failure was reproduced in
+  the original renderer and isolated to the host software graphics runtime.
+  Local validation uses Mesa Vulkan; GPU performance and other browsers remain
+  unverified. Temporary tracing is removed and explicit context release restored.
 - `api/search.ts` implements the Vercel search proxy. Public Nominatim in production
   requires shared private R2 state (`R2_SEARCH_BUCKET`, `R2_ACCOUNT_ID`,
   `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`); an alternative provider can use
@@ -68,8 +70,9 @@ Browser parity is not yet established.
 - `tools/city-data/publish.ts` contains an initial ordered publisher and catalog
   writer. Remote publishing, failure-path tests, and catalog replacement safeguards
   are pending. No datasets or infrastructure have been deployed.
-- CI still installs only root dependencies and must be updated for the combined
-  build. `npm test` runs only the 30 data cases. Lint remains unconfigured,
+- CI installs both dependency trees and runs data/server/Svelte/unit/browser
+  checks with the combined build. `npm test` includes all 43 unit cases.
+  Lint remains unconfigured,
   `prototype:benchmark` points to a missing script, and synthetic benchmark
   fixtures currently enter the prototype build. These are release blockers.
 
@@ -83,9 +86,18 @@ npm exec --prefix prototype -- playwright install chromium
 npm run prototype:test
 ```
 
-The browser suite currently has known failures. The next implementation step is
-to resolve renderer context loss and verify loading, exports, and cleanup before
-promoting Svelte to the root app. Toolchain/CI cleanup, a reproducible browser
+For a host whose bundled SwiftShader crashes, a tested local alternative is:
+
+```sh
+PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+PLAYWRIGHT_CHROMIUM_BACKEND=vulkan \
+VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+LIBGL_ALWAYS_SOFTWARE=1 EGL_PLATFORM=surfaceless npm run prototype:test
+```
+
+These overrides affect tests only and require the indicated browser/Mesa install.
+The next implementation step is to broaden cache/export regression coverage and
+promote the validated Svelte workflows to the root app. Toolchain/CI cleanup, a reproducible browser
 comparison, publisher verification, and deployment validation follow. The
 [deployment guide](docs/DEPLOYMENT.md) describes the earlier data-tool milestone;
 it is not yet a complete release runbook for this prototype.

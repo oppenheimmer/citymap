@@ -20,3 +20,6 @@ prototype/node_modules/
 prototype/public/fixtures/
 prototype/test-results/
 prototype/playwright-report/
+
+/test-results/
+/playwright-report/

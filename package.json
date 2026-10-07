@@ -25,9 +25,10 @@
     "data:validate": "node tools/city-data/cli.ts validate",
     "data:pilot": "node tools/city-data/cli.ts pilot",
     "data:benchmark": "node tools/city-data/benchmark.ts",
-    "test": "node --test tests/city-data.test.ts",
+    "test": "node --test tests/*.test.ts",
     "start": "vite",
-    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore"
+    "lint": "eslint . --ext .vue,.js,.jsx,.cjs,.mjs --fix --ignore-path .gitignore",
+    "server:check": "tsc --project tsconfig.server.json"
   },
   "dependencies": {
     "aws4fetch": "^1.0.20",
