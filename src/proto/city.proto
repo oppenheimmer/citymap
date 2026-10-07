@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package citymap.v2;
+
+// Proposed cache format. The application currently reads place.proto version 1.
+message CityRoadChunk {
+  uint32 schema_version = 1;
+  string city_key = 2;
+  string dataset_revision = 3;
+  uint32 chunk_index = 4;
+  uint32 chunk_count = 5;
+  uint32 detail_level = 6;
+  repeated RoadPolyline roads = 7;
+}
+
+message RoadPolyline {
+  string osm_way_id = 1;
+  string highway = 2;
+  sint32 first_lon_e7 = 3;
+  sint32 first_lat_e7 = 4;
+  // Interleaved longitude/latitude deltas from each preceding point, in 1e-7 degrees.
+  // Signed 64-bit deltas accommodate crossings of the antimeridian.
+  repeated sint64 coordinate_deltas_e7 = 5 [packed = true];
+  uint32 fragment_index = 6;
+  bool bridge = 7;
+  bool tunnel = 8;
+  sint32 layer = 9;
+}
