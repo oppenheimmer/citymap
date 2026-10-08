@@ -4,6 +4,9 @@ The dated reports retain the migration's measurements and limitations. Their
 Vue comparison is historical; its code remains in Git at `94eba3e`.
 The active benchmark measures the current application only.
 
+The [October 8 upload investigation](20261008-uploads.md) records bounded
+geometry uploads, cancellation evidence and the remaining responsiveness limits.
+
 With Node 24, a production build and an already installed working Chromium:
 
 ```sh

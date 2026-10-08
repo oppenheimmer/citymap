@@ -28,12 +28,13 @@
         const { SceneController } = await module;
         if (disposed) return;
         if (!controller) {
-          const geometry: Geometry = { buffers: [positions], bounds, segmentCount: positions.length / 4, source: { kind: 'live', downloadedAt: '', complete: false } };
+          const geometry: Geometry = { buffers: [], bounds, segmentCount: 0, source: { kind: 'live', downloadedAt: '', complete: false } };
           controller = new SceneController(canvas, geometry, design, camera => { if (!disposed) oncamera(camera, id); });
           drawable = true;
-          await new Promise(requestAnimationFrame);
-          firstFrameMs = performance.now() - started;
-        } else controller.append(positions);
+        }
+        onprogress({ stage: 'draw', message: 'Drawing road geometry…' }, id);
+        const frameAt = await controller.appendGeometry(positions);
+        if (!firstFrameMs && frameAt !== undefined) firstFrameMs = frameAt - started;
       },
       done: async geometry => {
         if (disposed || !controller) return;

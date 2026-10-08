@@ -49,3 +49,35 @@ for (const file of ['build/wgl.module.js', 'src/lines/makeThickWireProgram.ts'])
     assert.equal(divisors.length, allowColors ? 9 : 5);
   }
 });
+
+for (const [file, factory] of [
+  ['build/wgl.module.js', 'makeWireProgram'],
+  ['build/wgl.module.js', 'makeThickWireProgram'],
+  ['src/lines/makeWireProgram.ts', 'makeWireProgram'],
+  ['src/lines/makeThickWireProgram.ts', 'makeThickWireProgram'],
+]) test(`${file} ${factory} uploads exact view bytes only when changed`, async () => {
+  const { code } = await transform(file, '?v=local-test');
+  const factoryStart = code.indexOf(`function ${factory}(`);
+  const dataStart = code.indexOf('data = wireCollection.positions;', factoryStart);
+  const declaration = code.lastIndexOf('\n', dataStart) + 1;
+  const last = 'wireCollection.isDirtyBuffer = false;';
+  const end = code.indexOf(last, dataStart) + last.length;
+  assert.ok(factoryStart >= 0 && dataStart > factoryStart && end > dataStart);
+  // Execute the installed upload routine with a view surrounded by unrelated bytes.
+  const upload = new Function('gl', 'wireCollection', 'drawContext', 'locations', 'lineProgram', 'lineBuffer', 'positionBuffer', 'quadPositions',
+    code.slice(declaration, end) + '}');
+  const backing = new Float32Array([99, 99, -1, 0, 1, 0, 88, 88]);
+  const positions = backing.subarray(2, 6), quadPositions = new Float32Array(12);
+  const collection = { positions, buffer: backing.buffer, color: {}, isDirtyBuffer: true };
+  const received: number[][] = [];
+  const gl = new Proxy({ bufferData: (_target: unknown, data: Float32Array) => {
+    if (data === quadPositions) return;
+    assert.equal(data.byteLength, 16);
+    received.push([...data]);
+  } }, { get: (target, key) => Reflect.get(target, key) || (() => {}) });
+  const draw = () => upload(gl, collection, { view: {} }, { uniforms: {}, attributes: {} }, {}, {}, {}, quadPositions);
+  draw(); draw();
+  assert.deepEqual(received, [[-1, 0, 1, 0]]);
+  collection.isDirtyBuffer = true; draw();
+  assert.deepEqual(received, [[-1, 0, 1, 0], [-1, 0, 1, 0]]);
+});

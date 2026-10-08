@@ -38,7 +38,8 @@ one small sample. Static preview does not run `/api/search`; use the dev server
 or a Vercel deployment for search.
 
 The renderer and exports load on demand. Workers prepare road geometry and SVG
-output. Complete IndexedDB geometry has size limits and LRU eviction; saved
+output. Map and PNG geometry uploads use 1 MiB batches with cancellation between
+frames. Complete IndexedDB geometry has size limits and LRU eviction; saved
 local designs are stored separately. Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 

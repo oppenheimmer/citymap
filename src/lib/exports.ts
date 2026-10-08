@@ -40,11 +40,13 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
   if (format === 'svg') return svg(snapshot, options, signal);
   const canvas = document.createElement('canvas');
   canvas.width = options.width; canvas.height = options.height;
-  const geometry: Geometry = { buffers: snapshot.buffers, bounds: snapshot.bounds, segmentCount: snapshot.buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0), source: { kind: 'live', complete: true, downloadedAt: '' } };
+  const geometry: Geometry = { buffers: [], bounds: snapshot.bounds, segmentCount: 0, source: { kind: 'live', complete: true, downloadedAt: '' } };
   const design = { ...snapshot.design, backgroundOpacity: options.transparent ? 0 : snapshot.design.backgroundOpacity, camera: snapshot.camera };
   let controller: SceneController | undefined;
   try {
     controller = new SceneController(canvas, geometry, design, undefined, { width: options.width, height: options.height }, options.width / snapshot.width / snapshot.pixelRatio);
+    for (const buffer of snapshot.buffers) await controller.appendGeometry(buffer, signal);
+    signal?.throwIfAborted();
     controller.render();
     const output = document.createElement('canvas');
     output.width = options.width; output.height = options.height;

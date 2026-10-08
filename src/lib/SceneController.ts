@@ -9,6 +9,7 @@ export function color(hex: string, alpha = 1) {
 }
 export function copyDesign(settings: Design): Design { return { ...settings, label: { ...settings.label }, camera: settings.camera ? { ...settings.camera } : undefined }; }
 export interface SceneSnapshot { buffers: Float32Array[]; bounds: Camera; camera: Camera; design: Design; width: number; height: number; pixelRatio: number }
+const UPLOAD_FLOATS = 262_144; // 1 MiB, aligned to complete four-float segments.
 
 export class SceneController {
   readonly renderer: Scene;
@@ -20,6 +21,7 @@ export class SceneController {
   private settings: Design;
   private onTransform: (() => void) | undefined;
   private lineWidth: number;
+  private frameWaits = new Set<() => void>();
 
   constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, onCamera?: (camera: Camera) => void, fixedSize?: { width: number; height: number }, lineWidth = 1) {
     this.canvas = canvas;
@@ -58,6 +60,37 @@ export class SceneController {
     this.geometry.segmentCount += positions.length / 4;
     this.renderer.appendChild(collection);
     this.renderer.renderFrame();
+  }
+
+  async appendGeometry(positions: Float32Array, signal?: AbortSignal): Promise<number | undefined> {
+    if (!positions.length || positions.length % 4) throw new Error('Invalid geometry');
+    let firstFrameAt: number | undefined;
+    for (let offset = 0; offset < positions.length; offset += UPLOAD_FLOATS) {
+      signal?.throwIfAborted();
+      if (this.disposed) return firstFrameAt;
+      this.append(positions.subarray(offset, offset + UPLOAD_FLOATS));
+      // Draw this batch before yielding, rather than accumulating one large upload.
+      this.render();
+      await this.nextFrame(signal);
+      firstFrameAt ??= performance.now();
+    }
+    signal?.throwIfAborted();
+    return firstFrameAt;
+  }
+
+  private nextFrame(signal?: AbortSignal): Promise<void> {
+    return new Promise(resolve => {
+      const finish = () => {
+        cancelAnimationFrame(token);
+        signal?.removeEventListener('abort', finish);
+        this.frameWaits.delete(finish);
+        resolve();
+      };
+      const token = requestAnimationFrame(finish);
+      this.frameWaits.add(finish);
+      signal?.addEventListener('abort', finish, { once: true });
+      if (this.disposed || signal?.aborted) finish();
+    });
   }
 
   setSettings(settings: Design) {
@@ -103,6 +136,7 @@ export class SceneController {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
+    for (const finish of this.frameWaits) finish();
     this.observer.disconnect();
     if (this.onTransform) this.renderer.off('transform', this.onTransform);
     this.canvas.removeEventListener('wheel', this.browserWheel, { capture: true });
