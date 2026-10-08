@@ -15,6 +15,7 @@
     "data:codegen": "node tools/city-data/codegen.mjs",
     "data:check": "tsc --project tsconfig.data.json",
     "data:build": "node tools/city-data/cli.ts build",
+    "data:extract": "node tools/city-data/extract.ts",
     "data:validate": "node tools/city-data/cli.ts validate",
     "data:pilot": "node tools/city-data/cli.ts pilot",
     "data:benchmark": "node tools/city-data/benchmark.ts",

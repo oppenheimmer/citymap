@@ -28,6 +28,21 @@ a JSON measurement report. `--help` describes the generator commands.
 
 ## Input contract
 
+`npm run data:extract` produces this input from an offline OSM snapshot and
+explicit boundary files. It verifies source/boundary hashes, snapshot time and
+typed identity, indexes regional nodes on disk, and selects complete ways
+touching covered E7 polygon geometry. Crossing segments with both vertices
+outside, holes, neighbors and antimeridian boundaries are tested. It does not
+clip or simplify roads. Batches accept 1–16 declared cities. Empty or ambiguous
+boundaries fail; failed/cancelled extraction removes its temporary index and
+leaves existing city inputs intact.
+
+Only extraction needs the optional, separately installed
+[Pyosmium reader](../tools/city-data/requirements.txt); frontend development and
+normal tests have no Python dependency. The
+[real-city fixture guide](../tests/fixtures/real-city/README.md) supplies a pinned
+Monaco config, source checksums and extract/build/benchmark commands.
+
 [The schema edge fixture](../tests/fixtures/schema-edges.json) is a complete input
 example. Inputs contain `metadata` and an `elements` array with road ways and
 their referenced nodes. **All element IDs, node references, boundary IDs, and
@@ -48,11 +63,10 @@ generator records the declared source and boundary hashes, so the extraction
 runner must verify those upstream files independently. Synthetic sources use
 fictional IDs and `ZZ` and must stay out of public catalogs.
 
-The only supported boundary policy is `preselected-complete-ways`. Selection
-from an offline regional extract must happen before this generator. The tool
-does not find boundaries or clip roads. A complete touching way can extend
-outside a city. Regional extraction, crossing-segment selection, holes and
-clipping remain separate work described in the modernization plan.
+The generator's boundary policy is `preselected-complete-ways`. The extractor
+performs selection before generation; neither stage infers a boundary from a
+place name. A complete touching way can extend outside a city. Strict clipping
+and global catalog expansion remain separate from this complete-way policy.
 
 ## Reproducibility and chunking
 
@@ -103,16 +117,16 @@ bounds, counts, schema, city/revision/chunk identity, full detail, duplicate
 fragments, contiguous indices, matching tags and joined endpoints. Gzip
 expansion is bounded by the validated decoded size. The browser will normally
 receive decoded bytes from objects served with `Content-Encoding: gzip`, and
-its future loader must verify the decoded checksum.
+its worker loader verifies the decoded checksum.
 
 `latest.json` contains a manifest key and checksum. A local upload plan lists
 each object, its stored checksum, MIME/encoding/cache headers, and publication
 order: chunks, immutable manifest, then the latest pointer. The upload plan is
 local tooling metadata and should not itself be uploaded. The local writer
 preserves immutable objects and replaces the pointer atomically after writes.
-Remote read verification, catalog publication, refresh and garbage collection
-belong to the future R2 publisher. No browser S3 SDK or new runtime dependency
-is introduced here.
+The publisher validates remote reads and protects latest/catalog updates with
+conditional writes. Refresh/retention workflows still need review before
+catalog expansion. No browser S3 SDK or new runtime dependency is introduced.
 
 ## Generated code and validation
 

@@ -7,9 +7,9 @@ import { osmGeometry, polylineGeometry, projector, MAX_SEGMENTS } from '../lib/g
 import { overpassQuery } from '../lib/domain.ts';
 import type { LoadProgress, SourceInfo } from '../lib/domain.ts';
 import { RequestError, request } from '../lib/request.ts';
-import type { WorkerLoad, WorkerResult } from '../lib/worker-protocol.ts';
+import type { WorkerCommand, WorkerLoad, WorkerResult } from '../lib/worker-protocol.ts';
 
-const scope = self as unknown as { onmessage: (event: MessageEvent<WorkerLoad>) => void; postMessage: (message: WorkerResult, transfer?: Transferable[]) => void };
+const scope = self as unknown as { onmessage: (event: MessageEvent<WorkerCommand>) => void; postMessage: (message: WorkerResult, transfer?: Transferable[]) => void };
 const abort = new AbortController();
 let segmentCount = 0;
 let started = false;
@@ -39,7 +39,7 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   } : JSON.parse(new TextDecoder().decode(await responseBytes(await request(`${base}/v2/cities/${cityKey}/latest.json`, { signal: abort.signal, cache: 'no-cache' }, 20_000), 16 * 1024)));
   assert(pointer.pointer_version === 1 && pointer.city_key === cityKey && /^[a-f0-9]{64}$/.test(pointer.dataset_revision) && pointer.manifest === manifestKey(cityKey, pointer.dataset_revision) && /^[a-f0-9]{64}$/.test(pointer.manifest_sha256), 'Invalid city pointer');
   r2RevisionSelected = true;
-  const manifestResponse = await request(`${base}/${pointer.manifest}`, { signal: abort.signal }, 20_000);
+  const manifestResponse = await request(`${base}/${pointer.manifest}`, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' }, 20_000);
   const manifestBytes = await responseBytes(manifestResponse, 16 * 1024 * 1024);
   assert(manifestBytes.byteLength < 16 * 1024 * 1024 && await checksum(manifestBytes) === pointer.manifest_sha256, 'City manifest checksum mismatch');
   const value: unknown = JSON.parse(new TextDecoder().decode(manifestBytes));
@@ -57,7 +57,7 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   // Two downloads at a time, consumed in manifest order for deterministic fragment validation.
   for (let start = 0; start < chunks.length; start += 2) {
     const received = await Promise.all(chunks.slice(start, start + 2).map(async descriptor => {
-      const response = await request(`${base}/${descriptor.key}`, { signal: abort.signal });
+      const response = await request(`${base}/${descriptor.key}`, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' });
       const decoded = await responseBytes(response, 64 * 1024 * 1024);
       assert(decoded.byteLength === descriptor.decoded_bytes && await checksum(decoded) === descriptor.decoded_sha256, 'Cached chunk checksum/size mismatch');
       return { descriptor, chunk: decodeChunk(decoded) };
@@ -88,7 +88,7 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
 async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.fixtureUrl) {
     progress({ stage: 'download', message: 'Loading sample roads…' });
-    const response = await request(load.fixtureUrl, { signal: abort.signal });
+    const response = await request(load.fixtureUrl, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' });
     const data = JSON.parse(new TextDecoder().decode(await responseBytes(response, MAX_BYTES)));
     progress({ stage: 'project', message: 'Preparing sample geometry…' });
     const geometry = osmGeometry(data);
@@ -108,7 +108,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.useCache && load.providers.legacyCacheBase && load.boundary.areaId) {
     try {
       progress({ stage: 'download', message: 'Loading the legacy city cache…' });
-      const response = await request(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { signal: abort.signal });
+      const response = await request(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' });
       const data = place.read(new Pbf(await responseBytes(response, 64 * 1024 * 1024)));
       assert(data.version === 1, 'Unsupported legacy cache version');
       const elements = [ ...data.nodes.map(node => ({ ...node, type: 'node' })), ...data.ways.map((way, index) => ({ ...way, id: String(index + 1), type: 'way' })) ];
@@ -133,8 +133,15 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   return { kind: 'live', downloadedAt: new Date().toISOString(), snapshotAt: data.osm3s?.timestamp_osm_base, complete: true };
 }
 
-scope.onmessage = event => {
+scope.onmessage = async event => {
+  if ('type' in event.data && event.data.type === 'cancel') {
+    abort.abort();
+    // Let the fetch abort reach the browser's network process before termination.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    scope.postMessage({ type: 'cancelled' });
+    return;
+  }
   if (started) return;
   started = true;
-  loadRoads(event.data).then(source => scope.postMessage({ type: 'done', source, segmentCount })).catch(error => scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : 'Road loading failed' }));
+  loadRoads(event.data as WorkerLoad).then(source => scope.postMessage({ type: 'done', source, segmentCount })).catch(error => { if (!abort.signal.aborted) scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : 'Road loading failed' }); });
 };

@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { loadCity } from '../src/lib/load-city.ts';
 import type { LoadCallbacks } from '../src/lib/load-city.ts';
 import type { Geometry } from '../src/lib/domain.ts';
-import type { WorkerLoad, WorkerResult } from '../src/lib/worker-protocol.ts';
+import type { WorkerCommand, WorkerLoad, WorkerResult } from '../src/lib/worker-protocol.ts';
 
 const options: WorkerLoad = {
   boundary: { key: 'local-test', name: 'Local city', kind: 'test', areaId: '3600000101' },
@@ -23,19 +23,25 @@ function gate() {
   return { promise, resolve };
 }
 
-function harness(t: TestContext, overrides: Partial<LoadCallbacks> = {}) {
+function harness(t: TestContext, overrides: Partial<LoadCallbacks> = {}, acknowledge = true) {
   const events: string[] = [], errors: string[] = [], geometries: Geometry[] = [], workers: FixtureWorker[] = [];
   class FixtureWorker {
     onmessage?: (event: MessageEvent<WorkerResult>) => void;
     onerror?: () => void;
     sent?: WorkerLoad;
     terminated = 0;
+    cancelRequests = 0;
     readonly url: URL;
     readonly workerOptions: WorkerOptions;
     constructor(url: URL, workerOptions: WorkerOptions) {
       this.url = url; this.workerOptions = workerOptions; workers.push(this);
     }
-    postMessage(value: WorkerLoad) { this.sent = value; }
+    postMessage(value: WorkerCommand) {
+      if ('type' in value) {
+        this.cancelRequests++;
+        if (acknowledge) this.emit({ type: 'cancelled' });
+      } else this.sent = value;
+    }
     terminate() { this.terminated++; }
     emit(value: WorkerResult) { this.onmessage?.({ data: value } as MessageEvent<WorkerResult>); }
   }
@@ -81,6 +87,23 @@ test('stopping a load rejects queued and late worker messages and is idempotent'
   await flush();
   assert.deepEqual(h.events, []); assert.deepEqual(h.errors, []);
   assert.equal(h.worker.terminated, 1);
+  assert.equal(h.worker.cancelRequests, 1);
+});
+
+test('cancellation waits for network-abort acknowledgement and bounds a busy worker', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness(t, {}, false);
+  h.stop(); assert.equal(h.worker.cancelRequests, 1); assert.equal(h.worker.terminated, 0);
+  t.mock.timers.tick(99); assert.equal(h.worker.terminated, 0);
+  t.mock.timers.tick(1); assert.equal(h.worker.terminated, 1);
+  h.worker.emit({ type: 'cancelled' }); assert.equal(h.worker.terminated, 1);
+});
+
+test('network-abort acknowledgement releases the worker before the fallback deadline', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness(t, {}, false);
+  h.stop(); h.worker.emit({ type: 'cancelled' }); assert.equal(h.worker.terminated, 1);
+  t.mock.timers.tick(100); assert.equal(h.worker.terminated, 1);
 });
 
 test('cancelling during drawing prevents a queued completion from replacing the city', async t => {

@@ -5,8 +5,11 @@ export interface WorkerLoad {
   fixtureUrl?: string;
   useCache: boolean;
   allowLarge: boolean;
+  forceNetwork?: boolean;
 }
+export type WorkerCommand = WorkerLoad | { type: 'cancel' };
 export type WorkerResult =
+  | { type: 'cancelled' }
   | { type: 'progress'; progress: LoadProgress }
   | { type: 'chunk'; positions: ArrayBuffer; bounds: Camera; index: number }
   | { type: 'done'; source: SourceInfo; segmentCount: number }

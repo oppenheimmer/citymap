@@ -1,0 +1,29 @@
+{
+  "source": {
+    "kind": "osm-extract",
+    "url": "https://download.geofabrik.de/europe/monaco-261006.osm.pbf",
+    "sha256": "81dca271b5cc4e33c4c9da2f906c218ba938374a8ba953414f5ce07d983435dc",
+    "snapshot_at": "2026-10-06T20:21:06.000Z"
+  },
+  "cities": [
+    {
+      "boundary_file": "monaco-boundary.osm",
+      "metadata": {
+        "city_key": "osm-relation-1124039",
+        "name": "Monaco",
+        "country": "MC",
+        "area_ids": [
+          "3601124039"
+        ],
+        "boundary": {
+          "osm_type": "relation",
+          "osm_id": "1124039",
+          "version": "74",
+          "sha256": "3429955a85f19cb8e6a1b42803325d6a3ee308d22b36e7353995fd604fa165c3",
+          "policy": "preselected-complete-ways"
+        },
+        "built_at": "2026-10-08T14:00:00.000Z"
+      }
+    }
+  ]
+}

@@ -69,7 +69,7 @@ npm exec -- playwright show-report playwright-report/local
 
 On Linux the local suite detects installed Chromium/Chrome and uses Mesa software
 Vulkan when its driver is available. Executable/graphics overrides below also
-apply. Tests own ports `8082` and `8091`, start and stop both servers, and generate
+apply. Tests own ports `8082`, `8091` and proxy `8092`, start and stop both servers, and generate
 small/medium/large synthetic fixtures without modifying `dist/`.
 [Test design, coverage and troubleshooting](docs/TESTING.md) explains the suite
 and separates it from optional data-format and deployment verification.
@@ -112,12 +112,15 @@ and the [historical migration comparison](docs/benchmarks/20261007-browser.md).
 ```sh
 npm run data:pilot
 npm run data:benchmark
+npm run data:extract -- --input /path/to/region.osm.pbf --config /path/to/cities.json
 npm run data:build -- --input /path/to/city.json --output .city-data
 npm run data:validate -- --output .city-data --manifest <manifest-object-key>
 npm run data:publish -- --root .city-data --manifest <manifest-object-key>
 ```
 
-The pilot is synthetic and uploads nothing. Publishing defaults to an offline
+The default pilot is synthetic; the [real Monaco pilot](docs/benchmarks/20261009-monaco.md)
+provides pinned source/selection and format evidence. Extraction is optional
+offline tooling with a separate Python reader. Publishing defaults to an offline
 plan; actual uploads require real-city input and explicit `--execute`.
 [Input/format details](docs/CITY_DATA.md) and
 [credentials, publishing and deployment](docs/DEPLOYMENT.md) describe the workflow.

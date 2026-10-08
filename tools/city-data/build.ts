@@ -52,6 +52,17 @@ function flag(value: unknown): boolean {
   return !['no', 'false', '0'].includes(value);
 }
 
+export function roadTags(value: unknown, wayId: string): Pick<RoadPolyline, 'osm_way_id' | 'highway' | 'bridge' | 'tunnel' | 'layer'> {
+  const tags = object(value, 'way tags');
+  text(tags.highway, 'highway');
+  let layer = 0;
+  if (tags.layer !== undefined) {
+    assert(typeof tags.layer === 'string' && /^-?\d+$/.test(tags.layer), 'layer tag must be an integer string');
+    layer = Number(tags.layer); integer(layer, 'layer', -0x80000000, 0x7fffffff);
+  }
+  return { osm_way_id: wayId, highway: tags.highway, bridge: flag(tags.bridge), tunnel: flag(tags.tunnel), layer };
+}
+
 export function polyline(points: PointE7[], tags: Pick<RoadPolyline, 'osm_way_id' | 'highway' | 'bridge' | 'tunnel' | 'layer'>, fragmentIndex = 0): RoadPolyline {
   assert(points.length >= 2, 'A road needs at least two points');
   const deltas: number[] = [];
@@ -103,21 +114,7 @@ export function normalizeInput(value: unknown): { metadata: CityMetadata; roads:
       assert(point, `Way ${way.id} references missing node ${id}`);
       return point;
     });
-    const tags = object(way.tags, 'way tags');
-    text(tags.highway, 'highway');
-    let layer = 0;
-    if (tags.layer !== undefined) {
-      assert(typeof tags.layer === 'string' && /^-?\d+$/.test(tags.layer), 'layer tag must be an integer string');
-      layer = Number(tags.layer);
-      integer(layer, 'layer', -0x80000000, 0x7fffffff);
-    }
-    return polyline(points, {
-      osm_way_id: way.id as string,
-      highway: tags.highway,
-      bridge: flag(tags.bridge),
-      tunnel: flag(tags.tunnel),
-      layer,
-    });
+    return polyline(points, roadTags(way.tags, way.id as string));
   });
   // Stable spatial ordering; these chunks are independent polylines, not map tiles.
   roads.sort((a, b) => a.first_lon_e7 - b.first_lon_e7 || a.first_lat_e7 - b.first_lat_e7 || decimalOrder(a.osm_way_id, b.osm_way_id));

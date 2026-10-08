@@ -34,8 +34,8 @@ npm run test:local:browser -- tests/local/search-loading.spec.ts
 npm run test:local:browser -- --grep 'export cancellation'
 ```
 
-Playwright starts the fixture provider on `127.0.0.1:8091` and Vite on
-`127.0.0.1:8082`. Keep these ports free. It refuses to reuse an existing server so
+Playwright starts the fixture provider on `127.0.0.1:8091`, its browser proxy on
+`127.0.0.1:8092`, and Vite on `127.0.0.1:8082`. Keep these ports free. It refuses to reuse an existing server so
 an unrelated development process cannot supply different configuration or data.
 Both processes stop when the run ends. `npm run dev` can still use port `8080`.
 The suite generates ignored small/medium/large fixtures under `public/fixtures/`;
@@ -51,6 +51,8 @@ regenerates only the production small sample.
 | Worker ownership and races | `tests/load-city.test.ts` | Completion waits for drawing; cancellation rejects queued and late messages; failed uploads and worker errors terminate processing once; malformed, empty, incomplete or count-mismatched geometry cannot complete a city. |
 | Renderer compatibility | `tests/renderer-compat.test.ts` | Installed source/build scheduling cancels pending draws before immediate exports, including Vite query-string URLs; uniform and per-vertex color modes touch only allocated thick-line attributes. Thin/thick uploads use the exact typed-array view and upload unchanged geometry only once. |
 | Progressive uploads and cancellation | `tests/local/rendering.spec.ts` | A large map uploads four exact 1 MiB views and draws all 262,144 segments progressively. Held frame callbacks prove map and PNG cancellation stop further batches and release graphics contexts; PNG retry uploads each batch once, including thick-line output. |
+| Regional extraction | `tests/extract.test.ts` | Exact E7 selection covers outside-endpoint crossings, holes, coastlines, neighbors, islands and antimeridian geometry. A disk-backed index preserves decimal IDs, complete references and tags, rejects duplicate/missing primitives, and cleans failed/cancelled staging without replacing old city inputs. |
+| Real-city delivery and recovery | `tests/local/city-data.spec.ts` | Monaco data arrives as actual HTTP gzip objects, validates ten chunks and all 15,369 SVG segments, and reopens a pinned revision. Corrupt decoded bytes fail without fallback/export; explicit retry reloads immutable HTTP bytes. |
 | Search and loading | `tests/local/search-loading.spec.ts` | Real `/api/search` validates methods/queries/headers and identifies the provider request; explicit search, normalized caching, ambiguous typed results, stale searches, empty/malformed/busy responses, node/custom/antimeridian bounds and retry/cancellation recover correctly. All three sample sizes report complete segment counts without providers. Automatic live links ask before downloading. |
 | Design, scene and accessibility | `tests/local/design-scene.spec.ts` | Presets/colors/opacity, Unicode labels, pointer and keyboard placement, clamps, zoom in/out, pan/fit/resize, camera sharing, saved designs and recents restore. No-WebGL, worker denial and context loss report usable errors. Repeated switching leaves one live graphics context and no live load workers. Narrow touch emulation covers DPR scaling, overflow, dialog focus/Escape and browser zoom shortcuts. |
 | Persistence failures and bounds | `tests/local/storage.spec.ts` | Storage denial/quota/malformed histories do not block rendering/sharing; corrupt geometry downloads again; typed-array subviews persist exactly; incomplete/oversized cities are refused; LRU eviction and history limits hold. Cache clearing preserves designs and refresh/cache opt-out download again. |
@@ -64,12 +66,23 @@ logs prove caching, queries and retry counts rather than assuming they occurred.
 Race tests use held promises/messages or wait for provider requests before
 cancelling. Assertions wait for observable state rather than arbitrary sleeps.
 
-`tests/support/local.ts` blocks and records browser HTTP requests outside the two
-localhost origins and fails on unhandled page exceptions. Service workers are
-blocked. The test server configuration overrides public provider URLs, private
+The browser uses an allowlist HTTP proxy in `tests/support/provider-proxy.ts`.
+It forwards only the two fixture destinations, rejects outside HTTP/CONNECT
+targets before opening upstream connections, and records violations for
+`tests/support/local.ts`. Each context proves the proxy blocks another loopback
+port; unhandled page exceptions also fail the case. Page/worker request events
+identify application attempts outside those origins and fail the case. The proxy
+also blocks browser-owned background probes, which Chromium performs before app
+navigation; those do not count as application traffic. Service workers are blocked.
+This preserves native cancellation: Playwright's Firefox request interception
+was observed to keep an upstream request alive after abort. Held responses prove
+Cancel, Escape and switching each abort an active request; a worker
+acknowledgement precedes bounded termination.
+The test server configuration overrides public provider URLs, private
 R2 settings and keys from the shell or local env files. The search handler uses
 its in-memory development cache and a fixture search endpoint; road workers use
-the fixture Overpass endpoint. No production search/provider traffic is needed.
+the fixture Overpass endpoint. The dataset origin serves real-city fixture
+objects with gzip/cache headers. No production search/provider traffic is needed.
 
 ## Browsers and troubleshooting
 

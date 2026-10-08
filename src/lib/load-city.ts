@@ -16,7 +16,21 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
   let worker: Worker | undefined;
   const buffers: Float32Array[] = [];
   let bounds: Geometry['bounds'] | undefined;
-  const stop = () => { disposed = true; worker?.terminate(); worker = undefined; };
+  const stop = () => {
+    disposed = true;
+    const current = worker; worker = undefined;
+    if (!current) return;
+    // Abort the worker's fetch before terminating background execution.
+    let terminated = false;
+    const finish = () => {
+      if (terminated) return;
+      terminated = true; clearTimeout(deadline); current.terminate();
+    };
+    const deadline = setTimeout(finish, 100);
+    current.onmessage = (event: MessageEvent<WorkerResult>) => { if (event.data.type === 'cancelled') finish(); };
+    current.onerror = finish;
+    try { current.postMessage({ type: 'cancel' }); } catch { finish(); }
+  };
   (async () => {
     if (options.useCache && !options.forceNetwork) {
       callbacks.progress({ stage: 'cache', message: 'Checking saved city geometry…' });
@@ -52,7 +66,7 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
             else setTimeout(persist, 0);
           }
         } else if (message.type === 'large') { stop(); callbacks.large(message.bytes); }
-        else { stop(); callbacks.error(message.message); }
+        else if (message.type === 'error') { stop(); callbacks.error(message.message); }
       }).catch(error => { if (!disposed) { stop(); callbacks.error(error instanceof Error ? error.message : 'City loading failed'); } });
     };
     worker.onerror = () => { if (!disposed) { stop(); callbacks.error('Background processing failed. Retry or choose a smaller area.'); } };

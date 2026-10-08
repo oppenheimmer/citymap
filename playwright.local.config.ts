@@ -9,7 +9,7 @@ export default defineConfig({
   forbidOnly: true,
   outputDir: 'test-results/local',
   reporter: [['list'], ['html', { outputFolder: 'playwright-report/local', open: 'never' }]],
-  use: { ...browserOptions(true), baseURL: 'http://127.0.0.1:8082', serviceWorkers: 'block' },
+  use: { ...browserOptions(true), baseURL: 'http://127.0.0.1:8082', serviceWorkers: 'block', proxy: { server: 'http://127.0.0.1:8092' } },
   webServer: [
     { command: 'node tests/support/provider-server.ts', url: 'http://127.0.0.1:8091/health', reuseExistingServer: false },
     {
@@ -19,7 +19,7 @@ export default defineConfig({
       // Override shell and .env.local values so the suite needs no accounts.
       env: {
         VITE_TEST_FIXTURES: '1',
-        VITE_CITY_DATA_BASE_URL: '',
+        VITE_CITY_DATA_BASE_URL: 'http://127.0.0.1:8091/data',
         VITE_AREA_SERVER: '',
         VITE_SEARCH_URL: '',
         VITE_OVERPASS_URL: 'http://127.0.0.1:8091/roads',

@@ -1,7 +1,7 @@
 import { test as base, expect } from '@playwright/test';
 import type { Page, APIRequestContext } from '@playwright/test';
 export const provider = 'http://127.0.0.1:8091';
-export interface Stats { searches: { query: string; userAgent: string; format: string; limit: string }[]; roads: string[]; aborted: number }
+export interface Stats { searches: { query: string; userAgent: string; format: string; limit: string }[]; roads: string[]; aborted: number; blocked: string[]; datasets: string[] }
 export async function stats(request: APIRequestContext): Promise<Stats> { return (await request.get(`${provider}/__stats`)).json(); }
 export async function control(request: APIRequestContext, scenario: unknown) { expect((await request.post(`${provider}/__control`, { data: scenario })).ok()).toBe(true); }
 export const status = (page: Page) => page.locator('aside [role=status]');
@@ -26,15 +26,18 @@ export async function cacheKeys(page: Page): Promise<string[]> {
 export const test = base.extend<{ localGuard: void }>({
   localGuard: [async ({ context, page, request }, use) => {
     expect((await request.post(`${provider}/__reset`)).ok()).toBe(true);
-    const external: string[] = [], errors: string[] = [];
-    await context.route('**/*', route => {
-      const url = new URL(route.request().url());
-      if (['http://127.0.0.1:8082', provider].includes(url.origin) || ['blob:', 'data:'].includes(url.protocol)) return route.continue();
-      external.push(url.origin); return route.abort('blockedbyclient');
+    const denied = 'http://127.0.0.1:8099/proxy-denial-probe';
+    expect((await page.goto(denied))!.status(), 'Browser traffic must pass through the allowlist proxy').toBe(403);
+    expect((await stats(request)).blocked).toContain(denied);
+    expect((await request.post(`${provider}/__reset`)).ok()).toBe(true);
+    const errors: string[] = [], external: string[] = [];
+    context.on('request', request => {
+      const url = new URL(request.url());
+      if (['http:', 'https:'].includes(url.protocol) && !['http://127.0.0.1:8082',provider].includes(url.origin)) external.push(url.origin);
     });
     page.on('pageerror', error => errors.push(error.message));
     await use();
-    expect(external, 'The local suite must never contact external services').toEqual([]);
+    expect(external, 'The application must never request external services').toEqual([]);
     expect(errors, 'Unhandled browser exceptions').toEqual([]);
   }, { auto: true }],
 });

@@ -1,0 +1,81 @@
+{
+  "recorded_at": "2026-10-08T15:27:25.126Z",
+  "node": "v24.20.0",
+  "os": "linux/x64",
+  "cpu": "13th Gen Intel(R) Core(TM) i5-1345U",
+  "methodology": "Fixed input (synthetic grids by default or explicit real-city JSON); 1 warmup + 10 measured iterations, medians; separate child per format with GC before samples; gzip inflation, protobuf decoding, validation and coordinate walking. Chunked sequential. Wire sizes exclude manifests/HTTP headers. Heap increments are sampled, RSS includes process/runtime overhead. No network, projection, WebGL, export or first-frame measurements.",
+  "rows": [
+    {
+      "fixture": "osm-relation-1124039",
+      "source_kind": "osm-extract",
+      "source": {
+        "kind": "osm-extract",
+        "sha256": "81dca271b5cc4e33c4c9da2f906c218ba938374a8ba953414f5ce07d983435dc",
+        "snapshot_at": "2026-10-06T20:21:06.000Z",
+        "url": "https://download.geofabrik.de/europe/monaco-261006.osm.pbf"
+      },
+      "ways": 3486,
+      "format": "v1",
+      "chunks": 1,
+      "wire_bytes": 158405,
+      "decoded_bytes": 355070,
+      "geometry_matches_e7": false,
+      "max_coordinate_error_degrees": 0.0000019071289045768935,
+      "inflate_ms": 3.347,
+      "decode_ms": 23.785,
+      "first_chunk_cpu_ms": 26.802,
+      "total_cpu_ms": 26.978,
+      "sampled_heap_increment_bytes": 6742264,
+      "process_peak_rss_bytes": 106643456,
+      "segments": 15369
+    },
+    {
+      "fixture": "osm-relation-1124039",
+      "source_kind": "osm-extract",
+      "source": {
+        "kind": "osm-extract",
+        "sha256": "81dca271b5cc4e33c4c9da2f906c218ba938374a8ba953414f5ce07d983435dc",
+        "snapshot_at": "2026-10-06T20:21:06.000Z",
+        "url": "https://download.geofabrik.de/europe/monaco-261006.osm.pbf"
+      },
+      "ways": 3486,
+      "format": "v2-single",
+      "chunks": 1,
+      "wire_bytes": 106614,
+      "decoded_bytes": 184197,
+      "geometry_matches_e7": true,
+      "max_coordinate_error_degrees": 0,
+      "inflate_ms": 2.33,
+      "decode_ms": 20.492,
+      "first_chunk_cpu_ms": 22.877,
+      "total_cpu_ms": 23.033,
+      "sampled_heap_increment_bytes": 12540904,
+      "process_peak_rss_bytes": 109412352,
+      "segments": 15369
+    },
+    {
+      "fixture": "osm-relation-1124039",
+      "source_kind": "osm-extract",
+      "source": {
+        "kind": "osm-extract",
+        "sha256": "81dca271b5cc4e33c4c9da2f906c218ba938374a8ba953414f5ce07d983435dc",
+        "snapshot_at": "2026-10-06T20:21:06.000Z",
+        "url": "https://download.geofabrik.de/europe/monaco-261006.osm.pbf"
+      },
+      "ways": 3486,
+      "format": "v2-chunks",
+      "chunks": 10,
+      "wire_bytes": 111518,
+      "decoded_bytes": 185043,
+      "geometry_matches_e7": true,
+      "max_coordinate_error_degrees": 0,
+      "inflate_ms": 3.645,
+      "decode_ms": 23.602,
+      "first_chunk_cpu_ms": 4.826,
+      "total_cpu_ms": 27.593,
+      "sampled_heap_increment_bytes": 12422384,
+      "process_peak_rss_bytes": 116715520,
+      "segments": 15369
+    }
+  ]
+}

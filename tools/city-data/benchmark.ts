@@ -1,23 +1,30 @@
-import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, cpus, platform, arch } from 'node:os';
 import path from 'node:path';
-import { parseArgs } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import Pbf from 'pbf';
 import { place } from '../../src/proto/place.js';
 import type { LegacyPlace } from '../../src/proto/place.js';
-import { assert, decodeChunk, roadPoints } from '../../src/lib/data/city-cache.ts';
+import { assert, decodeChunk, integer, roadPoints } from '../../src/lib/data/city-cache.ts';
 import { buildDataset, normalizeInput } from './build.ts';
 import { PILOT_CASES, syntheticCity } from './fixtures.ts';
 
-const { values } = parseArgs({ options: { output: { type: 'string', default: '.city-data/benchmark.json' } } });
+const { values } = parseArgs({ options: {
+  output: { type: 'string', default: '.city-data/benchmark.json' }, input: { type: 'string' },
+  'chunk-points': { type: 'string', default: '32768' },
+} });
+const chunkPoints = Number(values['chunk-points']); integer(chunkPoints, '--chunk-points', 2, 1_000_000);
+const fixtures = values.input ? [{ input: JSON.parse(await readFile(values.input, 'utf8')) }] : PILOT_CASES.map(fixture => ({ input: syntheticCity(fixture.roads, fixture.id, fixture.origin) }));
 const temporary = await mkdtemp(path.join(tmpdir(), 'citymap-benchmark-'));
+const run = promisify(execFile);
 const rows = [];
 try {
-  for (const fixture of PILOT_CASES) {
-    const input = syntheticCity(fixture.roads, fixture.id, fixture.origin);
+  for (const { input } of fixtures) {
+    const normalized = normalizeInput(input);
+    const fixture = { name: normalized.metadata.city_key, id: normalized.metadata.boundary.osm_id, roads: normalized.roads.length };
     const legacy: LegacyPlace = {
       version: 1, id: fixture.id, name: input.metadata.name, date: input.metadata.source.snapshot_at,
       nodes: [], ways: [],
@@ -51,7 +58,7 @@ try {
         decodedBytes = v1.byteLength;
         geometryMatches = legacyError === 0;
       } else {
-        const built = buildDataset(input, format === 'v2-single' ? 1_000_000 : 32768);
+        const built = buildDataset(input, format === 'v2-single' ? 1_000_000 : chunkPoints);
         wires = built.objects.filter(object => object.key.endsWith('.pbf')).map(object => object.bytes);
         decodedBytes = built.manifest.chunks.reduce((sum, chunk) => sum + chunk.decoded_bytes, 0);
         const actual = new Map<string, number[][]>();
@@ -73,10 +80,11 @@ try {
         await writeFile(file, wires[index]);
         files.push(file);
       }
-      const measured = JSON.parse(execFileSync(process.execPath, ['--expose-gc', fileURLToPath(new URL('./benchmark-child.ts', import.meta.url)), format, ...files], { encoding: 'utf8' }));
+      const { stdout } = await run(process.execPath, ['--expose-gc', fileURLToPath(new URL('./benchmark-child.ts', import.meta.url)), format, ...files], { encoding: 'utf8' });
+      const measured = JSON.parse(stdout);
       assert(measured.segments === expectedSegments, 'Benchmark segment count mismatch');
       rows.push({
-        fixture: fixture.name, source_kind: 'synthetic', ways: fixture.roads, format, chunks: wires.length,
+        fixture: fixture.name, source_kind: normalized.metadata.source.kind, source: normalized.metadata.source, ways: fixture.roads, format, chunks: wires.length,
         wire_bytes: wires.reduce((sum, bytes) => sum + bytes.byteLength, 0), decoded_bytes: decodedBytes,
         geometry_matches_e7: geometryMatches, max_coordinate_error_degrees: format === 'v1' ? legacyError : 0,
         ...measured,
@@ -86,7 +94,7 @@ try {
   }
   const report = {
     recorded_at: new Date().toISOString(), node: process.version, os: `${platform()}/${arch()}`, cpu: cpus()[0]?.model,
-    methodology: 'Synthetic shared-node grids; 1 warmup + 10 measured iterations, medians; separate child per format with GC before samples; gzip inflation, protobuf decoding, validation and coordinate walking. Chunked sequential. Wire sizes exclude manifests/HTTP headers. Heap increments are sampled, RSS includes process/runtime overhead. No network, projection, WebGL, export or first-frame measurements.',
+    methodology: 'Fixed input (synthetic grids by default or explicit real-city JSON); 1 warmup + 10 measured iterations, medians; separate child per format with GC before samples; gzip inflation, protobuf decoding, validation and coordinate walking. Chunked sequential. Wire sizes exclude manifests/HTTP headers. Heap increments are sampled, RSS includes process/runtime overhead. No network, projection, WebGL, export or first-frame measurements.',
     rows,
   };
   await mkdir(path.dirname(values.output), { recursive: true });

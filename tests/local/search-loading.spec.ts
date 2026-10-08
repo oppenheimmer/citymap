@@ -82,10 +82,32 @@ test('transient road errors retry once and restore useful source/freshness infor
 });
 
 test('cancel button, Escape and switching prevent delayed roads from replacing the map', async ({ page, request }) => {
-  await control(request, { roads: { delay: 1000 } }); await page.goto('/?q=Slow&areaId=3600000101&cache=0');
+  await page.addInitScript(() => {
+    const OriginalWorker = window.Worker;
+    const events: { type: string; at: number }[] = [];
+    Object.defineProperty(window, 'cancelProbe', { value: events });
+    window.Worker = class extends OriginalWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        this.addEventListener('message', event => events.push({ type: `received:${event.data.type}`, at: performance.now() }));
+      }
+      override postMessage(message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) {
+        events.push({ type: `sent:${(message as { type?: string }).type || 'load'}`, at: performance.now() });
+        if (Array.isArray(transfer)) super.postMessage(message, transfer);
+        else super.postMessage(message, transfer);
+      }
+      override terminate() { events.push({ type: 'terminate', at: performance.now() }); super.terminate(); }
+    };
+  });
+  await control(request, { roads: { hold: true } }); await page.goto('/?q=Slow&areaId=3600000101&cache=0');
   await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect.poll(async () => (await stats(request)).roads.length).toBe(1);
   await page.getByRole('button', { name: 'Cancel load' }).click(); await expect(status(page)).toContainText('cancelled');
-  await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await page.keyboard.press('Escape'); await expect(status(page)).toContainText('cancelled');
-  await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await sample(page); await expect(status(page)).toContainText('Small synthetic grid ready');
-  await expect.poll(async () => (await stats(request)).aborted).toBeGreaterThan(0);
+  await expect.poll(async () => (await stats(request)).aborted).toBe(1);
+  await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect.poll(async () => (await stats(request)).roads.length).toBe(2);
+  await page.keyboard.press('Escape'); await expect(status(page)).toContainText('cancelled'); await expect.poll(async () => (await stats(request)).aborted).toBe(2);
+  await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect.poll(async () => (await stats(request)).roads.length).toBe(3);
+  await sample(page); await expect(status(page)).toContainText('Small synthetic grid ready'); await expect.poll(async () => (await stats(request)).aborted).toBe(3);
+  const events = await page.evaluate(() => (window as unknown as { cancelProbe: { type: string }[] }).cancelProbe);
+  expect(events.filter(event => event.type === 'sent:cancel')).toHaveLength(3);
+  expect(events.filter(event => event.type === 'received:cancelled')).toHaveLength(3);
 });
