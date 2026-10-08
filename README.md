@@ -40,7 +40,9 @@ or a Vercel deployment for search.
 The renderer and exports load on demand. Workers prepare road geometry and SVG
 output. Map and PNG geometry uploads use 1 MiB batches with cancellation between
 frames. Complete IndexedDB geometry has size limits and LRU eviction; saved
-local designs are stored separately. Version-1 data sources and older query
+local designs are stored separately and export as JSON with a restore link.
+On phones, controls use a collapsible sheet with accessible cancellation.
+Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 
 ## Local tests without deployed services

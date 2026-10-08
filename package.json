@@ -27,6 +27,7 @@
     "test:browser": "playwright test",
     "build:test": "VITE_TEST_FIXTURES=1 VITE_CITY_DATA_BASE_URL=http://127.0.0.1:4173/data npm run build",
     "data:publish": "node tools/city-data/publish.ts",
+    "data:report": "node tools/city-data/report.ts",
     "benchmark:browser": "node tools/browser-benchmark.mjs",
     "deploy:check": "node tools/deployment-check.mjs",
     "browser:check": "tsc --project tsconfig.browser.json",

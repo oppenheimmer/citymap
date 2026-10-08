@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import MapCanvas from './MapCanvas.svelte';
   import { bbox, boundaryFromNominatim, publicUrl } from './lib/domain.ts';
-  import type { Boundary, Camera, Design, Geometry, LoadProgress, Providers, SourceInfo } from './lib/domain.ts';
+  import type { Boundary, Camera, Design, Geometry, LoadProgress, PreparationTimings, Providers, SourceInfo } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   import { request } from './lib/request.ts';
@@ -10,6 +10,8 @@
   import { responseJson } from './lib/data/response-body.ts';
   import { clearCityCache, designs, recents, remember, removeDesign, saveDesign } from './lib/city-storage.ts';
   import type { SavedDesign } from './lib/city-storage.ts';
+  import { designFile } from './lib/design-file.ts';
+  import { download } from './lib/download.ts';
 
   const link = parseUrl(location.search);
   let query = $state(link.query);
@@ -27,7 +29,7 @@
   let progress = $state.raw<LoadProgress | null>(null);
   let options = $state.raw<(WorkerLoad & { forceNetwork?: boolean }) | null>(null);
   let confirmation = $state<number | null>(null);
-  let metrics = $state.raw<{ first: number; total: number; segments: number } | null>(null);
+  let metrics = $state.raw<{ first: number; total: number; segments: number; preparation?: PreparationTimings } | null>(null);
   let exporting = $state(false), exportWidth = $state(1280), exportHeight = $state(960), transparent = $state(false);
   let exportError = $state('');
   let shareText = $state(''), bboxText = $state('');
@@ -38,6 +40,8 @@
   let searchRun = 0;
   let historyTimer: ReturnType<typeof setTimeout> | undefined;
   let providers: Providers;
+  let mobile = $state(false), controlsOpen = $state(true);
+  const dateFormatter = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   // This request cache is not UI state and does not need reactive entries.
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
   const searchCache = new Map<string, Boundary[]>();
@@ -101,12 +105,12 @@
   function loaded(scene: SceneController, geometry: Geometry, first: number, total: number, id: number) {
     if (id !== generation) return;
     controller = scene; ready = true; loading = false; source = geometry.source; confirmation = null;
-    metrics = { first, total, segments: geometry.segmentCount };
+    metrics = { first, total, segments: geometry.segmentCount, preparation: geometry.preparation };
     status = `${selected!.name} ready.`;
     remember(selected!); recent = recents(); history();
   }
-  function failed(message: string, id: number) { if (id !== generation) return; mounted = false; loading = false; ready = false; controller = null; error = message; status = 'Map could not be loaded.'; }
-  function large(bytes: number, id: number) { if (id !== generation) return; mounted = false; loading = false; confirmation = bytes; status = 'Confirm this download to continue.'; }
+  function failed(message: string, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; ready = false; controller = null; error = message; status = 'Map could not be loaded.'; }
+  function large(bytes: number, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; confirmation = bytes; status = 'Confirm this download to continue.'; }
   function camera(camera: Camera, id: number) { if (id === generation) { design.camera = camera; history(); } }
   function applyPreset(preset: typeof presets[number]) { design.roadColor = preset.roads; design.backgroundColor = preset.background; design.label.color = preset.labels; }
   function boxLoad() {
@@ -149,10 +153,19 @@
     try { const parsed = parseUrl(new URL(shareUrl(location.origin, location.pathname, record.boundary, record.design)).search); if (!parsed.boundary || parsed.warning) throw new Error('Invalid saved design'); choose(parsed.boundary, true, false, parsed.design); }
     catch { error = 'This saved design could not be restored. You can remove it and create a new one.'; }
   }
+  function exportDesign(record: SavedDesign) {
+    try {
+      download(new Blob([designFile(record, location.origin, location.pathname)], { type: 'application/json;charset=utf-8' }), `${record.name}.citymap.json`);
+      status = 'Design settings exported. Open the link in the file to restore this map.';
+    } catch { error = 'This saved design could not be exported. You can remove it and save a new one.'; controlsOpen = true; }
+  }
   async function clear() { status = await clearCityCache() ? 'Saved city geometry cleared. Designs are preserved.' : 'Local cache is unavailable in this browser.'; }
-  function date(value?: string) { return value && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'unavailable'; }
+  function date(value?: string) { return value && Number.isFinite(Date.parse(value)) ? dateFormatter.format(new Date(value)) : 'unavailable'; }
 
   onMount(() => {
+    const media = window.matchMedia('(max-width: 750px)');
+    const resize = () => { mobile = media.matches; };
+    resize(); media.addEventListener('change', resize);
     try {
       providers = { cityDataBase: publicUrl(import.meta.env.VITE_CITY_DATA_BASE_URL || ''), legacyCacheBase: publicUrl(import.meta.env.VITE_AREA_SERVER || ''), overpass: publicUrl(import.meta.env.VITE_OVERPASS_URL || '', 'https://overpass-api.de/api/interpreter'), search: publicUrl(import.meta.env.VITE_SEARCH_URL || '', new URL('/api/search', location.origin).href) };
       if (link.boundary) {
@@ -160,13 +173,20 @@
         else { status = 'This link selects a city. Load its roads to continue.'; bboxText = link.boundary.bbox?.join(',') || ''; }
       }
     } catch (e) { error = e instanceof Error ? e.message : 'Invalid provider configuration'; }
-    return () => { searchAbort?.abort(); exportAbort?.abort(); clearTimeout(historyTimer); };
+    return () => { media.removeEventListener('change', resize); searchAbort?.abort(); exportAbort?.abort(); clearTimeout(historyTimer); };
   });
 </script>
 
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && loading) cancel(); }} />
 <main class="layout">
-  <aside>
+  <aside class:collapsed={mobile && !controlsOpen} aria-label="Map settings">
+    <div class="sheet-toolbar">
+      <span class="sheet-title">{selected?.name.split(',')[0] || 'Citymap'}</span>
+      {#if !controlsOpen && loading}<button onclick={cancel}>Cancel load</button>{/if}
+      <button aria-expanded={controlsOpen} aria-controls="settings-content" onclick={() => { controlsOpen = !controlsOpen; }}>{controlsOpen ? 'Hide controls' : 'Show controls'}</button>
+    </div>
+    {#if mobile && !controlsOpen}<p class="sheet-status" role="status" aria-live="polite">{status}</p>{/if}
+    <div id="settings-content" hidden={mobile && !controlsOpen}>
     <header><p class="eyebrow">CITYMAP</p><h1>Make a map.</h1><p>Your city, drawn in roads.</p></header>
     <form onsubmit={event => { event.preventDefault(); void search(); }}>
       <label for="search">Find a city</label><div class="search-row"><input id="search" type="search" bind:value={query} oninput={editQuery} placeholder="Tokyo, Japan" autocomplete="off" maxlength="256"><button type="submit" disabled={searching || !query.trim()}>Search</button></div>
@@ -189,11 +209,12 @@
         {#if source}<p>{source.local ? 'Local cache' : ({ r2: 'R2 cache', legacy: 'Legacy cache', live: 'Live OpenStreetMap data', fixture: 'Synthetic sample' }[source.kind])}<br>Source date: {date(source.snapshotAt)}<br>Downloaded: {date(source.downloadedAt)}</p>{/if}
         <label for="bbox">Bounding box: south, west, north, east</label><input id="bbox" bind:value={bboxText} placeholder="35.6,139.6,35.8,139.8"><button onclick={boxLoad}>Load bounding box</button>
       </details>
-      {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p></details>{/if}
+      {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p>{#if metrics.preparation}<p>Download {metrics.preparation.downloadMs.toFixed(1)} ms · decode {metrics.preparation.decodeMs.toFixed(1)} ms · index {metrics.preparation.indexMs.toFixed(1)} ms · projection {metrics.preparation.projectMs.toFixed(1)} ms</p><p class="hint">Download time includes delivery waits; parallel request times can overlap.</p>{/if}</details>{/if}
     {/if}
     {#if recent.length}<details><summary>Recent cities</summary><div class="results">{#each recent as city (city.key)}<button onclick={() => choose(city)}>{city.name}</button>{/each}</div></details>{/if}
-    {#if saved.length}<details><summary>Saved designs</summary>{#each saved as record (record.id)}<div class="saved"><button onclick={() => restore(record)}>{record.name}</button><button aria-label={`Delete design ${record.name}`} onclick={() => { removeDesign(record.id); saved = designs(); }}>Delete</button></div>{/each}</details>{/if}
+    {#if saved.length}<details><summary>Saved designs</summary>{#each saved as record (record.id)}<div class="saved"><button onclick={() => restore(record)}>{record.name}</button><button aria-label={`Export settings ${record.name}`} onclick={() => exportDesign(record)}>Export JSON</button><button aria-label={`Delete design ${record.name}`} onclick={() => { removeDesign(record.id); saved = designs(); }}>Delete</button></div>{/each}</details>{/if}
     <footer>Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors, ODbL</a>.</footer>
+    </div>
   </aside>
   <section class="map-panel" aria-label="Map preview">
     {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} oncamera={camera} onerror={failed} onlarge={large} onprogress={(value, id) => { if (id === generation) progress = value; }} onready={loaded} />{/key}
@@ -201,3 +222,47 @@
   </section>
 </main>
 <dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><p class="hint">Up to 16 megapixels. Attribution stays visible.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
+
+<style>
+.layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100dvh; }
+aside { background: var(--ui-surface); border-right: 1px solid var(--ui-border); overflow-y: auto; padding: 28px 22px; }
+h1 { font-size: 30px; letter-spacing: -1px; margin: 8px 0; }
+header p, .hint, footer { color: #626d60; font-size: 13px; line-height: 1.5; }
+.eyebrow { letter-spacing: .15em; font-size: 12px; font-weight: 700; }
+label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 6px; }
+input:not([type=color]):not([type=range]) { width: 100%; border: 1px solid #bcc5b7; border-radius: 6px; padding: 10px; background: #fff; }
+input[type=color] { width: 44px; height: 30px; margin-left: 8px; padding: 0; vertical-align: middle; }
+input[type=range] { width: 100%; }
+.results { display: grid; gap: 6px; margin-top: 10px; }
+.results button { text-align: left; }
+.results small { display: block; color: #657461; margin-top: 5px; }
+fieldset { border: 0; border-top: 1px solid var(--ui-border); margin: 20px 0 0; padding: 12px 0 0; min-width: 0; }
+legend { padding-right: 10px; font-size: 13px; font-weight: 700; }
+.buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+.error { color: #8e2525; font-size: 14px; line-height: 1.5; }.error button { display: block; margin-top: 8px; }
+.map-panel { min-width: 0; min-height: 0; }
+.empty { display: grid; align-content: center; height: 100%; padding: 40px; text-align: center; color: #54654d; }
+.empty h2 { font-size: clamp(28px, 5vw, 60px); font-weight: 400; letter-spacing: -2px; margin: 0; }
+footer { margin-top: 28px; }
+details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
+.sheet-toolbar { display: none; }
+.sheet-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.sheet-status { margin: 0 0 10px; font-size: 12px; }
+@media (max-width: 750px) {
+  .layout { display: flex; flex-direction: column-reverse; height: 100dvh; overflow: hidden; }
+  .map-panel { flex: 1; min-height: 120px; }
+  aside { flex: none; height: 45dvh; min-height: 80px; border-top: 1px solid var(--ui-border); border-right: 0; padding: 0 16px 16px; overflow-y: auto; }
+  aside.collapsed { height: 96px; overflow: hidden; }
+  header { margin-bottom: 16px; }
+  .sheet-toolbar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; padding: 12px 0; background: var(--ui-surface); z-index: 1; }
+  button { min-height: 44px; }
+  .saved { flex-wrap: wrap; }.saved button:first-child { flex-basis: 100%; }
+}
+.search-row { display: flex; gap: 6px; }.search-row input { min-width: 0; }
+.checkbox { display: flex; align-items: center; gap: 8px; font-weight: 400; }.checkbox input { width: auto !important; }
+.notice { border-left: 3px solid #507e5c; padding: 12px; background: #edf1e7; font-size: 14px; }.notice button { display: block; margin-top: 10px; }
+.saved { display: flex; gap: 6px; margin-top: 8px; }.saved button:first-child { flex: 1; }
+.export-dialog { border: 0; background: var(--ui-surface); padding: 24px; border-radius: 10px; max-width: 440px; width: calc(100% - 40px); max-height: 90dvh; overflow: auto; }
+.export-dialog::backdrop { background: #20282080; }
+.export-dialog h2 { margin-top: 0; }
+</style>

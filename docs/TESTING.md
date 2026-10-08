@@ -52,7 +52,8 @@ regenerates only the production small sample.
 | Renderer compatibility | `tests/renderer-compat.test.ts` | Installed source/build scheduling cancels pending draws before immediate exports, including Vite query-string URLs; uniform and per-vertex color modes touch only allocated thick-line attributes. Thin/thick uploads use the exact typed-array view and upload unchanged geometry only once. |
 | Progressive uploads and cancellation | `tests/local/rendering.spec.ts` | A large map uploads four exact 1 MiB views and draws all 262,144 segments progressively. Held frame callbacks prove map and PNG cancellation stop further batches and release graphics contexts; PNG retry uploads each batch once, including thick-line output. |
 | Regional extraction | `tests/extract.test.ts` | Exact E7 selection covers outside-endpoint crossings, holes, coastlines, neighbors, islands and antimeridian geometry. A disk-backed index preserves decimal IDs, complete references and tags, rejects duplicate/missing primitives, and cleans failed/cancelled staging without replacing old city inputs. |
-| Real-city delivery and recovery | `tests/local/city-data.spec.ts` | Monaco data arrives as actual HTTP gzip objects, validates ten chunks and all 15,369 SVG segments, and reopens a pinned revision. Corrupt decoded bytes fail without fallback/export; explicit retry reloads immutable HTTP bytes. |
+| Real-city delivery and recovery | `tests/local/city-data.spec.ts` | Monaco data arrives as actual HTTP gzip objects, validates ten chunks, all 15,369 SVG segments and actual PNG road pixels, and reopens a pinned revision. Corrupt decoded bytes fail without fallback/export; explicit retry reloads immutable HTTP bytes. |
+| Mobile sheet and portable settings | `tests/local/mobile-settings.spec.ts`, `tests/design-file.test.ts` | The sheet scrolls independently, collapses to expand the map and keeps Cancel available; failures reopen controls. Saved-settings JSON preserves Unicode, camera, palette and pinned identity with a working restore link. |
 | Search and loading | `tests/local/search-loading.spec.ts` | Real `/api/search` validates methods/queries/headers and identifies the provider request; explicit search, normalized caching, ambiguous typed results, stale searches, empty/malformed/busy responses, node/custom/antimeridian bounds and retry/cancellation recover correctly. All three sample sizes report complete segment counts without providers. Automatic live links ask before downloading. |
 | Design, scene and accessibility | `tests/local/design-scene.spec.ts` | Presets/colors/opacity, Unicode labels, pointer and keyboard placement, clamps, zoom in/out, pan/fit/resize, camera sharing, saved designs and recents restore. No-WebGL, worker denial and context loss report usable errors. Repeated switching leaves one live graphics context and no live load workers. Narrow touch emulation covers DPR scaling, overflow, dialog focus/Escape and browser zoom shortcuts. |
 | Persistence failures and bounds | `tests/local/storage.spec.ts` | Storage denial/quota/malformed histories do not block rendering/sharing; corrupt geometry downloads again; typed-array subviews persist exactly; incomplete/oversized cities are refused; LRU eviction and history limits hold. Cache clearing preserves designs and refresh/cache opt-out download again. |
@@ -103,7 +104,8 @@ For other already installed Playwright-compatible runtimes:
 ```sh
 PLAYWRIGHT_BROWSER=firefox \
 PLAYWRIGHT_BROWSER_EXECUTABLE_PATH=/path/to/firefox npm run test:local:browser
-PLAYWRIGHT_BROWSER=webkit npm run test:local:browser
+PLAYWRIGHT_BROWSER=webkit \
+PLAYWRIGHT_BROWSER_EXECUTABLE_PATH=/path/to/webkit-launcher npm run test:local:browser
 ```
 
 If no supported system browser is detected, Playwright uses its existing browser
@@ -137,8 +139,9 @@ without downloading browsers. Explicit workflow dispatch with `browser_checks`
 installs the Chromium/Firefox/WebKit matrix and runs both local and
 production-preview browser suites, retaining failure artifacts.
 
+The agreed local touch-device verification uses tested browser touch emulation.
 Functional software rendering and touch emulation do not establish native GPU
-performance, peak memory, physical-device accessibility or deployed Vercel/R2
+performance, physical-device accessibility or deployed Vercel/R2
 behavior. Deployed search, real provider availability, dataset uploads, CORS and
 CDN headers remain separate release work in [the deployment runbook](DEPLOYMENT.md).
 Performance measurements have their own [benchmark workflow](benchmarks/README.md).

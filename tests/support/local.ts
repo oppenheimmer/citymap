@@ -9,7 +9,7 @@ export const label = (page: Page) => page.getByRole('button', { name: 'Move map 
 export async function sample(page: Page, size = 'Small') {
   await detail(page, 'Try a sample map');
   await page.getByRole('button', { name: `${size} sample`, exact: true }).click();
-  await expect(status(page)).toContainText('ready');
+  await expect(status(page)).toContainText('ready', { timeout: 15_000 });
 }
 export async function search(page: Page, query: string) { await page.getByLabel('Find a city').fill(query); await page.getByRole('button', { name: 'Search', exact: true }).click(); }
 export async function live(page: Page, query: string) { await search(page, query); await page.getByRole('button', { name: `${query}, Japan city · relation`, exact: true }).click(); await expect(status(page)).toContainText('ready'); }

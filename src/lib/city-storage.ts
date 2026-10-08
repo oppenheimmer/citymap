@@ -33,11 +33,13 @@ export async function getCity(key: string): Promise<Geometry | undefined> {
       metadata.onsuccess = () => { if (metadata.result) transaction.objectStore('metadata').put({ ...metadata.result, lastUsed: Date.now() }); };
     };
     await complete(transaction);
-    if (!value || value.format !== FORMAT || !value.geometry?.source?.complete) return;
+    if (!value || value.format !== FORMAT || value.geometry?.source?.complete !== true) return;
     const g = value.geometry;
     if (!Array.isArray(g.buffers) || !g.buffers.length || g.buffers.some(buffer => !(buffer instanceof ArrayBuffer) || !buffer.byteLength || buffer.byteLength % 16)) return;
     const count = g.buffers.reduce((sum, buffer) => sum + buffer.byteLength / 16, 0);
-    if (count !== g.segmentCount || !g.bounds || !Object.values(g.bounds).every(Number.isFinite) || g.bounds.left >= g.bounds.right || g.bounds.bottom >= g.bounds.top) return;
+    if (count !== g.segmentCount || count * 16 > MAX_CITY_BYTES || !g.bounds || ![g.bounds.left, g.bounds.right, g.bounds.bottom, g.bounds.top].every(Number.isFinite) || g.bounds.left >= g.bounds.right || g.bounds.bottom >= g.bounds.top) return;
+    if (!['fixture','live','legacy','r2'].includes(g.source.kind)) return;
+    if (g.source.kind === 'r2' && (!/^[a-f0-9]{64}$/.test(g.source.revision || '') || !/^[a-f0-9]{64}$/.test(g.source.manifestSha256 || ''))) return;
     return { buffers: g.buffers.map(buffer => new Float32Array(buffer)), bounds: g.bounds, segmentCount: count, source: { ...g.source, local: true } };
   } catch { return; }
   finally { db?.close(); }

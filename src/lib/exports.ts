@@ -1,6 +1,7 @@
 import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
 import type { Geometry } from './domain.ts';
+export { download } from './download.ts';
 
 export interface ExportOptions { width: number; height: number; transparent: boolean }
 function dimensions(options: ExportOptions) {
@@ -66,12 +67,4 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     context.fillText('© OpenStreetMap contributors', options.width * 0.97, options.height * 0.97);
     return await new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG export failed')), 'image/png'));
   } finally { controller?.dispose(); }
-}
-
-export function download(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url; link.download = name.replace(/[^\p{L}\p{N}._ -]/gu, '_');
-  setTimeout(() => link.click(), 30);
-  setTimeout(() => URL.revokeObjectURL(url), 45_000);
 }

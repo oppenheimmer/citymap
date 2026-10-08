@@ -125,8 +125,56 @@ order: chunks, immutable manifest, then the latest pointer. The upload plan is
 local tooling metadata and should not itself be uploaded. The local writer
 preserves immutable objects and replaces the pointer atomically after writes.
 The publisher validates remote reads and protects latest/catalog updates with
-conditional writes. Refresh/retention workflows still need review before
-catalog expansion. No browser S3 SDK or new runtime dependency is introduced.
+conditional writes. No browser S3 SDK or new runtime dependency is introduced.
+
+## Coverage, freshness and retention
+
+Generate an offline report from the complete set of current manifest keys:
+
+```sh
+npm run data:report -- --root .city-data/real-pilot/artifacts \
+  --manifest v2/cities/<city-key>/<revision>/manifest.json \
+  --at 2026-10-09T00:00:00.000Z --output .city-data/coverage.json
+```
+
+Repeat `--manifest` for each city. Every local revision is validated before
+reporting its source date, complete-way policy, segment/chunk counts and stored/
+decoded bytes. The report counts actual supplied cities, without claiming
+global coverage. Optional `--gaps gaps.json` records deliberately unbuilt places:
+
+```json
+[{"city_key":"osm-relation-42","name":"Example place","country":"FR","reason":"ambiguous-boundary"}]
+```
+
+Allowed reasons are `missing-boundary`, `ambiguous-boundary` and `missing-source`.
+Never substitute another boundary to remove a gap. Extraction fails with a
+specific diagnostic when its declared boundary or source cannot be validated;
+record that place in the next report after reviewing the failure. Gaps and built
+cities must have distinct typed keys. Synthetic artifacts are refused.
+
+The initial operating policy is a weekly source-snapshot review and a 30-day
+freshness budget (`--max-age-days` can change the reporting budget). Refresh
+flagged or frequently used cities in bounded batches, reuse downloaded regional
+snapshots, preserve the fixed build timestamp for identical revisions, and use
+the tested ordered publisher only when publication is authorized. App releases
+alone never trigger extraction. The report proposes refresh work; it does not
+download, rebuild, publish or contact R2. The real Monaco pilot report is retained
+in [the benchmark evidence](benchmarks/20261009-coverage.json).
+
+Keep the current revision plus at least two previous complete revisions for
+rollback. Catalogs retained for rollback also protect their referenced city
+revisions. Published immutable revisions and exported pinned links are preserved
+indefinitely by default: local tooling cannot enumerate another user's saved
+links, so age alone cannot establish that a revision is unreferenced. No automatic
+garbage collector or remote deletion is enabled. Before any later retention
+change, establish a published link-expiry policy, inventory all latest/catalog/
+rollback references, and wait at least the one-year immutable HTTP cache lifetime
+after the last reference is retired. Remove only confirmed unreferenced objects;
+retain source configs/checksums and the coverage report for reproduction.
+
+Local report validation and this retention review finish the preparatory work.
+Scheduling refresh jobs, expanding the public catalog and applying remote
+retention are operations for the deferred deployment stage.
 
 ## Generated code and validation
 

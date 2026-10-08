@@ -81,6 +81,13 @@ test('worker delivery waits for drawing before reporting complete geometry', asy
   assert.deepEqual(h.errors, []);
 });
 
+test('worker preparation timings reach the completed geometry without changing buffer ownership', async t => {
+  const h=harness(t),preparation={downloadMs:10,decodeMs:2,indexMs:3,projectMs:4};
+  h.worker.emit(chunk());h.worker.emit({type:'done',source,segmentCount:1,preparation});await flush();
+  assert.deepEqual(h.geometries[0].preparation,preparation);
+  assert.equal(h.geometries[0].buffers[0].byteLength,16);
+});
+
 test('stopping a load rejects queued and late worker messages and is idempotent', async t => {
   const h = harness(t);
   h.worker.emit(chunk()); h.stop(); h.stop(); h.worker.emit(done());

@@ -27,7 +27,8 @@ export const DEFAULT_DESIGN: Design = {
 };
 export interface Providers { cityDataBase: string; legacyCacheBase: string; overpass: string; search: string }
 export interface SourceInfo { kind: 'fixture' | 'r2' | 'legacy' | 'live'; downloadedAt: string; snapshotAt?: string; revision?: string; manifestSha256?: string; complete: boolean; local?: boolean }
-export interface Geometry { buffers: Float32Array[]; bounds: Camera; segmentCount: number; source: SourceInfo }
+export interface PreparationTimings { downloadMs: number; decodeMs: number; indexMs: number; projectMs: number }
+export interface Geometry { buffers: Float32Array[]; bounds: Camera; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }
 export type LoadStage = 'cache' | 'download' | 'decode' | 'project' | 'draw';
 export interface LoadProgress { stage: LoadStage; message: string; bytes?: number; completedChunks?: number; totalChunks?: number }
 

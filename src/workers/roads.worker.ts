@@ -21,6 +21,20 @@ const sendChunk = (positions: Float32Array, bounds: ReturnType<typeof projector>
 };
 const LARGE_BYTES = 8 * 1024 * 1024;
 const MAX_BYTES = 256 * 1024 * 1024;
+const preparation = { downloadMs: 0, decodeMs: 0, indexMs: 0, projectMs: 0 };
+function measure<T>(phase: keyof typeof preparation, work: () => T): T {
+  const start = performance.now();
+  try { return work(); } finally { preparation[phase] += performance.now() - start; }
+}
+async function downloaded(url: string, options: RequestInit, limit: number, deadline?: number): Promise<Uint8Array<ArrayBuffer>> {
+  const start = performance.now();
+  try { return await responseBytes(await request(url, { ...options, signal: abort.signal }, deadline), limit); }
+  finally { preparation.downloadMs += performance.now() - start; }
+}
+function json(bytes: Uint8Array) { return measure('decodeMs', () => JSON.parse(new TextDecoder().decode(bytes))); }
+function preparedJson(value: unknown) {
+  const result = osmGeometry(value); preparation.indexMs += result.indexMs; preparation.projectMs += result.projectMs; return result;
+}
 
 async function checksum(bytes: Uint8Array): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', bytes as Uint8Array<ArrayBuffer>);
@@ -36,13 +50,12 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   const pointer = load.boundary.revision && load.boundary.manifestSha256 ? {
     pointer_version: 1, city_key: cityKey, dataset_revision: load.boundary.revision,
     manifest: manifestKey(cityKey, load.boundary.revision), manifest_sha256: load.boundary.manifestSha256,
-  } : JSON.parse(new TextDecoder().decode(await responseBytes(await request(`${base}/v2/cities/${cityKey}/latest.json`, { signal: abort.signal, cache: 'no-cache' }, 20_000), 16 * 1024)));
+  } : json(await downloaded(`${base}/v2/cities/${cityKey}/latest.json`, { cache: 'no-cache' }, 16 * 1024, 20_000));
   assert(pointer.pointer_version === 1 && pointer.city_key === cityKey && /^[a-f0-9]{64}$/.test(pointer.dataset_revision) && pointer.manifest === manifestKey(cityKey, pointer.dataset_revision) && /^[a-f0-9]{64}$/.test(pointer.manifest_sha256), 'Invalid city pointer');
   r2RevisionSelected = true;
-  const manifestResponse = await request(`${base}/${pointer.manifest}`, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' }, 20_000);
-  const manifestBytes = await responseBytes(manifestResponse, 16 * 1024 * 1024);
+  const manifestBytes = await downloaded(`${base}/${pointer.manifest}`, { cache: load.forceNetwork ? 'reload' : 'default' }, 16 * 1024 * 1024, 20_000);
   assert(manifestBytes.byteLength < 16 * 1024 * 1024 && await checksum(manifestBytes) === pointer.manifest_sha256, 'City manifest checksum mismatch');
-  const value: unknown = JSON.parse(new TextDecoder().decode(manifestBytes));
+  const value: unknown = json(manifestBytes);
   validateManifest(value);
   const manifest: CityManifest = value;
   assert(manifest.city_key === cityKey && manifest.dataset_revision === pointer.dataset_revision && manifest.source.kind !== 'synthetic', 'City manifest identity/source mismatch');
@@ -57,12 +70,12 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   // Two downloads at a time, consumed in manifest order for deterministic fragment validation.
   for (let start = 0; start < chunks.length; start += 2) {
     const received = await Promise.all(chunks.slice(start, start + 2).map(async descriptor => {
-      const response = await request(`${base}/${descriptor.key}`, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' });
-      const decoded = await responseBytes(response, 64 * 1024 * 1024);
+      const decoded = await downloaded(`${base}/${descriptor.key}`, { cache: load.forceNetwork ? 'reload' : 'default' }, 64 * 1024 * 1024);
       assert(decoded.byteLength === descriptor.decoded_bytes && await checksum(decoded) === descriptor.decoded_sha256, 'Cached chunk checksum/size mismatch');
-      return { descriptor, chunk: decodeChunk(decoded) };
+      return { descriptor, chunk: measure('decodeMs', () => decodeChunk(decoded)) };
     }));
     for (const { descriptor, chunk } of received) {
+      const indexingStarted = performance.now();
       assert(chunk.city_key === cityKey && chunk.dataset_revision === manifest.dataset_revision && chunk.chunk_index === descriptor.index && chunk.chunk_count === chunks.length && chunk.detail_level === 0, 'Cached chunks have mixed identity or detail');
       const stats = geometryStats(chunk.roads);
       for (const key of Object.keys(stats) as (keyof typeof stats)[]) assert(JSON.stringify(stats[key]) === JSON.stringify(descriptor[key]), 'Chunk geometry metadata mismatch');
@@ -74,8 +87,9 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
         assert(!previous || previous.tags === tags && previous.end[0] === points[0][0] && previous.end[1] === points[0][1], 'Disconnected or inconsistent road fragments');
         fragments.set(road.osm_way_id, { next: road.fragment_index + 1, end: points.at(-1)!, tags });
       }
+      preparation.indexMs += performance.now() - indexingStarted;
       progress({ stage: 'project', message: 'Preparing road geometry…', completedChunks: descriptor.index, totalChunks: chunks.length });
-      const positions = polylineGeometry(chunk.roads, projection.project);
+      const positions = measure('projectMs', () => polylineGeometry(chunk.roads, projection.project));
       segments += positions.length / 4;
       sendChunk(positions, projection.bounds, descriptor.index);
       progress({ stage: 'download', message: 'Loading cached road chunks…', completedChunks: descriptor.index + 1, totalChunks: chunks.length });
@@ -88,10 +102,9 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
 async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.fixtureUrl) {
     progress({ stage: 'download', message: 'Loading sample roads…' });
-    const response = await request(load.fixtureUrl, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' });
-    const data = JSON.parse(new TextDecoder().decode(await responseBytes(response, MAX_BYTES)));
+    const data = json(await downloaded(load.fixtureUrl, { cache: load.forceNetwork ? 'reload' : 'default' }, MAX_BYTES));
     progress({ stage: 'project', message: 'Preparing sample geometry…' });
-    const geometry = osmGeometry(data);
+    const geometry = preparedJson(data);
     sendChunk(geometry.positions, geometry.bounds, 0);
     return { kind: 'fixture', downloadedAt: new Date().toISOString(), snapshotAt: data.metadata?.source?.snapshot_at, complete: true };
   }
@@ -108,11 +121,11 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.useCache && load.providers.legacyCacheBase && load.boundary.areaId) {
     try {
       progress({ stage: 'download', message: 'Loading the legacy city cache…' });
-      const response = await request(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { signal: abort.signal, cache: load.forceNetwork ? 'reload' : 'default' });
-      const data = place.read(new Pbf(await responseBytes(response, 64 * 1024 * 1024)));
+      const bytes = await downloaded(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { cache: load.forceNetwork ? 'reload' : 'default' }, 64 * 1024 * 1024);
+      const data = measure('decodeMs', () => place.read(new Pbf(bytes)));
       assert(data.version === 1, 'Unsupported legacy cache version');
       const elements = [ ...data.nodes.map(node => ({ ...node, type: 'node' })), ...data.ways.map((way, index) => ({ ...way, id: String(index + 1), type: 'way' })) ];
-      const geometry = osmGeometry({ elements });
+      const geometry = preparedJson({ elements });
       sendChunk(geometry.positions, geometry.bounds, 0);
       return { kind: 'legacy', downloadedAt: new Date().toISOString(), snapshotAt: data.date || undefined, complete: true };
     } catch (error) {
@@ -121,14 +134,17 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   }
   progress({ stage: 'download', message: 'Downloading live OpenStreetMap roads…' });
   if (!load.allowLarge) { scope.postMessage({ type: 'large', bytes: 0 }); throw new Error('Live download needs confirmation'); }
+  const downloadStarted = performance.now();
   const response = await request(load.providers.overpass, { method: 'POST', body: new URLSearchParams({ data: overpassQuery(load.boundary) }), signal: abort.signal });
   const length = Number(response.headers.get('Content-Length'));
   assert(!length || length <= MAX_BYTES, 'This download exceeds the response limit. Choose a smaller area.');
   if (length > LARGE_BYTES && !load.allowLarge) { await response.body?.cancel(); scope.postMessage({ type: 'large', bytes: length }); throw new Error('Large download needs confirmation'); }
-  const data = JSON.parse(new TextDecoder().decode(await responseBytes(response, MAX_BYTES)));
+  const body = await responseBytes(response, MAX_BYTES);
+  preparation.downloadMs += performance.now() - downloadStarted;
+  const data = json(body);
   if (typeof data.remark === 'string') throw new Error('The road provider could not complete this query. Retry or choose a smaller area.');
   progress({ stage: 'project', message: 'Indexing and projecting roads…', bytes: length || undefined });
-  const geometry = osmGeometry(data);
+  const geometry = preparedJson(data);
   sendChunk(geometry.positions, geometry.bounds, 0);
   return { kind: 'live', downloadedAt: new Date().toISOString(), snapshotAt: data.osm3s?.timestamp_osm_base, complete: true };
 }
@@ -143,5 +159,5 @@ scope.onmessage = async event => {
   }
   if (started) return;
   started = true;
-  loadRoads(event.data as WorkerLoad).then(source => scope.postMessage({ type: 'done', source, segmentCount })).catch(error => { if (!abort.signal.aborted) scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : 'Road loading failed' }); });
+  loadRoads(event.data as WorkerLoad).then(source => scope.postMessage({ type: 'done', source, segmentCount, preparation })).catch(error => { if (!abort.signal.aborted) scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : 'Road loading failed' }); });
 };

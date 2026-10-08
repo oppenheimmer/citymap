@@ -23,7 +23,8 @@ export function projector(bounds: GeoBounds) {
   return { project, bounds: camera };
 }
 
-export function osmGeometry(value: unknown): { positions: Float32Array; bounds: Camera; segments: number } {
+export function osmGeometry(value: unknown): { positions: Float32Array; bounds: Camera; segments: number; indexMs: number; projectMs: number } {
+  const started = performance.now();
   if (!value || typeof value !== 'object' || !Array.isArray((value as { elements?: unknown }).elements)) throw new Error('The road service returned an invalid response');
   const elements = (value as { elements: unknown[] }).elements;
   const nodes = new Map<string, [number, number]>();
@@ -53,6 +54,7 @@ export function osmGeometry(value: unknown): { positions: Float32Array; bounds: 
     }
   }
   if (!nodes.size || !ways.size || !segments) throw new Error('No roads were found in this area. Choose a city boundary or larger bounding box.');
+  const indexed = performance.now();
   if (wrappedEast - wrappedWest < east - west) { west = wrappedWest; east = wrappedEast; }
   const projection = projector([west, south, east, north]);
   const points = new Map<string, [number, number]>();
@@ -75,7 +77,7 @@ export function osmGeometry(value: unknown): { positions: Float32Array; bounds: 
       previous = next;
     }
   }
-  return { positions, bounds: projection.bounds, segments };
+  return { positions, bounds: projection.bounds, segments, indexMs: indexed - started, projectMs: performance.now() - indexed };
 }
 
 export function polylineGeometry(roads: RoadPolyline[], project: (lon: number, lat: number) => [number, number]): Float32Array {

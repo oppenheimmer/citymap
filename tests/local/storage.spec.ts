@@ -31,6 +31,17 @@ test('IndexedDB preserves geometry subviews and enforces complete/per-city size 
   expect(result).toEqual({ stored: true, points: [0, 0, 1, 1], incomplete: false, oversized: false });
 });
 
+test('missing bounds and invalid R2 identity in a format-valid local record are rejected', async ({ page }) => {
+  await page.goto('/');
+  const accepted = await page.evaluate(async () => {
+    const modulePath='/src/lib/city-storage.ts',storage=await import(modulePath);
+    const geometry={buffers:[new Float32Array([0,0,1,1]).buffer],segmentCount:1,bounds:{left:-1,right:1,bottom:-1,top:1},source:{kind:'fixture',complete:true,downloadedAt:''}};
+    await new Promise<void>((resolve,reject) => { const open=indexedDB.open('citymap-geometry',1); open.onupgradeneeded=()=>{open.result.createObjectStore('cities');open.result.createObjectStore('metadata',{keyPath:'key'});};open.onsuccess=()=>{const db=open.result,tx=db.transaction('cities','readwrite'),store=tx.objectStore('cities');store.put({format:1,geometry:{...geometry,bounds:{}}},'missing');store.put({format:1,geometry:{...geometry,source:{...geometry.source,kind:'r2',revision:'bad'}}},'identity');tx.oncomplete=()=>{db.close();resolve();};tx.onerror=()=>reject(tx.error);}; });
+    return [!!await storage.getCity('missing'),!!await storage.getCity('identity')];
+  });
+  expect(accepted).toEqual([false,false]);
+});
+
 test('LRU eviction removes the oldest geometry and lightweight histories stay bounded', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {

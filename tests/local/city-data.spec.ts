@@ -15,6 +15,12 @@ test('a real offline-extract city decodes actual gzip delivery, exports every se
   expect((bytes.toString('utf8').match(/M[-0-9]/g) || []).length).toBe(15369);
   expect(bytes.toString('utf8')).toContain('OpenStreetMap contributors');
   await testInfo.attach('monaco.svg',{ body:bytes, contentType:'image/svg+xml' });
+  await page.getByLabel('Width in pixels').fill('1024'); await page.getByLabel('Height in pixels').fill('768');
+  const pngPending=page.waitForEvent('download'); await page.getByRole('button',{name:'Download PNG',exact:true}).click();
+  const pngFile=await pngPending,png=await readFile((await pngFile.path())!);
+  expect(png.readUInt32BE(16)).toBe(1024);expect(png.readUInt32BE(20)).toBe(768);
+  const roadPixels=await page.evaluate(async data=>{const image=await createImageBitmap(new Blob([new Uint8Array(data)],{type:'image/png'}));const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const ctx=canvas.getContext('2d')!;ctx.drawImage(image,0,0);image.close();const pixels=ctx.getImageData(150,100,700,450).data;let dark=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i]<140&&pixels[i+1]<140&&pixels[i+2]<140&&pixels[i+3]>0)dark++;return dark;},[...png]);
+  expect(roadPixels).toBeGreaterThan(1000); await testInfo.attach('monaco.png',{body:png,contentType:'image/png'});
   await page.getByRole('button',{ name:'Close', exact:true }).click();
   await page.getByRole('button',{ name:'Clear city cache', exact:true }).click();
   const before = (await stats(request)).datasets.length;

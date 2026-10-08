@@ -1,0 +1,35 @@
+{
+  "report_version": 1,
+  "generated_at": "2026-10-09T00:00:00.000Z",
+  "max_age_days": 30,
+  "city_count": 1,
+  "gap_count": 0,
+  "refresh_due_count": 0,
+  "stored_bytes": 111518,
+  "countries": [
+    {
+      "country": "MC",
+      "city_count": 1,
+      "gap_count": 0
+    }
+  ],
+  "cities": [
+    {
+      "city_key": "osm-relation-1124039",
+      "name": "Monaco",
+      "country": "MC",
+      "coverage": "full",
+      "boundary_policy": "preselected-complete-ways",
+      "revision": "9dd9acba956d948227bf52791a8af5b039e417185857374fa2ceeebfd7fbb057",
+      "source_date": "2026-10-06T20:21:06.000Z",
+      "age_days": 2,
+      "refresh_due": false,
+      "segments": 15369,
+      "chunks": 10,
+      "stored_bytes": 111518,
+      "decoded_bytes": 185043
+    }
+  ],
+  "gaps": [],
+  "retention": "Keep published immutable revisions, pinned links and catalog/rollback references. This report never authorizes deletion."
+}

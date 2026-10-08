@@ -75,7 +75,8 @@
 <style>
   .map { position: relative; width: 100%; height: 100%; overflow: hidden; background: repeating-conic-gradient(#f5f5f2 0 25%, #e3e6de 0 50%) 50% / 16px 16px; }
   canvas { display: block; width: 100%; height: 100%; touch-action: none; }
-  .map-label { position: absolute; transform: translate(-50%, -50%); border: 1px solid transparent; padding: 0; background: transparent; font-family: sans-serif; font-weight: normal; touch-action: none; cursor: move; white-space: nowrap; }
+  .map-label { position: absolute; display: flex; align-items: center; justify-content: center; transform: translate(-50%, -50%); border: 1px solid transparent; padding: 0; background: transparent; font-family: sans-serif; font-weight: normal; touch-action: none; cursor: move; white-space: nowrap; }
   .map-label:focus-visible { border-color: currentColor; }
   .attribution { position: absolute; right: 3%; top: 97%; transform: translateY(-50%); font: 12px sans-serif; color: #303030; white-space: nowrap; text-shadow: 1px 1px #fff, -1px 1px #fff, 1px -1px #fff, -1px -1px #fff; }
+  @media (max-width: 750px) { .map-label { min-width: 44px; min-height: 44px; } }
 </style>

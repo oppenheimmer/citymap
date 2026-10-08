@@ -58,7 +58,7 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
         } else if (message.type === 'done') {
           worker?.terminate(); worker = undefined;
           if (!bounds || buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0) !== message.segmentCount || !message.source.complete) throw new Error('City loading finished with incomplete geometry');
-          const geometry: Geometry = { buffers, bounds, segmentCount: message.segmentCount, source: message.source };
+          const geometry: Geometry = { buffers, bounds, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
           await callbacks.done(geometry);
           if (!disposed && options.useCache) {
             const persist = () => { if (!disposed) void putCity(cacheKey, geometry); };
