@@ -9,7 +9,7 @@ declare module 'w-gl' {
     getGL(): WebGLRenderingContext;
     getSceneCoordinate(x: number, y: number): [number, number, number];
     getDrawContext(): { width: number; height: number };
-    getCameraController(): { zoomCenterByScaleFactor(scale: number): void };
+    getCameraController(): { zoomCenterByScaleFactor(scale: number, dx: number, dy: number): void; redraw(): void };
     on(name: string, callback: () => void): void;
     off(name: string, callback: () => void): void;
     renderFrame(immediate?: boolean): void;

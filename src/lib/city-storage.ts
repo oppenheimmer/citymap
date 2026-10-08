@@ -60,7 +60,7 @@ export async function putCity(key: string, geometry: Geometry): Promise<boolean>
         if (total <= MAX_TOTAL_BYTES) break;
         cities.delete(record.key); metadata.delete(record.key); total -= record.bytes;
       }
-      const record: CacheRecord = { format: FORMAT, geometry: { ...geometry, source: { ...geometry.source, local: false }, buffers: geometry.buffers.map(buffer => buffer.buffer as ArrayBuffer) } };
+      const record: CacheRecord = { format: FORMAT, geometry: { ...geometry, source: { ...geometry.source, local: false }, buffers: geometry.buffers.map(buffer => buffer.byteOffset === 0 && buffer.byteLength === buffer.buffer.byteLength ? buffer.buffer as ArrayBuffer : buffer.slice().buffer as ArrayBuffer) } };
       cities.put(record, key);
       metadata.put({ key, bytes, lastUsed: Date.now() });
     };

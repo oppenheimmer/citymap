@@ -1,8 +1,9 @@
 # Citymap
 
 Create, customize, share and export city road maps from OpenStreetMap.
-The app uses Svelte 5, Vite 8 and TypeScript. Vercel serves the frontend and search
-function; Cloudflare R2 delivers versioned city datasets.
+The app uses Svelte 5, Vite 8 and TypeScript. Hosting is planned on Vercel for the
+frontend/search function and Cloudflare R2 for versioned city datasets. Neither
+service is deployed yet; development and local tests work without them.
 
 ## Development
 
@@ -41,7 +42,38 @@ output. Complete IndexedDB geometry has size limits and LRU eviction; saved
 local designs are stored separately. Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 
-## Optional browser checks and performance measurements
+## Local tests without deployed services
+
+With Node 24, installed npm dependencies and an existing browser:
+
+```sh
+npm run test:local
+```
+
+This runs static checks, lint, focused unit tests and browser workflows against
+Vite and a localhost fixture provider. It tests the real local `/api/search`
+handler, workers, WebGL, search/loading/cancellation, design controls, sharing,
+IndexedDB, and PNG/SVG downloads. Browser requests to outside origins fail the
+suite. Provider settings and R2 credentials are overridden for the test servers;
+no `.env.local`, deployed services, accounts or browser downloads are required.
+
+Run individual layers or inspect failures:
+
+```sh
+npm run test:local:unit
+npm run test:local:browser
+npm run test:local:browser -- tests/local/exports.spec.ts
+npm exec -- playwright show-report playwright-report/local
+```
+
+On Linux the local suite detects installed Chromium/Chrome and uses Mesa software
+Vulkan when its driver is available. Executable/graphics overrides below also
+apply. Tests own ports `8082` and `8091`, start and stop both servers, and generate
+small/medium/large synthetic fixtures without modifying `dist/`.
+[Test design, coverage and troubleshooting](docs/TESTING.md) explains the suite
+and separates it from optional data-format and deployment verification.
+
+## Optional production browser checks and performance measurements
 
 The browser suite uses mocked providers and covers rendering, customization,
 Unicode labels, PNG/SVG content, cancellation, local caching and R2 integrity.
@@ -53,8 +85,8 @@ npm run test:browser
 npm run build
 ```
 
-`build:test` generates larger local fixtures and a mock data origin. The final
-normal build restores production settings. Select Firefox or WebKit with
+`build:test` generates larger local fixtures and enables the mocked data path.
+The final normal build restores production settings. Select Firefox or WebKit with
 `PLAYWRIGHT_BROWSER=firefox` or `webkit`. An optional
 `PLAYWRIGHT_BROWSER_EXECUTABLE_PATH` selects their installed executable.
 For an installed Chromium with the tested Mesa setup:

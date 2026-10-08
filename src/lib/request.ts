@@ -28,8 +28,8 @@ export async function request(url: string, options: RequestInit & { signal: Abor
       const seconds = retry ? Number(retry) : NaN;
       const wait = Number.isFinite(seconds) ? seconds * 1000 : retry ? Date.parse(retry) - Date.now() : 1000;
       // A long provider cooldown is surfaced instead of retrying earlier than requested.
-      if (wait > 5000) throw new RequestError('The provider is busy. Please retry later.', response.status);
       await response.body?.cancel();
+      if (wait > 5000) throw new RequestError('The provider is busy. Please retry later.', response.status);
       await sleep(Math.max(500, wait || 1000), signal);
       continue;
     }

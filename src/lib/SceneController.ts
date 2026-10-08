@@ -83,7 +83,11 @@ export class SceneController {
     this.renderer.renderFrame();
   }
   fit() { this.view(this.geometry.bounds); }
-  zoom(factor: number) { this.renderer.getCameraController().zoomCenterByScaleFactor(factor); }
+  zoom(factor: number) {
+    const camera = this.renderer.getCameraController();
+    camera.zoomCenterByScaleFactor(1 - 1 / factor, 0, 0);
+    camera.redraw();
+  }
   camera(): Camera {
     const rect = this.canvas.getBoundingClientRect();
     const a = this.renderer.getSceneCoordinate(rect.left, rect.top);

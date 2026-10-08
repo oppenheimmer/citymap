@@ -52,6 +52,15 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm run build:test
       - run: npm exec -- playwright install --with-deps ${{ matrix.browser }}
+      - run: npm run test:local:browser
+      - run: npm run build:test
       - run: npm run test:browser
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: browser-failures-${{ matrix.browser }}
+          path: |
+            test-results
+            playwright-report
+          retention-days: 7
