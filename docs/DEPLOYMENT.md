@@ -148,7 +148,10 @@ Add the exact preview origins you use for testing and any later custom app
 origin. Save the policy. CORS governs browser reads; it neither enables public
 access nor grants upload access. `citymap-search` needs no browser CORS policy.
 If the delivery domain already has cached objects, purge them after changing
-CORS so new headers are returned. This is the dashboard/S3 JSON shape, not
+CORS so new headers are returned. Check that a missing pointer's 404 also carries
+the CORS header (`curl -I -H 'Origin: <app origin>' https://data.example.com/v2/cities/osm-relation-1/latest.json`).
+Without it browsers report a network error; the app still falls back to live roads,
+but each uncached city then costs one extra retry. This is the dashboard/S3 JSON shape, not
 Wrangler's CLI shape. See [R2 CORS setup](https://developers.cloudflare.com/r2/buckets/cors/).
 
 ## 6. Configure delivery caching
@@ -256,7 +259,8 @@ curl --get --data-urlencode 'q=Tokyo, Japan' \
 ```
 
 Expect a JSON array. A 503 suggests missing/invalid private R2 credentials or a
-provider/storage outage; 429 means the shared limiter/provider is busy. Public
+provider/storage outage. Concurrent searches queue for up to 8 seconds behind the
+shared limiter; 429 with `Retry-After: 2` means it stayed busy for that long. Public
 [Nominatim policy](https://operations.osmfoundation.org/policies/nominatim/)
 requires cached, identified requests and at most one provider request per second
 across the app. Submit searches explicitly; keep Preview and Production sharing
@@ -275,9 +279,15 @@ curl -I -H 'Origin: https://citymap.vercel.app' \
 Expect the configured CORS origin, protobuf content type, gzip encoding and
 immutable cache header. Repeated requests should demonstrate cache hits when
 eligible. The app validates decoded hashes, fragment continuity and complete
-counts. Only an absent latest pointer permits live fallback; broken declared
-revisions fail visibly. Reopen a shared design and download a small PNG/SVG to
+counts. Before a revision is selected, an absent, unreachable, slow (8 s) or
+invalid latest pointer falls back to live roads; a selected or pinned revision that
+fails delivery or validation fails visibly instead of mixing sources. Reopen a shared design and download a small PNG/SVG to
 confirm the deployed API, data and export paths.
+
+`api/search.ts` imports server modules with `.ts` extensions, which local Node 24
+and the type checks accept but no Vercel build has exercised yet. After linking the
+project, run `vercel pull` and `vercel build` once locally, or inspect the first
+preview's function logs, before relying on search.
 
 Browser suites are optional downloads: use **GitHub Actions → Checks → Run
 workflow → browser_checks** when a full browser run is wanted. They are not

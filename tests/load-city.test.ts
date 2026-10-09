@@ -14,7 +14,7 @@ const options: WorkerLoad = {
 };
 const bounds = { left: -1, bottom: -1, right: 2, top: 2 };
 const source = { kind: 'live' as const, complete: true, downloadedAt: '2026-10-08T00:00:00.000Z' };
-const chunk = (): WorkerResult => ({ type: 'chunk', positions: new Float32Array([0, 0, 1, 1]).buffer, bounds, index: 0 });
+const chunk = (): WorkerResult => ({ type: 'chunk', positions: new Float32Array([0, 0, 1, 1]).buffer, bounds, origin: [139.7, 35.6], index: 0 });
 const done = (): WorkerResult => ({ type: 'done', source, segmentCount: 1 });
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function gate() {
@@ -76,6 +76,7 @@ test('worker delivery waits for drawing before reporting complete geometry', asy
   assert.deepEqual(h.events, ['progress', 'chunk', 'done']);
   assert.deepEqual([...h.geometries[0].buffers[0]], [0, 0, 1, 1]);
   assert.deepEqual(h.geometries[0].source, source);
+  assert.deepEqual(h.geometries[0].origin, [139.7, 35.6]);
   assert.equal(h.geometries[0].segmentCount, 1);
   assert.equal(h.worker.terminated, 1);
   assert.deepEqual(h.errors, []);
@@ -130,8 +131,8 @@ test('drawing failures terminate the worker and report one recoverable error', a
 });
 
 const invalid: [string, WorkerResult[]][] = [
-  ['empty buffer', [{ type: 'chunk', positions: new ArrayBuffer(0), bounds, index: 0 }]],
-  ['unaligned buffer', [{ type: 'chunk', positions: new Float32Array(3).buffer, bounds, index: 0 }]],
+  ['empty buffer', [{ type: 'chunk', positions: new ArrayBuffer(0), bounds, origin: [0, 0], index: 0 }]],
+  ['unaligned buffer', [{ type: 'chunk', positions: new Float32Array(3).buffer, bounds, origin: [0, 0], index: 0 }]],
   ['no geometry', [done()]],
   ['segment mismatch', [chunk(), { ...done(), type: 'done', source, segmentCount: 2 }]],
   ['incomplete source', [chunk(), { type: 'done', source: { ...source, complete: false }, segmentCount: 1 }]],

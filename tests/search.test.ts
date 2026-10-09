@@ -12,18 +12,44 @@ test('production public search fails closed without shared storage', async () =>
   await assert.rejects(search('Test', new AbortController().signal, { provider, contact, production: true, fetch: async () => { called = true; return response(); } }), error => error instanceof SearchError && error.status === 503);
   assert.equal(called, false);
 });
-test('independent requests share an atomic lease and cached queries bypass the provider', async () => {
-  const store = memoryStore(); let time = 1000, calls = 0;
+function queue() {
+  const store = memoryStore(), clock = { time: 1000, calls: [] as string[], waits: [] as number[] };
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const options = { provider, contact, store, production: true, now: () => time, fetch: (async () => { calls++; await held; return response(); }) as typeof fetch };
+  const options = {
+    provider, contact, store, production: true, now: () => clock.time,
+    // Advance the injected clock instead of sleeping in real time.
+    sleep: async (ms: number) => { clock.waits.push(ms); clock.time += ms; await new Promise(resolve => setImmediate(resolve)); },
+    fetch: (async (url: URL) => { clock.calls.push(url.searchParams.get('q')!); await held; return response(); }) as typeof fetch,
+  };
+  return { store, clock, options, release };
+}
+test('concurrent searches queue behind the shared lease instead of failing', async () => {
+  const { clock, options, release } = queue();
   const first = search('First', new AbortController().signal, options);
-  await new Promise(resolve => setTimeout(resolve, 0));
-  await assert.rejects(search('Second', new AbortController().signal, options), error => error instanceof SearchError && error.status === 429);
-  release(); await first; assert.equal(calls, 1);
-  await search('first', new AbortController().signal, options); assert.equal(calls, 1);
-  await assert.rejects(search('Second', new AbortController().signal, options), error => error instanceof SearchError && error.status === 429);
-  time += 1200; await search('Second', new AbortController().signal, options); assert.equal(calls, 2);
+  await new Promise(resolve => setImmediate(resolve));
+  const second = search('Second', new AbortController().signal, options);
+  for (let i = 0; i < 3; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(clock.calls, ['First']);
+  release(); await first; assert.equal((await second).length, 1);
+  assert.deepEqual(clock.calls, ['First', 'Second']);
+  // Polls are short; the queued request never waits for the 60-second crash-recovery lease.
+  assert.ok(clock.waits.every(ms => ms <= 1100)); assert.ok(clock.time - 1000 < 8000);
+});
+test('an identical queued query reuses the result fetched ahead of it and cached queries bypass the provider', async () => {
+  const { clock, options, release } = queue();
+  const first = search('First', new AbortController().signal, options);
+  await new Promise(resolve => setImmediate(resolve));
+  const same = search('first', new AbortController().signal, options);
+  release(); await first; await same;
+  assert.deepEqual(clock.calls, ['First']);
+  await search('FIRST', new AbortController().signal, options); assert.deepEqual(clock.calls, ['First']);
+});
+test('a stuck lease returns a short retry hint after the bounded queue', async () => {
+  const { store, clock, options } = queue();
+  await store.comparePut('locks/public-nominatim.json', { token: 'crashed', until: clock.time + 60_000, next: 0 });
+  await assert.rejects(search('Stuck', new AbortController().signal, options), error => error instanceof SearchError && error.status === 429 && error.retryAfter === 2);
+  assert.deepEqual(clock.calls, []); assert.ok(clock.time - 1000 <= 8000);
 });
 test('provider rejection releases the lease and respects the aggregate cooldown', async () => {
   const store = memoryStore();

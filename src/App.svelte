@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import MapCanvas from './MapCanvas.svelte';
   import { bbox, boundaryFromNominatim, publicUrl } from './lib/domain.ts';
-  import type { Boundary, Camera, Design, Geometry, LoadProgress, PreparationTimings, Providers, SourceInfo } from './lib/domain.ts';
+  import type { Boundary, Design, GeoView, Geometry, LoadProgress, PreparationTimings, Providers, SourceInfo } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   import { request } from './lib/request.ts';
@@ -52,7 +52,7 @@
     { name: 'Plum', background: '#302a3b', roads: '#e4d8c7', labels: '#fbecd4' },
   ];
 
-  function copy(): Design { return { ...design, label: { ...design.label }, camera: controller?.camera() || design.camera }; }
+  function copy(): Design { return { ...design, label: { ...design.label }, view: controller?.view() || design.view }; }
   function boundaryForShare(): Boundary {
     return { ...selected!, revision: source?.kind === 'r2' ? source.revision : selected?.revision, manifestSha256: source?.kind === 'r2' ? source.manifestSha256 : selected?.manifestSha256 };
   }
@@ -71,7 +71,7 @@
     generation++; mounted = false; ready = false; controller = null; source = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
     if (restore) design = { ...restore, label: { ...restore.label } };
-    else { design.camera = undefined; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
+    else { design.view = undefined; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
     bboxText = boundary.bbox?.join(',') || '';
     options = { boundary, providers, useCache, allowLarge, forceNetwork, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined };
     mounted = true;
@@ -111,7 +111,7 @@
   }
   function failed(message: string, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; ready = false; controller = null; error = message; status = 'Map could not be loaded.'; }
   function large(bytes: number, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; confirmation = bytes; status = 'Confirm this download to continue.'; }
-  function camera(camera: Camera, id: number) { if (id === generation) { design.camera = camera; history(); } }
+  function view(view: GeoView, id: number) { if (id === generation) { design.view = view; history(); } }
   function applyPreset(preset: typeof presets[number]) { design.roadColor = preset.roads; design.backgroundColor = preset.background; design.label.color = preset.labels; }
   function boxLoad() {
     try {
@@ -217,7 +217,7 @@
     </div>
   </aside>
   <section class="map-panel" aria-label="Map preview">
-    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} oncamera={camera} onerror={failed} onlarge={large} onprogress={(value, id) => { if (id === generation) progress = value; }} onready={loaded} />{/key}
+    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} onview={view} onerror={failed} onlarge={large} onprogress={(value, id) => { if (id === generation) progress = value; }} onready={loaded} />{/key}
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>

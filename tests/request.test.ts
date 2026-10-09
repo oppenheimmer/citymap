@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { request, RequestError, sleep } from '../src/lib/request.ts';
+import { responseBytes } from '../src/lib/data/response-body.ts';
 
 test('request preserves method/body/options and never fetches an already cancelled load', async t => {
   let calls = 0; t.mock.method(globalThis, 'fetch', async (_url: string, options: RequestInit) => { calls++; assert.equal(options.method, 'POST'); assert.equal(options.body, 'query'); return new Response('ok'); });
@@ -52,4 +53,11 @@ test('cancellation interrupts backoff and a deadline cancels the active fetch', 
   t.mock.method(globalThis, 'fetch', (_url: string, init: RequestInit) => new Promise((_resolve, reject) => { init.signal!.addEventListener('abort', () => reject(init.signal!.reason), { once: true }); }));
   const keepAlive = setTimeout(() => {}, 100); try { await assert.rejects(request('http://localhost/roads', { signal: new AbortController().signal }, 20), { name: 'TimeoutError' }); } finally { clearTimeout(keepAlive); }
   const cancelled = new AbortController(); const wait = sleep(1000, cancelled.signal); cancelled.abort(new Error('Sleep stopped')); await assert.rejects(wait, /Sleep stopped/);
+});
+test('the deadline bounds response headers, not a body that keeps arriving', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(new ReadableStream<Uint8Array>({
+    async start(controller) { for (let i = 0; i < 4; i++) { await new Promise(resolve => setTimeout(resolve, 15)); controller.enqueue(new Uint8Array([i])); } controller.close(); },
+  })));
+  const response = await request('http://localhost/roads', { signal: new AbortController().signal }, 20);
+  assert.deepEqual([...await responseBytes(response, 16)], [0, 1, 2, 3]);
 });

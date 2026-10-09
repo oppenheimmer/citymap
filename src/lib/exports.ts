@@ -41,11 +41,11 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
   if (format === 'svg') return svg(snapshot, options, signal);
   const canvas = document.createElement('canvas');
   canvas.width = options.width; canvas.height = options.height;
-  const geometry: Geometry = { buffers: [], bounds: snapshot.bounds, segmentCount: 0, source: { kind: 'live', complete: true, downloadedAt: '' } };
-  const design = { ...snapshot.design, backgroundOpacity: options.transparent ? 0 : snapshot.design.backgroundOpacity, camera: snapshot.camera };
+  const geometry: Geometry = { buffers: [], bounds: snapshot.bounds, origin: [0, 0], segmentCount: 0, source: { kind: 'live', complete: true, downloadedAt: '' } };
+  const design = { ...snapshot.design, backgroundOpacity: options.transparent ? 0 : snapshot.design.backgroundOpacity };
   let controller: SceneController | undefined;
   try {
-    controller = new SceneController(canvas, geometry, design, undefined, { width: options.width, height: options.height }, options.width / snapshot.width / snapshot.pixelRatio);
+    controller = new SceneController(canvas, geometry, design, { camera: snapshot.camera, fixedSize: { width: options.width, height: options.height }, lineWidth: options.width / snapshot.width / snapshot.pixelRatio });
     for (const buffer of snapshot.buffers) await controller.appendGeometry(buffer, signal);
     signal?.throwIfAborted();
     controller.render();

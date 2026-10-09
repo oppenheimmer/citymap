@@ -1,13 +1,23 @@
 import { getCity, putCity } from './city-storage.ts';
-import type { Geometry, LoadProgress } from './domain.ts';
+import type { Geometry, LoadProgress, Origin } from './domain.ts';
 import type { WorkerLoad, WorkerResult } from './worker-protocol.ts';
 
 export interface LoadCallbacks {
   progress(progress: LoadProgress): void;
-  chunk(positions: Float32Array, bounds: Geometry['bounds']): Promise<void>;
+  chunk(positions: Float32Array, bounds: Geometry['bounds'], origin: Origin): Promise<void>;
   done(geometry: Geometry): Promise<void>;
   error(message: string): void;
   large(bytes: number): void;
+}
+
+/** Local geometry for this load. A pinned revision may already be saved under the city key. */
+async function cachedCity(options: WorkerLoad): Promise<Geometry | undefined> {
+  const { key, revision, manifestSha256 } = options.boundary;
+  if (!revision) return getCity(key);
+  const pinned = await getCity(`${key}@${revision}`);
+  if (pinned) return pinned;
+  const latest = await getCity(key);
+  return latest?.source.kind === 'r2' && latest.source.revision === revision && latest.source.manifestSha256 === manifestSha256 ? latest : undefined;
 }
 
 export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callbacks: LoadCallbacks): () => void {
@@ -16,6 +26,7 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
   let worker: Worker | undefined;
   const buffers: Float32Array[] = [];
   let bounds: Geometry['bounds'] | undefined;
+  let origin: Origin | undefined;
   const stop = () => {
     disposed = true;
     const current = worker; worker = undefined;
@@ -34,10 +45,10 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
   (async () => {
     if (options.useCache && !options.forceNetwork) {
       callbacks.progress({ stage: 'cache', message: 'Checking saved city geometry…' });
-      const cached = await getCity(cacheKey);
+      const cached = await cachedCity(options);
       if (disposed) return;
       if (cached) {
-        for (const buffer of cached.buffers) { if (disposed) return; await callbacks.chunk(buffer, cached.bounds); }
+        for (const buffer of cached.buffers) { if (disposed) return; await callbacks.chunk(buffer, cached.bounds, cached.origin); }
         if (!disposed) await callbacks.done(cached);
         return;
       }
@@ -53,12 +64,12 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
         else if (message.type === 'chunk') {
           const positions = new Float32Array(message.positions);
           if (positions.length % 4 || !positions.length) throw new Error('Invalid prepared geometry buffer');
-          buffers.push(positions); bounds = message.bounds;
-          await callbacks.chunk(positions, bounds);
+          buffers.push(positions); bounds = message.bounds; origin = message.origin;
+          await callbacks.chunk(positions, bounds, origin);
         } else if (message.type === 'done') {
           worker?.terminate(); worker = undefined;
-          if (!bounds || buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0) !== message.segmentCount || !message.source.complete) throw new Error('City loading finished with incomplete geometry');
-          const geometry: Geometry = { buffers, bounds, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
+          if (!bounds || !origin || buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0) !== message.segmentCount || !message.source.complete) throw new Error('City loading finished with incomplete geometry');
+          const geometry: Geometry = { buffers, bounds, origin, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
           await callbacks.done(geometry);
           if (!disposed && options.useCache) {
             const persist = () => { if (!disposed) void putCity(cacheKey, geometry); };

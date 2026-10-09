@@ -1,10 +1,11 @@
 import type { Boundary, Design, Geometry } from './domain.ts';
 
 const DATABASE = 'citymap-geometry';
-const FORMAT = 1;
+// Format 2 adds the projection origin needed to restore geographic views.
+const FORMAT = 2;
 const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_CITY_BYTES = 32 * 1024 * 1024;
-interface CacheRecord { format: number; geometry: { buffers: ArrayBuffer[]; bounds: Geometry['bounds']; source: Geometry['source']; segmentCount: number } }
+interface CacheRecord { format: number; geometry: { buffers: ArrayBuffer[]; bounds: Geometry['bounds']; origin: Geometry['origin']; source: Geometry['source']; segmentCount: number } }
 interface CacheMeta { key: string; bytes: number; lastUsed: number }
 
 function open(): Promise<IDBDatabase> {
@@ -38,9 +39,10 @@ export async function getCity(key: string): Promise<Geometry | undefined> {
     if (!Array.isArray(g.buffers) || !g.buffers.length || g.buffers.some(buffer => !(buffer instanceof ArrayBuffer) || !buffer.byteLength || buffer.byteLength % 16)) return;
     const count = g.buffers.reduce((sum, buffer) => sum + buffer.byteLength / 16, 0);
     if (count !== g.segmentCount || count * 16 > MAX_CITY_BYTES || !g.bounds || ![g.bounds.left, g.bounds.right, g.bounds.bottom, g.bounds.top].every(Number.isFinite) || g.bounds.left >= g.bounds.right || g.bounds.bottom >= g.bounds.top) return;
+    if (!Array.isArray(g.origin) || g.origin.length !== 2 || !g.origin.every(Number.isFinite) || Math.abs(g.origin[0]) > 180 || Math.abs(g.origin[1]) >= 90) return;
     if (!['fixture','live','legacy','r2'].includes(g.source.kind)) return;
     if (g.source.kind === 'r2' && (!/^[a-f0-9]{64}$/.test(g.source.revision || '') || !/^[a-f0-9]{64}$/.test(g.source.manifestSha256 || ''))) return;
-    return { buffers: g.buffers.map(buffer => new Float32Array(buffer)), bounds: g.bounds, segmentCount: count, source: { ...g.source, local: true } };
+    return { buffers: g.buffers.map(buffer => new Float32Array(buffer)), bounds: g.bounds, origin: [g.origin[0], g.origin[1]], segmentCount: count, source: { ...g.source, local: true } };
   } catch { return; }
   finally { db?.close(); }
 }

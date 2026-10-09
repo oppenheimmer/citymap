@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { test, expect, status, detail, share, stats, control } from '../support/local.ts';
+import { test, expect, status, detail, share, stats, control, cacheKeys } from '../support/local.ts';
 
 const city = '/?q=Monaco&osm_type=relation&osm_id=1124039&auto=1';
 
@@ -9,6 +9,11 @@ test('a real offline-extract city decodes actual gzip delivery, exports every se
   await detail(page,'Data and source'); await expect(page.locator('aside')).toContainText('R2 cache');
   const calls = await stats(request); expect(calls.roads).toHaveLength(0); expect(calls.datasets.filter(key => key.endsWith('.pbf'))).toHaveLength(10);
   const link = await share(page); expect(link.searchParams.get('revision')).toMatch(/^[a-f0-9]{64}$/);
+  // Reopening the pinned link reuses the city saved by the unpinned load, without downloads.
+  await expect.poll(() => cacheKeys(page)).toEqual(['osm-relation-1124039']);
+  const saved = (await stats(request)).datasets.length;
+  await page.goto(link.href); await expect(status(page)).toContainText('Monaco ready');
+  expect((await stats(request)).datasets.slice(saved)).toEqual([]); expect(await cacheKeys(page)).toEqual(['osm-relation-1124039']);
   await page.getByRole('button',{ name:'Export', exact:true }).click();
   const pending = page.waitForEvent('download'); await page.getByRole('button',{ name:'Download SVG', exact:true }).click();
   const file = await pending, bytes = await readFile((await file.path())!);
@@ -22,7 +27,7 @@ test('a real offline-extract city decodes actual gzip delivery, exports every se
   const roadPixels=await page.evaluate(async data=>{const image=await createImageBitmap(new Blob([new Uint8Array(data)],{type:'image/png'}));const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const ctx=canvas.getContext('2d')!;ctx.drawImage(image,0,0);image.close();const pixels=ctx.getImageData(150,100,700,450).data;let dark=0;for(let i=0;i<pixels.length;i+=4)if(pixels[i]<140&&pixels[i+1]<140&&pixels[i+2]<140&&pixels[i+3]>0)dark++;return dark;},[...png]);
   expect(roadPixels).toBeGreaterThan(1000); await testInfo.attach('monaco.png',{body:png,contentType:'image/png'});
   await page.getByRole('button',{ name:'Close', exact:true }).click();
-  await page.getByRole('button',{ name:'Clear city cache', exact:true }).click();
+  await detail(page,'Data and source'); await page.getByRole('button',{ name:'Clear city cache', exact:true }).click();
   const before = (await stats(request)).datasets.length;
   await page.goto(link.href); await expect(status(page)).toContainText('Monaco ready');
   expect((await stats(request)).datasets.slice(before).some(key => key.endsWith('latest.json'))).toBe(false);
@@ -35,4 +40,11 @@ test('corrupt real-city decoded bytes fail visibly without live fallback or expo
   expect((await stats(request)).roads).toHaveLength(0);
   await control(request,{ corruptData:false }); await page.getByRole('button',{ name:'Retry map', exact:true }).click();
   await expect(status(page)).toContainText('Monaco ready');
+});
+
+for (const failure of [503, 'cors'] as const) test(`an unavailable dataset pointer (${failure}) falls back to live roads`, async ({ page, request }) => {
+  await control(request, { pointerFailure: failure }); await page.goto(city);
+  await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect(status(page)).toContainText('Monaco ready');
+  expect((await stats(request)).roads).toHaveLength(1);
+  await detail(page, 'Data and source'); await expect(page.locator('aside')).toContainText('Live OpenStreetMap data');
 });

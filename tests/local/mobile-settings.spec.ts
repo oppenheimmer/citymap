@@ -12,7 +12,7 @@ test('saved settings download preserves the design and its portable restore link
   const settings = JSON.parse((await readFile((await file.path())!)).toString('utf8'));
   expect(settings.format).toBe('citymap-design'); expect(settings.version).toBe(1);
   expect(settings.design.label.text).toBe('Saved 東京 & <Map>'); expect(settings.design.label.size).toBe(48);
-  expect(new URL(settings.link).searchParams.get('camera')).toBe(expected.searchParams.get('camera'));
+  expect(new URL(settings.link).searchParams.get('view')).toBe(expected.searchParams.get('view'));
   await page.goto(settings.link); await expect(status(page)).toContainText('ready');
   await expect(label(page)).toHaveText('Saved 東京 & <Map>'); await expect(page.getByLabel('Road color')).toHaveValue('#e1e7d9');
 });

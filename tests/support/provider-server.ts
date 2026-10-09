@@ -9,6 +9,8 @@ let scenarios: { search: Scenario; roads: Scenario } = { search: {}, roads: {} }
 const realCity = buildDataset(JSON.parse(gunzipSync(await readFile(new URL('../fixtures/real-city/monaco.json.gz', import.meta.url))).toString('utf8')), 2048);
 const dataObjects = new Map(realCity.objects.map(object => [object.key, object]));
 let corruptData = false;
+// Dataset pointer failure: an HTTP status, or a 404 without CORS headers (a browser network error).
+let pointerFailure: number | 'cors' | undefined;
 let searches: SearchCall[] = [], roads: string[] = [], aborted = 0, blocked: string[] = [], datasets: string[] = [];
 const proxy = providerProxy(['http://127.0.0.1:8082', 'http://127.0.0.1:8091'], target => blocked.push(target));
 const server = createServer(async (req, res) => {
@@ -18,11 +20,15 @@ const server = createServer(async (req, res) => {
   try {
     let input = ''; for await (const bytes of req) { input += bytes; if (input.length > 2 * 1024 * 1024) throw new Error('Control input too large'); }
     if (url.pathname === '/health') { res.end('{}'); return; }
-    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; datasets = []; aborted = 0; blocked = []; corruptData = false; res.end('{}'); return; }
-    if (url.pathname === '/__control' && req.method === 'POST') { const next = JSON.parse(input); scenarios = { ...scenarios, ...next }; if (typeof next.corruptData === 'boolean') corruptData = next.corruptData; res.end('{}'); return; }
+    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; datasets = []; aborted = 0; blocked = []; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
+    if (url.pathname === '/__control' && req.method === 'POST') { const next = JSON.parse(input); scenarios = { ...scenarios, ...next }; if (typeof next.corruptData === 'boolean') corruptData = next.corruptData; if ('pointerFailure' in next) pointerFailure = next.pointerFailure ?? undefined; res.end('{}'); return; }
     if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, aborted, blocked, datasets })); return; }
     if (url.pathname.startsWith('/data/')) {
       const key = url.pathname.slice('/data/'.length); datasets.push(key);
+      if (pointerFailure && key.endsWith('/latest.json')) {
+        if (pointerFailure === 'cors') res.removeHeader('Access-Control-Allow-Origin');
+        res.statusCode = pointerFailure === 'cors' ? 404 : pointerFailure; res.end('{}'); return;
+      }
       const object = dataObjects.get(key);
       if (!object) { res.statusCode = 404; res.end('{}'); return; }
       let bytes = object.bytes;

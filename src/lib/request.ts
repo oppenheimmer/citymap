@@ -10,8 +10,18 @@ export function sleep(ms: number, signal: AbortSignal): Promise<void> {
     signal.addEventListener('abort', abort, { once: true });
   });
 }
+/**
+ * `deadline` bounds the wait for response headers, including one retry. Body reads are
+ * bounded by responseBytes' stall timeout instead, so a large download that keeps
+ * arriving is not cut off part-way. Cancelling `options.signal` aborts either phase.
+ */
 export async function request(url: string, options: RequestInit & { signal: AbortSignal }, deadline = 150_000): Promise<Response> {
-  const signal = AbortSignal.any([options.signal, AbortSignal.timeout(deadline)]);
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(new DOMException('The data service did not respond in time. Retry or choose a smaller area.', 'TimeoutError')), deadline);
+  try { return await fetchWithRetry(url, options, AbortSignal.any([options.signal, timeout.signal])); }
+  finally { clearTimeout(timer); }
+}
+async function fetchWithRetry(url: string, options: RequestInit, signal: AbortSignal): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     signal.throwIfAborted();
     let response: Response;

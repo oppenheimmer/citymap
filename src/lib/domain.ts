@@ -13,13 +13,17 @@ export interface Boundary {
   manifestSha256?: string;
 }
 export interface Camera { left: number; right: number; top: number; bottom: number }
+/** Projection centre of a prepared geometry; scene coordinates are only meaningful relative to it. */
+export type Origin = [lon: number, lat: number];
+/** Data-independent view: geographic centre plus projected scene width/height. */
+export interface GeoView { lon: number; lat: number; width: number; height: number }
 export interface Design {
   roadColor: string;
   roadOpacity: number;
   backgroundColor: string;
   backgroundOpacity: number;
   label: { text: string; x: number; y: number; size: number; color: string; opacity: number };
-  camera?: Camera;
+  view?: GeoView;
 }
 export const DEFAULT_DESIGN: Design = {
   roadColor: '#1a1a1a', roadOpacity: 0.8, backgroundColor: '#f7f2e8', backgroundOpacity: 1,
@@ -28,7 +32,7 @@ export const DEFAULT_DESIGN: Design = {
 export interface Providers { cityDataBase: string; legacyCacheBase: string; overpass: string; search: string }
 export interface SourceInfo { kind: 'fixture' | 'r2' | 'legacy' | 'live'; downloadedAt: string; snapshotAt?: string; revision?: string; manifestSha256?: string; complete: boolean; local?: boolean }
 export interface PreparationTimings { downloadMs: number; decodeMs: number; indexMs: number; projectMs: number }
-export interface Geometry { buffers: Float32Array[]; bounds: Camera; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }
+export interface Geometry { buffers: Float32Array[]; bounds: Camera; origin: Origin; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }
 export type LoadStage = 'cache' | 'download' | 'decode' | 'project' | 'draw';
 export interface LoadProgress { stage: LoadStage; message: string; bytes?: number; completedChunks?: number; totalChunks?: number }
 

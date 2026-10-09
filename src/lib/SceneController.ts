@@ -1,14 +1,24 @@
 import { createScene } from 'w-gl';
 import type { Scene } from 'w-gl';
 import { OwnedWireCollection } from './OwnedWireCollection.ts';
-import type { Camera, Design, Geometry } from './domain.ts';
+import type { Camera, Design, GeoView, Geometry } from './domain.ts';
+import { cameraFromView, viewFromCamera } from './view.ts';
 
 export function color(hex: string, alpha = 1) {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) throw new Error('Invalid color');
   return { r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a: alpha };
 }
-export function copyDesign(settings: Design): Design { return { ...settings, label: { ...settings.label }, camera: settings.camera ? { ...settings.camera } : undefined }; }
+export function copyDesign(settings: Design): Design { return { ...settings, label: { ...settings.label }, view: settings.view ? { ...settings.view } : undefined }; }
 export interface SceneSnapshot { buffers: Float32Array[]; bounds: Camera; camera: Camera; design: Design; width: number; height: number; pixelRatio: number }
+export interface SceneOptions {
+  /** Called with the data-independent view after camera and size changes. */
+  onView?: (view: GeoView) => void;
+  /** Fixed-size offscreen rendering, such as PNG export. */
+  fixedSize?: { width: number; height: number };
+  lineWidth?: number;
+  /** Scene camera to show instead of the design's geographic view. */
+  camera?: Camera;
+}
 const UPLOAD_FLOATS = 262_144; // 1 MiB, aligned to complete four-float segments.
 
 export class SceneController {
@@ -23,7 +33,7 @@ export class SceneController {
   private lineWidth: number;
   private frameWaits = new Set<() => void>();
 
-  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, onCamera?: (camera: Camera) => void, fixedSize?: { width: number; height: number }, lineWidth = 1) {
+  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera }: SceneOptions = {}) {
     this.canvas = canvas;
     this.settings = copyDesign(settings);
     this.lineWidth = lineWidth;
@@ -33,8 +43,8 @@ export class SceneController {
     this.geometry.segmentCount = 0;
     for (const buffer of geometry.buffers) this.append(buffer);
     this.applyColors(settings);
-    this.view(settings.camera || geometry.bounds);
-    this.onTransform = onCamera ? () => onCamera(this.camera()) : undefined;
+    this.setCamera(camera || (settings.view ? cameraFromView(settings.view, geometry.origin) : geometry.bounds));
+    this.onTransform = onView ? () => onView(this.view()) : undefined;
     if (this.onTransform) this.renderer.on('transform', this.onTransform);
     // Leave browser zoom shortcuts available while the canvas has focus.
     canvas.addEventListener('wheel', this.browserWheel, { capture: true });
@@ -43,7 +53,7 @@ export class SceneController {
       if (this.disposed || fixedSize) return;
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
       this.renderer.renderFrame();
-      onCamera?.(this.camera());
+      onView?.(this.view());
     });
     if (!fixedSize) this.observer.observe(canvas);
   }
@@ -106,7 +116,7 @@ export class SceneController {
     this.renderer.renderFrame();
   }
 
-  view(camera: Camera) {
+  setCamera(camera: Camera) {
     const { width, height } = this.renderer.getDrawContext();
     const verticalSpan = Math.max(camera.top - camera.bottom, (camera.right - camera.left) / (width / height));
     const cx = (camera.left + camera.right) / 2, cy = (camera.top + camera.bottom) / 2;
@@ -115,7 +125,7 @@ export class SceneController {
     this.renderer.setViewBox({ left: cx, right: cx, top: cy + half, bottom: cy - half });
     this.renderer.renderFrame();
   }
-  fit() { this.view(this.geometry.bounds); }
+  fit() { this.setCamera(this.geometry.bounds); }
   zoom(factor: number) {
     const camera = this.renderer.getCameraController();
     camera.zoomCenterByScaleFactor(1 - 1 / factor, 0, 0);
@@ -127,6 +137,8 @@ export class SceneController {
     const b = this.renderer.getSceneCoordinate(rect.right, rect.bottom);
     return { left: Math.min(a[0], b[0]), right: Math.max(a[0], b[0]), top: Math.max(a[1], b[1]), bottom: Math.min(a[1], b[1]) };
   }
+  /** The current camera as a geographic view that survives different data extents. */
+  view(): GeoView { return viewFromCamera(this.camera(), this.geometry.origin); }
   snapshot(): SceneSnapshot {
     const rect = this.canvas.getBoundingClientRect();
     return { buffers: [...this.geometry.buffers], bounds: { ...this.geometry.bounds }, camera: this.camera(), design: copyDesign(this.settings), width: rect.width, height: rect.height, pixelRatio: this.renderer.getPixelRatio() };

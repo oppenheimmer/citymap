@@ -1,4 +1,6 @@
-import { test, expect, sample, live, detail, label, slider, share, status, cacheKeys, stats } from '../support/local.ts';
+import { readFile } from 'node:fs/promises';
+import type { Page } from '@playwright/test';
+import { test, expect, sample, live, detail, label, slider, share, status, cacheKeys, stats, control } from '../support/local.ts';
 
 test('presets, all colors/opacity and label settings are reflected in DOM and a complete share link', async ({ page }) => {
   await page.goto('/'); await sample(page);
@@ -22,20 +24,35 @@ test('label pointer dragging, fine/coarse arrows and edge clamps affect normaliz
   await label(page).focus(); for (let i = 0; i < 25; i++) await page.keyboard.press('Shift+ArrowLeft'); expect(Number((await share(page)).searchParams.get('labelX'))).toBe(0.05);
 });
 
-test('zoom, pan, fit and resize keep camera links finite and restore the view', async ({ page }) => {
-  await page.goto('/'); await sample(page); const initial = (await share(page)).searchParams.get('camera')!.split(',').map(Number);
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click(); await expect.poll(async () => { const c = (await share(page)).searchParams.get('camera')!.split(',').map(Number); return c[2] - c[0]; }).toBeLessThan(initial[2] - initial[0]); const zoomed = (await share(page)).searchParams.get('camera')!.split(',').map(Number);
+const view = async (page: Page) => (await share(page)).searchParams.get('view')!.split(',').map(Number);
+test('zoom, pan, fit and resize keep view links finite and restore the view', async ({ page }) => {
+  await page.goto('/'); await sample(page); const initial = await view(page);
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click(); await expect.poll(async () => (await view(page))[2]).toBeLessThan(initial[2]); const zoomed = await view(page);
   await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
-  await expect.poll(async () => { const c = (await share(page)).searchParams.get('camera')!.split(',').map(Number); return c[2] - c[0]; }).toBeCloseTo(initial[2] - initial[0], 1);
+  await expect.poll(async () => (await view(page))[2]).toBeCloseTo(initial[2], 1);
   await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
   const map = (await page.locator('canvas').boundingBox())!; await page.mouse.move(map.x + map.width / 2, 250); await page.mouse.down(); await page.mouse.move(map.x + map.width / 2 + 60, 290, { steps: 8 }); await page.mouse.up();
-  expect((await share(page)).searchParams.get('camera')).not.toBe(zoomed.join(','));
-  await page.getByRole('button', { name: 'Fit map', exact: true }).click(); const fitted = (await share(page)).searchParams.get('camera')!.split(',').map(Number); expect(fitted[2] - fitted[0]).toBeCloseTo(initial[2] - initial[0], 1);
+  expect((await view(page)).join(',')).not.toBe(zoomed.join(','));
+  await page.getByRole('button', { name: 'Fit map', exact: true }).click(); expect((await view(page))[2]).toBeCloseTo(initial[2], 1);
   await page.setViewportSize({ width: 1200, height: 800 }); await expect(page.locator('canvas')).toHaveJSProperty('width', 880);
-  const link = await share(page), expected = link.searchParams.get('camera')!.split(',').map(Number);
+  const link = await share(page), expected = link.searchParams.get('view')!.split(',').map(Number);
   expect(expected.every(Number.isFinite)).toBe(true); await page.goto(link.href); await expect(status(page)).toContainText('ready');
-  const restored = (await share(page)).searchParams.get('camera')!.split(',').map(Number);
-  restored.forEach((value, index) => expect(value).toBeCloseTo(expected[index], 1));
+  const restored = await view(page);
+  restored.forEach((value, index) => expect(value).toBeCloseTo(expected[index], index < 2 ? 5 : 1));
+});
+
+test('a shared view reopens the same place after the road data extent changes', async ({ page, request }) => {
+  await page.goto('/'); await live(page, 'Moving extent');
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click(); await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const link = await share(page), expected = link.searchParams.get('view')!.split(',').map(Number);
+  // Live OSM edits can extend a city's road extent, which moves the projection origin.
+  const roads = JSON.parse(await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8'));
+  roads.elements.push({ type: 'node', id: '900001', lon: -122.405, lat: 37.775 }, { type: 'node', id: '900002', lon: -122.398, lat: 37.781 }, { type: 'way', id: '900003', nodes: ['900001', '900002'], tags: { highway: 'primary' } });
+  await control(request, { roads: { body: roads } }); await detail(page, 'Data and source'); await page.getByRole('button', { name: 'Clear city cache' }).click();
+  await page.goto(link.href); await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect(status(page)).toContainText('ready');
+  expect((await stats(request)).roads).toHaveLength(2);
+  const restored = await view(page);
+  restored.forEach((value, index) => expect(value).toBeCloseTo(expected[index], index < 2 ? 5 : 1));
 });
 
 test('saved designs restore settings after reload, can be deleted, and recent cities reopen', async ({ page }) => {

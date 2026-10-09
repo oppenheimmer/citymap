@@ -190,13 +190,15 @@ export function decodeChunk(bytes: Uint8Array): CityRoadChunk {
   return chunk;
 }
 
-export function geometryStats(roads: RoadPolyline[]): GeometryStats {
+/** `pointsOf` lets a caller reuse points it already decoded for the same roads. */
+export function geometryStats(roads: RoadPolyline[], pointsOf: (road: RoadPolyline, index: number) => PointE7[] = roadPoints): GeometryStats {
   assert(roads.length > 0, 'No road geometry');
   let west = Infinity, south = Infinity, east = -Infinity, north = -Infinity, pointCount = 0;
   const ways = new Set<string>();
-  for (const road of roads) {
+  for (let index = 0; index < roads.length; index++) {
+    const road = roads[index];
     ways.add(road.osm_way_id);
-    for (const [lon, lat] of roadPoints(road)) {
+    for (const [lon, lat] of pointsOf(road, index)) {
       west = Math.min(west, lon);
       south = Math.min(south, lat);
       east = Math.max(east, lon);

@@ -14,3 +14,9 @@ test('bounded response restores bytes and JSON exactly, including Unicode', asyn
   assert.deepEqual(await responseJson(new Response(bytes), bytes.length), { label: '東京' });
   await assert.rejects(responseJson(new Response('{'), 4), SyntaxError);
 });
+test('a stalled body fails after the idle bound and cancels the stream', async () => {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(4)); }, cancel() { cancelled = true; } });
+  await assert.rejects(responseBytes(new Response(stream), 64, undefined, 20), { name: 'TimeoutError', message: /stalled/ });
+  assert.equal(cancelled, true);
+});

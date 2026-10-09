@@ -1,5 +1,6 @@
 import { bbox, DEFAULT_DESIGN, id } from './domain.ts';
-import type { Boundary, Camera, Design, OSMType } from './domain.ts';
+import type { Boundary, Design, GeoView, OSMType } from './domain.ts';
+import { MAX_LATITUDE } from './view.ts';
 
 function number(value: string | null, fallback: number, min: number, max: number) {
   if (value === null || !value.trim()) return fallback;
@@ -7,13 +8,14 @@ function number(value: string | null, fallback: number, min: number, max: number
   return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
 }
 function color(value: string | null, fallback: string) { return value && /^#?[0-9a-f]{6}$/i.test(value) ? `#${value.replace('#', '')}` : fallback; }
-export function parseCamera(value: string | null): Camera | undefined {
+/** `view=lon,lat,width,height`: a geographic centre and projected span, independent of the data extent. */
+export function parseView(value: string | null): GeoView | undefined {
   if (!value) return;
   const values = value.split(',').map(Number);
-  if (values.length !== 4 || !values.every(n => Number.isFinite(n) && Math.abs(n) < 1e9)) return;
-  const [left, bottom, right, top] = values;
-  if (left >= right || bottom >= top) return;
-  return { left, bottom, right, top };
+  if (values.length !== 4 || !values.every(Number.isFinite)) return;
+  const [lon, lat, width, height] = values;
+  if (Math.abs(lon) > 180 || Math.abs(lat) > MAX_LATITUDE || !(width > 0 && width < 1e9 && height > 0 && height < 1e9)) return;
+  return { lon, lat, width, height };
 }
 export function parseUrl(search: string): { query: string; boundary?: Boundary; design: Design; cache: boolean; auto: boolean; warning?: string } {
   const p = new URLSearchParams(search);
@@ -23,7 +25,7 @@ export function parseUrl(search: string): { query: string; boundary?: Boundary; 
     roadColor: color(p.get('roads') || p.get('lineColor'), DEFAULT_DESIGN.roadColor), roadOpacity: number(p.get('roadOpacity'), 0.8, 0, 1),
     backgroundColor: color(p.get('background') || p.get('backgroundColor'), DEFAULT_DESIGN.backgroundColor), backgroundOpacity: number(p.get('backgroundOpacity'), 1, 0, 1),
     label: { text: (p.get('label') || '').slice(0, 256), color: color(p.get('labelColor'), label.color), opacity: number(p.get('labelOpacity'), 1, 0, 1), x: number(p.get('labelX'), label.x, 0, 1), y: number(p.get('labelY'), label.y, 0, 1), size: number(p.get('labelSize'), label.size, 10, 128) },
-    camera: parseCamera(p.get('camera')),
+    view: parseView(p.get('view')),
   };
   let boundary: Boundary | undefined, warning: string | undefined;
   if (p.has('v') && p.get('v') !== '2') warning = 'This design link uses an unsupported version. City identifiers can still be loaded.';
@@ -72,6 +74,6 @@ export function shareUrl(origin: string, path: string, boundary: Boundary, desig
   p.set('background', design.backgroundColor.slice(1)); p.set('backgroundOpacity', String(design.backgroundOpacity));
   p.set('label', design.label.text); p.set('labelColor', design.label.color.slice(1)); p.set('labelOpacity', String(design.label.opacity));
   p.set('labelX', String(design.label.x)); p.set('labelY', String(design.label.y)); p.set('labelSize', String(design.label.size));
-  if (design.camera) p.set('camera', [design.camera.left, design.camera.bottom, design.camera.right, design.camera.top].map(n => Number(n.toFixed(3))).join(','));
+  if (design.view) p.set('view', [design.view.lon.toFixed(7), design.view.lat.toFixed(7), design.view.width.toFixed(2), design.view.height.toFixed(2)].map(Number).join(','));
   return url.href;
 }

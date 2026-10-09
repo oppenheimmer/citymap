@@ -1,4 +1,5 @@
 import { responseBytes } from '../src/lib/data/response-body.ts';
+import { sleep } from '../src/lib/request.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { R2, memoryStore, r2Config, r2Store } from './r2.ts';
@@ -10,8 +11,13 @@ export class SearchError extends Error {
   constructor(message: string, status: number, retryAfter?: number) { super(message); this.status = status; this.retryAfter = retryAfter; }
 }
 interface Lock { token: string; until: number; next: number }
-export interface SearchOptions { provider: string; contact: string; apiKey?: string; store?: JSONStore; production?: boolean; fetch?: typeof fetch; now?: () => number }
+export interface SearchOptions { provider: string; contact: string; apiKey?: string; store?: JSONStore; production?: boolean; fetch?: typeof fetch; now?: () => number; sleep?: (ms: number, signal: AbortSignal) => Promise<void> }
 const development = memoryStore();
+const LOCK_KEY = 'locks/public-nominatim.json';
+// The lease expiry only recovers from a crashed holder; holders normally release within seconds.
+const LEASE_MS = 60_000;
+// Queue behind the shared one-request-per-second limit before asking the browser to retry.
+const QUEUE_MS = 8_000, POLL_MS = 250, RETRY_AFTER_SECONDS = 2;
 
 export async function search(query: string, signal: AbortSignal, options: SearchOptions): Promise<unknown[]> {
   // Leave time for lease release inside the 30-second Vercel function budget.
@@ -25,20 +31,38 @@ export async function search(query: string, signal: AbortSignal, options: Search
   const store = options.store || (options.production && isPublic ? undefined : development);
   if (isPublic && !store) throw new SearchError('Search is not configured. Set a managed provider or private R2 search storage.', 503);
   const now = options.now || Date.now;
+  const wait = options.sleep || sleep;
   const cacheKey = `search/v1/${createHash('sha256').update(`${provider.href}\n${q.toLowerCase()}`).digest('hex')}.json`;
-  const cached = await store?.read(cacheKey, signal);
-  const cacheValue = cached?.value as { expires?: number; results?: unknown[] } | undefined;
-  if (cacheValue?.expires && cacheValue.expires > now() && Array.isArray(cacheValue.results)) return cacheValue.results;
-  const lockKey = 'locks/public-nominatim.json';
+  const fresh = (entry: { value: unknown } | undefined) => {
+    const value = entry?.value as { expires?: number; results?: unknown[] } | undefined;
+    return value?.expires && value.expires > now() && Array.isArray(value.results) ? value.results : undefined;
+  };
+  let cached = await store?.read(cacheKey, signal);
+  const hit = fresh(cached);
+  if (hit) return hit;
   let token: string | undefined;
   if (isPublic) {
-    const previous = await store!.read(lockKey, signal);
-    const lock = previous?.value as Lock | undefined;
-    if (lock && (typeof lock.token !== 'string' || !Number.isFinite(lock.until) || !Number.isFinite(lock.next))) throw new SearchError('Search rate storage is invalid.', 503);
-    const wait = Math.max(lock?.until || 0, lock?.next || 0) - now();
-    if (wait > 0) throw new SearchError('Search is busy. Retry shortly.', 429, Math.max(1, Math.ceil(wait / 1000)));
-    token = randomUUID();
-    if (!await store!.comparePut(lockKey, { token, until: now() + 60_000, next: 0 }, previous?.etag, signal)) throw new SearchError('Search is busy. Retry shortly.', 429, 1);
+    const queued = now();
+    for (let waited = false; ; waited = true) {
+      const previous = await store!.read(LOCK_KEY, signal);
+      const lock = previous?.value as Lock | undefined;
+      if (lock && (typeof lock.token !== 'string' || !Number.isFinite(lock.until) || !Number.isFinite(lock.next))) throw new SearchError('Search rate storage is invalid.', 503);
+      const cooldown = Math.max(0, (lock?.next || 0) - now()), leased = Math.max(0, (lock?.until || 0) - now());
+      if (!cooldown && !leased) {
+        if (waited) {
+          // The request this one waited behind may have fetched the same query.
+          cached = await store!.read(cacheKey, signal);
+          const shared = fresh(cached);
+          if (shared) return shared;
+        }
+        const candidate = randomUUID();
+        if (await store!.comparePut(LOCK_KEY, { token: candidate, until: now() + LEASE_MS, next: 0 }, previous?.etag, signal)) { token = candidate; break; }
+      }
+      // Poll a held lease rather than waiting for its crash-recovery expiry.
+      const pause = leased ? Math.min(leased, POLL_MS) : cooldown || POLL_MS;
+      if (now() - queued + pause > QUEUE_MS) throw new SearchError('Search is busy. Retry shortly.', 429, RETRY_AFTER_SECONDS);
+      await wait(pause, signal);
+    }
   }
   try {
     const url = new URL(provider);
@@ -58,8 +82,8 @@ export async function search(query: string, signal: AbortSignal, options: Search
     if (token) {
       try {
         const release = AbortSignal.timeout(3000);
-        const held = await store!.read(lockKey, release);
-        if ((held?.value as Lock | undefined)?.token === token) await store!.comparePut(lockKey, { token: '', until: 0, next: now() + 1100 }, held?.etag, release);
+        const held = await store!.read(LOCK_KEY, release);
+        if ((held?.value as Lock | undefined)?.token === token) await store!.comparePut(LOCK_KEY, { token: '', until: 0, next: now() + 1100 }, held?.etag, release);
       } catch { /* A failed release remains protected by the expiring lease. */ }
     }
   }

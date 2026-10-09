@@ -1,15 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import type { Camera, Design, Geometry, LoadProgress } from './lib/domain.ts';
+  import type { Design, GeoView, Geometry, LoadProgress } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import { loadCity } from './lib/load-city.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
-  let { runId, options, design, onready, onerror, onlarge, onprogress, onlabel, oncamera }: {
+  let { runId, options, design, onready, onerror, onlarge, onprogress, onlabel, onview }: {
     runId: number; options: WorkerLoad & { forceNetwork?: boolean }; design: Design;
     onready: (controller: SceneController, geometry: Geometry, firstFrameMs: number, totalMs: number, runId: number) => void;
     onerror: (message: string, runId: number) => void; onlarge: (bytes: number, runId: number) => void;
     onprogress: (progress: LoadProgress, runId: number) => void;
-    onlabel: (label: Design['label']) => void; oncamera: (camera: Camera, runId: number) => void;
+    onlabel: (label: Design['label']) => void; onview: (view: GeoView, runId: number) => void;
   } = $props();
   let canvas: HTMLCanvasElement;
   let host: HTMLDivElement;
@@ -24,12 +24,12 @@
     const module = import('./lib/SceneController.ts');
     const stop = loadCity(options, {
       progress: progress => { if (!disposed) onprogress(progress, id); },
-      chunk: async (positions, bounds) => {
+      chunk: async (positions, bounds, origin) => {
         const { SceneController } = await module;
         if (disposed) return;
         if (!controller) {
-          const geometry: Geometry = { buffers: [], bounds, segmentCount: 0, source: { kind: 'live', downloadedAt: '', complete: false } };
-          controller = new SceneController(canvas, geometry, design, camera => { if (!disposed) oncamera(camera, id); });
+          const geometry: Geometry = { buffers: [], bounds, origin, segmentCount: 0, source: { kind: 'live', downloadedAt: '', complete: false } };
+          controller = new SceneController(canvas, geometry, design, { onView: view => { if (!disposed) onview(view, id); } });
           drawable = true;
         }
         onprogress({ stage: 'draw', message: 'Drawing road geometry…' }, id);
