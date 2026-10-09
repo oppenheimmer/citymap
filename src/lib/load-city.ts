@@ -1,19 +1,24 @@
 import { getCity, putCity } from './city-storage.ts';
-import type { Geometry, LoadProgress, Origin } from './domain.ts';
+import { covers, ROAD_DETAILS } from './domain.ts';
+import type { Geometry, LoadProgress, Origin, RoadRank } from './domain.ts';
 import type { WorkerLoad, WorkerResult } from './worker-protocol.ts';
 
 export interface LoadCallbacks {
   progress(progress: LoadProgress): void;
-  chunk(positions: Float32Array, bounds: Geometry['bounds'], origin: Origin): Promise<void>;
+  chunk(positions: Float32Array, bounds: Geometry['bounds'], origin: Origin, rank: RoadRank): Promise<void>;
   done(geometry: Geometry): Promise<void>;
   error(message: string): void;
   large(bytes: number): void;
 }
 
-/** Local geometry for this load. A pinned revision may already be saved under the city key. */
+/**
+ * Local geometry for this load, when it includes the requested road detail. A pinned
+ * revision may already be saved under the city key.
+ */
 async function cachedCity(options: WorkerLoad): Promise<Geometry | undefined> {
   const { key, revision, manifestSha256 } = options.boundary;
-  if (!revision) return getCity(key);
+  const usable = (geometry: Geometry | undefined) => geometry && covers(geometry.coverage, options.detail) ? geometry : undefined;
+  if (!revision) return usable(await getCity(key));
   const pinned = await getCity(`${key}@${revision}`);
   if (pinned) return pinned;
   const latest = await getCity(key);
@@ -25,6 +30,7 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
   let disposed = false;
   let worker: Worker | undefined;
   const buffers: Float32Array[] = [];
+  const ranks: RoadRank[] = [];
   let bounds: Geometry['bounds'] | undefined;
   let origin: Origin | undefined;
   const stop = () => {
@@ -48,7 +54,7 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
       const cached = await cachedCity(options);
       if (disposed) return;
       if (cached) {
-        for (const buffer of cached.buffers) { if (disposed) return; await callbacks.chunk(buffer, cached.bounds, cached.origin); }
+        for (const [index, buffer] of cached.buffers.entries()) { if (disposed) return; await callbacks.chunk(buffer, cached.bounds, cached.origin, cached.ranks[index]); }
         if (!disposed) await callbacks.done(cached);
         return;
       }
@@ -63,13 +69,13 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
         if (message.type === 'progress') callbacks.progress(message.progress);
         else if (message.type === 'chunk') {
           const positions = new Float32Array(message.positions);
-          if (positions.length % 4 || !positions.length) throw new Error('Invalid prepared geometry buffer');
-          buffers.push(positions); bounds = message.bounds; origin = message.origin;
-          await callbacks.chunk(positions, bounds, origin);
+          if (positions.length % 4 || !positions.length || ![0, 1, 2].includes(message.rank)) throw new Error('Invalid prepared geometry buffer');
+          buffers.push(positions); ranks.push(message.rank); bounds = message.bounds; origin = message.origin;
+          await callbacks.chunk(positions, bounds, origin, message.rank);
         } else if (message.type === 'done') {
           worker?.terminate(); worker = undefined;
-          if (!bounds || !origin || buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0) !== message.segmentCount || !message.source.complete) throw new Error('City loading finished with incomplete geometry');
-          const geometry: Geometry = { buffers, bounds, origin, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
+          if (!bounds || !origin || !ROAD_DETAILS.includes(message.coverage) || buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0) !== message.segmentCount || !message.source.complete) throw new Error('City loading finished with incomplete geometry');
+          const geometry: Geometry = { buffers, ranks, coverage: message.coverage, bounds, origin, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
           await callbacks.done(geometry);
           if (!disposed && options.useCache) {
             const persist = () => { if (!disposed) void putCity(cacheKey, geometry); };

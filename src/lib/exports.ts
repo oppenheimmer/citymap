@@ -1,6 +1,7 @@
 import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
 import type { Geometry } from './domain.ts';
+import { NORTH_ARROW } from './north-arrow.ts';
 export { download } from './download.ts';
 
 export interface ExportOptions { width: number; height: number; transparent: boolean }
@@ -19,7 +20,7 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
     });
     void result.catch(() => {});
     const scale = options.width / snapshot.width;
-    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, labelSize: snapshot.design.label.size * scale, licenseSize: Math.max(10, 12 * scale), strokeWidth: scale / snapshot.pixelRatio });
+    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, scale, labelSize: snapshot.design.label.size * scale, licenseSize: Math.max(10, 12 * scale), strokeWidth: scale / snapshot.pixelRatio });
     for (const buffer of snapshot.buffers) {
       signal?.throwIfAborted();
       // Bounded copies preserve screen/export geometry ownership and allow UI feedback.
@@ -41,12 +42,12 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
   if (format === 'svg') return svg(snapshot, options, signal);
   const canvas = document.createElement('canvas');
   canvas.width = options.width; canvas.height = options.height;
-  const geometry: Geometry = { buffers: [], bounds: snapshot.bounds, origin: [0, 0], segmentCount: 0, source: { kind: 'live', complete: true, downloadedAt: '' } };
+  const geometry: Geometry = { buffers: [], ranks: [], coverage: 'all', bounds: snapshot.bounds, origin: [0, 0], segmentCount: 0, source: { kind: 'live', complete: true, downloadedAt: '' } };
   const design = { ...snapshot.design, backgroundOpacity: options.transparent ? 0 : snapshot.design.backgroundOpacity };
   let controller: SceneController | undefined;
   try {
     controller = new SceneController(canvas, geometry, design, { camera: snapshot.camera, fixedSize: { width: options.width, height: options.height }, lineWidth: options.width / snapshot.width / snapshot.pixelRatio });
-    for (const buffer of snapshot.buffers) await controller.appendGeometry(buffer, signal);
+    for (const buffer of snapshot.buffers) await controller.appendGeometry(buffer, 0, signal);
     signal?.throwIfAborted();
     controller.render();
     const output = document.createElement('canvas');
@@ -60,6 +61,16 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     context.font = `${label.size * scale}px sans-serif`;
     context.textAlign = 'center'; context.textBaseline = 'middle';
     context.fillText(label.text, label.x * options.width, label.y * options.height);
+    if (snapshot.design.north) {
+      const { width, margin, path, letter } = NORTH_ARROW;
+      context.save();
+      context.translate(options.width - (margin + width) * scale, margin * scale); context.scale(scale, scale);
+      context.fillStyle = `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
+      context.fill(new Path2D(path));
+      context.font = `bold ${letter.size}px sans-serif`; context.textAlign = 'center'; context.textBaseline = 'middle';
+      context.fillText('N', letter.x, letter.y);
+      context.restore();
+    }
     context.font = `${Math.max(10, 12 * scale)}px sans-serif`; context.textAlign = 'right';
     context.strokeStyle = '#ffffff'; context.lineWidth = Math.max(10, 12 * scale) / 6;
     context.strokeText('© OpenStreetMap contributors', options.width * 0.97, options.height * 0.97);

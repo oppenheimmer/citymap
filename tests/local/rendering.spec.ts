@@ -51,13 +51,26 @@ const release = (page: Page) => page.evaluate(() => {
   p.holding = false; const callback = p.held; p.held = undefined; callback?.(performance.now());
 });
 
+// The large sample has 32,768 primary (major) and 229,376 residential (street) segments,
+// delivered as one buffer per road rank with major roads first.
 test('large maps upload bounded views once and draw every segment across progressive frames', async ({ page }) => {
   await installProbe(page); await page.goto('/'); await sample(page, 'Large');
   const p = await probe(page), uploads = p.uploads.filter(upload => !upload.offscreen);
-  expect(uploads.map(upload => upload.bytes)).toEqual([1_048_576, 1_048_576, 1_048_576, 1_048_576]);
-  expect(uploads.map(upload => upload.offset)).toEqual([0, 1_048_576, 2_097_152, 3_145_728]);
-  expect(p.frames).toEqual(expect.arrayContaining([65_536, 131_072, 196_608, 262_144]));
+  expect(uploads.map(upload => upload.bytes)).toEqual([524_288, 1_048_576, 1_048_576, 1_048_576, 524_288]);
+  expect(uploads.map(upload => upload.offset)).toEqual([0, 0, 1_048_576, 2_097_152, 3_145_728]);
+  expect(p.frames).toEqual(expect.arrayContaining([32_768, 98_304, 163_840, 229_376, 262_144]));
   expect(Math.max(...p.frames)).toBe(262_144);
+});
+
+test('hidden road classes cost no uploads until shown, then upload once', async ({ page }) => {
+  await installProbe(page); await page.goto('/?detail=major'); await sample(page, 'Large');
+  const visible = async () => (await probe(page)).uploads.filter(upload => !upload.offscreen).map(upload => upload.bytes);
+  expect(await visible()).toEqual([524_288]);
+  await page.getByLabel('Roads shown').selectOption('streets');
+  await expect.poll(visible).toEqual([524_288, 1_048_576, 1_048_576, 1_048_576, 524_288]);
+  await page.getByLabel('Roads shown').selectOption('major'); await page.getByLabel('Roads shown').selectOption('all');
+  await expect.poll(async () => Math.max(...(await probe(page)).frames)).toBe(262_144);
+  expect(await visible()).toHaveLength(5);
 });
 
 test('cancelling during a held map upload stops later batches and switching recovers', async ({ page }) => {
@@ -68,7 +81,7 @@ test('cancelling during a held map upload stops later batches and switching reco
   await page.getByRole('button', { name: 'Cancel load', exact: true }).click(); await expect(status(page)).toContainText('cancelled');
   await expect.poll(async () => (await probe(page)).liveContexts).toBe(0);
   await release(page); await sample(page);
-  expect((await probe(page)).uploads.map(upload => upload.bytes)).toEqual([1_048_576, 8192]);
+  expect((await probe(page)).uploads.map(upload => upload.bytes)).toEqual([524_288, 1024, 7168]);
   await expect.poll(async () => (await probe(page)).liveContexts).toBe(1);
 });
 
@@ -86,6 +99,6 @@ test('PNG uploads are bounded, cancellation releases its context and a complete 
   await page.getByRole('button', { name: 'Export', exact: true }).click();
   const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PNG', exact: true }).click(); await pending;
   const uploads = (await probe(page)).uploads.filter(upload => upload.offscreen);
-  expect(uploads).toHaveLength(5); expect(uploads.every(upload => upload.bytes === 1_048_576)).toBe(true);
+  expect(uploads.map(upload => upload.bytes)).toEqual([524_288, 524_288, 1_048_576, 1_048_576, 1_048_576, 524_288]);
   await expect.poll(async () => (await probe(page)).liveContexts).toBe(1); expect(downloads).toHaveLength(1);
 });

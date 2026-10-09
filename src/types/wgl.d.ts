@@ -25,6 +25,7 @@ declare module 'w-gl' {
     capacity: number;
     width: number;
     isDirtyBuffer: boolean;
+    draw(gl: WebGLRenderingContext, drawContext: unknown): void;
     dispose(): void;
   }
   export function createScene(canvas: HTMLCanvasElement, options?: { devicePixelRatio?: number; allowRotation?: boolean; allowPinchRotation?: boolean; size?: { width: number; height: number }; wglContextOptions?: WebGLContextAttributes }): Scene;

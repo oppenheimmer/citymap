@@ -35,7 +35,7 @@ async function run(t: TestContext, load: Partial<WorkerLoad>, route: Route) {
   t.mock.method(globalThis, 'fetch', async (url: string) => { requests.push(url); return route(url); });
   // A fresh module instance per run, as each load uses a new worker.
   await import(`../src/workers/roads.worker.ts?run=${Math.random()}`);
-  scope.onmessage!({ data: { boundary: { key: metadata.city_key, name: 'Test', kind: 'city', areaId: '3600000077' }, providers: { cityDataBase: base, legacyCacheBase: '', overpass, search: '' }, useCache: true, allowLarge: true, ...load } });
+  scope.onmessage!({ data: { boundary: { key: metadata.city_key, name: 'Test', kind: 'city', areaId: '3600000077' }, providers: { cityDataBase: base, legacyCacheBase: '', overpass, search: '' }, useCache: true, allowLarge: true, detail: 'streets', ...load } });
   await finished;
   return { messages, requests };
 }
@@ -51,7 +51,9 @@ test('antimeridian datasets project with the wrapped extent and one origin', asy
   assert.ok(dataset.manifest.bounds[2] - dataset.manifest.bounds[0] > 180);
   const { messages } = await run(t, {}, r2);
   const chunks = messages.filter(message => message.type === 'chunk');
-  assert.deepEqual(chunks.map(chunk => chunk.index), dataset.manifest.chunks.map(chunk => chunk.index));
+  // Each dataset chunk arrives as one message per road rank, major roads first.
+  assert.deepEqual([...new Set(chunks.map(chunk => chunk.index))], dataset.manifest.chunks.map(chunk => chunk.index));
+  for (const index of new Set(chunks.map(chunk => chunk.index))) { const ranks = chunks.filter(chunk => chunk.index === index).map(chunk => chunk.rank); assert.deepEqual(ranks, [...ranks].sort()); }
   assert.equal(new Set(chunks.map(chunk => JSON.stringify(chunk.origin))).size, 1);
   assert.ok(Math.abs(Math.abs(chunks[0].origin[0]) - 180) < 1e-9);
   // 0.2 degrees of longitude is about 22 km in scene units, plus padding.
@@ -63,7 +65,7 @@ test('antimeridian datasets project with the wrapped extent and one origin', asy
   }
   const done = messages.at(-1)!;
   assert.equal(done.type, 'done');
-  if (done.type === 'done') { assert.equal(done.source.kind, 'r2'); assert.equal(done.segmentCount, dataset.manifest.segment_count); }
+  if (done.type === 'done') { assert.equal(done.source.kind, 'r2'); assert.equal(done.segmentCount, dataset.manifest.segment_count); assert.equal(done.coverage, 'all'); }
 });
 
 test('chunk downloads overlap within a bounded window and stay in manifest order', async t => {
@@ -88,7 +90,7 @@ for (const [name, failure] of [
   assert.ok(requests.includes(overpass));
   const done = messages.at(-1)!;
   assert.equal(done.type, 'done');
-  if (done.type === 'done') assert.equal(done.source.kind, 'live');
+  if (done.type === 'done') { assert.equal(done.source.kind, 'live'); assert.equal(done.coverage, 'streets'); }
 });
 
 test('a selected revision that later fails does not fall back to live roads', async t => {

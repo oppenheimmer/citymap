@@ -1,6 +1,6 @@
 import { geoMercator } from 'd3-geo';
-import { id } from './domain.ts';
-import type { Camera, Origin } from './domain.ts';
+import { id, roadRank } from './domain.ts';
+import type { Camera, Origin, RoadRank } from './domain.ts';
 import type { PointE7, RoadPolyline } from './data/city-types.ts';
 import { roadPoints } from './data/city-cache.ts';
 import { SCALE, wrapLongitude } from './view.ts';
@@ -37,12 +37,16 @@ export function pointBounds(points: Iterable<readonly [number, number]>): GeoBou
   return wrappedEast - wrappedWest < east - west ? [wrappedWest, south, wrappedEast, north] : [west, south, east, north];
 }
 
-export function osmGeometry(value: unknown): { positions: Float32Array; bounds: Camera; origin: Origin; segments: number; indexMs: number; projectMs: number } {
+/** Segments of one road rank, so detail levels can be shown or hidden without re-projecting. */
+export interface RankedPositions { rank: RoadRank; positions: Float32Array }
+
+export function osmGeometry(value: unknown): { parts: RankedPositions[]; bounds: Camera; origin: Origin; segments: number; indexMs: number; projectMs: number } {
   const started = performance.now();
   if (!value || typeof value !== 'object' || !Array.isArray((value as { elements?: unknown }).elements)) throw new Error('The road service returned an invalid response');
   const elements = (value as { elements: unknown[] }).elements;
   const nodes = new Map<string, [number, number]>();
-  const ways = new Map<string, string[]>();
+  const ways = new Map<string, { refs: string[]; rank: RoadRank }>();
+  const rankSegments = [0, 0, 0];
   let west = Infinity, east = -Infinity, south = Infinity, north = -Infinity;
   let wrappedWest = Infinity, wrappedEast = -Infinity;
   let segments = 0;
@@ -62,8 +66,9 @@ export function osmGeometry(value: unknown): { positions: Float32Array; bounds: 
       const wayId = id(e.id);
       if (!Array.isArray(e.nodes) || e.nodes.length < 2 || ways.has(wayId)) throw new Error('Invalid or duplicate road way');
       const refs = e.nodes.map(id);
-      ways.set(wayId, refs);
-      segments += refs.length - 1;
+      const rank = roadRank((e.tags as Record<string, unknown> | undefined)?.highway);
+      ways.set(wayId, { refs, rank });
+      segments += refs.length - 1; rankSegments[rank] += refs.length - 1;
       if (segments > MAX_SEGMENTS) throw new Error('This map exceeds the geometry limit. Choose a smaller area.');
     }
   }
@@ -72,8 +77,8 @@ export function osmGeometry(value: unknown): { positions: Float32Array; bounds: 
   if (wrappedEast - wrappedWest < east - west) { west = wrappedWest; east = wrappedEast; }
   const projection = projector([west, south, east, north]);
   const points = new Map<string, [number, number]>();
-  const positions = new Float32Array(segments * 4);
-  let offset = 0;
+  const parts = rankSegments.map(count => new Float32Array(count * 4));
+  const offsets = [0, 0, 0];
   const point = (nodeId: string) => {
     const existing = points.get(nodeId);
     if (existing) return existing;
@@ -83,23 +88,28 @@ export function osmGeometry(value: unknown): { positions: Float32Array; bounds: 
     points.set(nodeId, projected);
     return projected;
   };
-  for (const refs of ways.values()) {
-    let previous = point(refs[0]);
+  for (const { refs, rank } of ways.values()) {
+    const positions = parts[rank];
+    let previous = point(refs[0]), offset = offsets[rank];
     for (let i = 1; i < refs.length; i++) {
       const next = point(refs[i]);
       positions[offset++] = previous[0]; positions[offset++] = previous[1]; positions[offset++] = next[0]; positions[offset++] = next[1];
       previous = next;
     }
+    offsets[rank] = offset;
   }
-  return { positions, bounds: projection.bounds, origin: projection.origin, segments, indexMs: indexed - started, projectMs: performance.now() - indexed };
+  const ranked = parts.flatMap((positions, rank) => positions.length ? [{ rank: rank as RoadRank, positions }] : []);
+  return { parts: ranked, bounds: projection.bounds, origin: projection.origin, segments, indexMs: indexed - started, projectMs: performance.now() - indexed };
 }
 
-export function polylineGeometry(roads: RoadPolyline[], project: (lon: number, lat: number) => [number, number], pointsOf: (road: RoadPolyline, index: number) => PointE7[] = roadPoints): Float32Array {
-  const count = roads.reduce((sum, road) => sum + road.coordinate_deltas_e7.length / 2, 0);
+/** Projects the roads accepted by `include` (all by default) into segment positions. */
+export function polylineGeometry(roads: RoadPolyline[], project: (lon: number, lat: number) => [number, number], pointsOf: (road: RoadPolyline, index: number) => PointE7[] = roadPoints, include: (road: RoadPolyline) => boolean = () => true): Float32Array {
+  const count = roads.reduce((sum, road) => include(road) ? sum + road.coordinate_deltas_e7.length / 2 : sum, 0);
   if (count > MAX_SEGMENTS) throw new Error('This map exceeds the geometry limit');
   const positions = new Float32Array(count * 4);
   let offset = 0;
   for (let index = 0; index < roads.length; index++) {
+    if (!include(roads[index])) continue;
     const points = pointsOf(roads[index], index);
     let previous = project(points[0][0] / 1e7, points[0][1] / 1e7);
     for (let i = 1; i < points.length; i++) {

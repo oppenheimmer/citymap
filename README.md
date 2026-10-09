@@ -42,6 +42,9 @@ output. Map and PNG geometry uploads use 1 MiB batches with cancellation between
 frames. Complete IndexedDB geometry has size limits and LRU eviction; saved
 local designs are stored separately and export as JSON with a restore link.
 On phones, controls use a collapsible sheet with accessible cancellation.
+Maps default to street-level road detail; footpaths, sidewalks and service ways
+are optional, and live loads download only the classes shown. A north arrow is
+drawn on the map and in exports.
 Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 

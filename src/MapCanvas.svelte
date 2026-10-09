@@ -3,6 +3,7 @@
   import type { Design, GeoView, Geometry, LoadProgress } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import { loadCity } from './lib/load-city.ts';
+  import { NORTH_ARROW } from './lib/north-arrow.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   let { runId, options, design, onready, onerror, onlarge, onprogress, onlabel, onview }: {
     runId: number; options: WorkerLoad & { forceNetwork?: boolean }; design: Design;
@@ -24,16 +25,16 @@
     const module = import('./lib/SceneController.ts');
     const stop = loadCity(options, {
       progress: progress => { if (!disposed) onprogress(progress, id); },
-      chunk: async (positions, bounds, origin) => {
+      chunk: async (positions, bounds, origin, rank) => {
         const { SceneController } = await module;
         if (disposed) return;
         if (!controller) {
-          const geometry: Geometry = { buffers: [], bounds, origin, segmentCount: 0, source: { kind: 'live', downloadedAt: '', complete: false } };
+          const geometry: Geometry = { buffers: [], ranks: [], coverage: options.detail, bounds, origin, segmentCount: 0, source: { kind: 'live', downloadedAt: '', complete: false } };
           controller = new SceneController(canvas, geometry, design, { onView: view => { if (!disposed) onview(view, id); } });
           drawable = true;
         }
         onprogress({ stage: 'draw', message: 'Drawing road geometry…' }, id);
-        const frameAt = await controller.appendGeometry(positions);
+        const frameAt = await controller.appendGeometry(positions, rank);
         if (!firstFrameMs && frameAt !== undefined) firstFrameMs = frameAt - started;
       },
       done: async geometry => {
@@ -69,6 +70,9 @@
   {#if drawable}
     <button class="map-label" style:left={`${design.label.x * 100}%`} style:top={`${design.label.y * 100}%`} style:color={design.label.color} style:opacity={design.label.opacity} style:font-size={`${design.label.size}px`} aria-label="Move map label with arrow keys or drag"
       onpointerdown={event => { dragging = true; event.currentTarget.setPointerCapture(event.pointerId); }} onpointermove={move} onpointerup={() => { dragging = false; }} onpointercancel={() => { dragging = false; }} onkeydown={key}>{design.label.text}</button>
+    {#if design.north}
+      <svg class="north-arrow" viewBox={`0 0 ${NORTH_ARROW.width} ${NORTH_ARROW.height}`} width={NORTH_ARROW.width} height={NORTH_ARROW.height} style:top={`${NORTH_ARROW.margin}px`} style:right={`${NORTH_ARROW.margin}px`} style:color={design.label.color} role="img" aria-label="North arrow"><text x={NORTH_ARROW.letter.x} y={NORTH_ARROW.letter.y} font-size={NORTH_ARROW.letter.size}>N</text><path d={NORTH_ARROW.path} /></svg>
+    {/if}
     <a class="attribution" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors</a>
   {/if}
 </div>
@@ -77,6 +81,8 @@
   canvas { display: block; width: 100%; height: 100%; touch-action: none; }
   .map-label { position: absolute; display: flex; align-items: center; justify-content: center; transform: translate(-50%, -50%); border: 1px solid transparent; padding: 0; background: transparent; font-family: sans-serif; font-weight: normal; touch-action: none; cursor: move; white-space: nowrap; }
   .map-label:focus-visible { border-color: currentColor; }
+  .north-arrow { position: absolute; fill: currentColor; pointer-events: none; }
+  .north-arrow text { font-family: sans-serif; font-weight: bold; text-anchor: middle; dominant-baseline: middle; }
   .attribution { position: absolute; right: 3%; top: 97%; transform: translateY(-50%); font: 12px sans-serif; color: #303030; white-space: nowrap; text-shadow: 1px 1px #fff, -1px 1px #fff, 1px -1px #fff, -1px -1px #fff; }
   @media (max-width: 750px) { .map-label { min-width: 44px; min-height: 44px; } }
 </style>

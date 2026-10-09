@@ -17,22 +17,45 @@ export interface Camera { left: number; right: number; top: number; bottom: numb
 export type Origin = [lon: number, lat: number];
 /** Data-independent view: geographic centre plus projected scene width/height. */
 export interface GeoView { lon: number; lat: number; width: number; height: number }
+/**
+ * How many road classes a map shows. Each level includes the previous one; `all`
+ * adds footways/sidewalks, paths, steps, service and parking ways, tracks and the rest.
+ */
+export type RoadDetail = 'major' | 'streets' | 'all';
+export const ROAD_DETAILS: readonly RoadDetail[] = ['major', 'streets', 'all'];
+/** Road rank 0 is shown at every detail level, 1 from `streets`, 2 only at `all`. */
+export type RoadRank = 0 | 1 | 2;
+const MAJOR_ROADS = '(motorway|trunk|primary|secondary|tertiary)(_link)?';
+const STREETS = 'unclassified|residential|living_street|pedestrian|road|busway';
+const MAJOR_PATTERN = new RegExp(`^${MAJOR_ROADS}$`), STREET_PATTERN = new RegExp(`^(${STREETS})$`);
+/** Untagged legacy-cache roads have no class and are always shown. */
+export function roadRank(highway: unknown): RoadRank {
+  if (typeof highway !== 'string') return 0;
+  return MAJOR_PATTERN.test(highway) ? 0 : STREET_PATTERN.test(highway) ? 1 : 2;
+}
+export const detailRank = (detail: RoadDetail): RoadRank => ROAD_DETAILS.indexOf(detail) as RoadRank;
+/** Whether geometry downloaded at `coverage` contains every road shown at `detail`. */
+export const covers = (coverage: RoadDetail, detail: RoadDetail) => detailRank(coverage) >= detailRank(detail);
 export interface Design {
   roadColor: string;
   roadOpacity: number;
   backgroundColor: string;
   backgroundOpacity: number;
   label: { text: string; x: number; y: number; size: number; color: string; opacity: number };
+  detail: RoadDetail;
+  north: boolean;
   view?: GeoView;
 }
 export const DEFAULT_DESIGN: Design = {
   roadColor: '#1a1a1a', roadOpacity: 0.8, backgroundColor: '#f7f2e8', backgroundOpacity: 1,
   label: { text: '', x: 0.75, y: 0.83, size: 28, color: '#161616', opacity: 1 },
+  detail: 'streets', north: true,
 };
 export interface Providers { cityDataBase: string; legacyCacheBase: string; overpass: string; search: string }
 export interface SourceInfo { kind: 'fixture' | 'r2' | 'legacy' | 'live'; downloadedAt: string; snapshotAt?: string; revision?: string; manifestSha256?: string; complete: boolean; local?: boolean }
 export interface PreparationTimings { downloadMs: number; decodeMs: number; indexMs: number; projectMs: number }
-export interface Geometry { buffers: Float32Array[]; bounds: Camera; origin: Origin; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }
+/** `ranks` parallels `buffers`; `coverage` is the most detailed level the geometry contains. */
+export interface Geometry { buffers: Float32Array[]; ranks: RoadRank[]; coverage: RoadDetail; bounds: Camera; origin: Origin; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }
 export type LoadStage = 'cache' | 'download' | 'decode' | 'project' | 'draw';
 export interface LoadProgress { stage: LoadStage; message: string; bytes?: number; completedChunks?: number; totalChunks?: number }
 
@@ -62,12 +85,14 @@ export function boundaryFromNominatim(value: unknown): Boundary {
   return { key: `osm-${osmType}-${osmId}`, name: row.display_name.slice(0, 1024), kind: typeof row.type === 'string' ? row.type : osmType, osmId, osmType, areaId, bbox: box };
 }
 
-export function overpassQuery(boundary: Boundary): string {
+/** Live queries download only the road classes shown at `detail`. */
+export function overpassQuery(boundary: Boundary, detail: RoadDetail = 'all'): string {
+  const way = detail === 'all' ? 'way["highway"]' : `way["highway"~"^(${MAJOR_ROADS}${detail === 'streets' ? `|${STREETS}` : ''})$"]`;
   let selection: string;
-  if (boundary.areaId) selection = `area(${id(boundary.areaId)})->.city;way["highway"](area.city);`;
+  if (boundary.areaId) selection = `area(${id(boundary.areaId)})->.city;${way}(area.city);`;
   else if (boundary.bbox) {
     const [s, w, n, e] = bbox(boundary.bbox);
-    selection = w < e ? `way["highway"](${s},${w},${n},${e});` : `(way["highway"](${s},${w},${n},180);way["highway"](${s},-180,${n},${e}););`;
+    selection = w < e ? `${way}(${s},${w},${n},${e});` : `(${way}(${s},${w},${n},180);${way}(${s},-180,${n},${e}););`;
   } else throw new Error('No city area or bounding box was supplied');
   return `[out:json][timeout:120][maxsize:268435456];${selection}out body;>;out skel qt;`;
 }

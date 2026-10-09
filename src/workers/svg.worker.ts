@@ -1,7 +1,8 @@
 import type { Camera, Design } from '../lib/domain.ts';
+import { NORTH_ARROW } from '../lib/north-arrow.ts';
 
 type Request =
-  | { type: 'start'; width: number; height: number; camera: Camera; design: Design; labelSize: number; licenseSize: number; strokeWidth: number; transparent: boolean }
+  | { type: 'start'; width: number; height: number; camera: Camera; design: Design; scale: number; labelSize: number; licenseSize: number; strokeWidth: number; transparent: boolean }
   | { type: 'geometry'; positions: ArrayBuffer }
   | { type: 'finish' };
 const scope = self as unknown as { onmessage: (event: MessageEvent<Request>) => void; postMessage: (value: { blob?: Blob; error?: string }) => void };
@@ -46,8 +47,10 @@ scope.onmessage = event => {
       }
       if (paths) parts.push(`<path d="${paths}"/>`);
     } else {
-      const label = setup.design.label;
-      parts.push(`</g><text x="${n(label.x * setup.width)}" y="${n(label.y * setup.height)}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.labelSize}" fill="${label.color}" fill-opacity="${label.opacity}">${escape(label.text)}</text><a xlink:href="https://www.openstreetmap.org/copyright"><text x="${n(setup.width * 0.97)}" y="${n(setup.height * 0.97)}" text-anchor="end" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.licenseSize}" fill="#303030" stroke="#ffffff" stroke-width="${setup.licenseSize / 6}" paint-order="stroke fill">© OpenStreetMap contributors</text></a></svg>`);
+      const label = setup.design.label, arrow = NORTH_ARROW;
+      parts.push('</g>');
+      if (setup.design.north) parts.push(`<g transform="translate(${n(setup.width - (arrow.margin + arrow.width) * setup.scale)} ${n(arrow.margin * setup.scale)}) scale(${n(setup.scale)})" fill="${label.color}"><path d="${arrow.path}"/><text x="${arrow.letter.x}" y="${arrow.letter.y}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-weight="bold" font-size="${arrow.letter.size}">N</text></g>`);
+      parts.push(`<text x="${n(label.x * setup.width)}" y="${n(label.y * setup.height)}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.labelSize}" fill="${label.color}" fill-opacity="${label.opacity}">${escape(label.text)}</text><a xlink:href="https://www.openstreetmap.org/copyright"><text x="${n(setup.width * 0.97)}" y="${n(setup.height * 0.97)}" text-anchor="end" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.licenseSize}" fill="#303030" stroke="#ffffff" stroke-width="${setup.licenseSize / 6}" paint-order="stroke fill">© OpenStreetMap contributors</text></a></svg>`);
       scope.postMessage({ blob: new Blob(parts, { type: 'image/svg+xml' }) });
     }
   } catch (error) { scope.postMessage({ error: error instanceof Error ? error.message : 'SVG export failed' }); }

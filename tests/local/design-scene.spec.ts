@@ -55,6 +55,36 @@ test('a shared view reopens the same place after the road data extent changes', 
   restored.forEach((value, index) => expect(value).toBeCloseTo(expected[index], index < 2 ? 5 : 1));
 });
 
+test('live loads download only the road detail shown and fetch more only when needed', async ({ page, request }) => {
+  await page.goto('/'); await live(page, 'Detail city');
+  const roads = async () => (await stats(request)).roads;
+  expect(await roads()).toHaveLength(1); expect((await roads())[0]).toContain('highway"~'); expect((await roads())[0]).not.toContain('footway');
+  await page.getByLabel('Roads shown').selectOption('all');
+  await expect.poll(async () => (await roads()).length).toBe(2); await expect(status(page)).toContainText('ready');
+  expect((await roads())[1]).toContain('way["highway"](area');
+  await page.getByLabel('Roads shown').selectOption('streets'); await page.getByLabel('Roads shown').selectOption('major');
+  await expect(status(page)).toContainText('ready'); expect(await roads()).toHaveLength(2);
+  expect((await share(page)).searchParams.get('detail')).toBe('major');
+});
+
+test('the north arrow shows by default, appears in PNG and SVG exports and can be turned off', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const arrow = page.getByRole('img', { name: 'North arrow' }); await expect(arrow).toBeVisible();
+  const exported = async () => {
+    await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByLabel('Width in pixels').fill('800'); await page.getByLabel('Height in pixels').fill('600');
+    const files: Buffer[] = [];
+    for (const format of ['SVG', 'PNG']) { const pending = page.waitForEvent('download'); await page.getByRole('button', { name: `Download ${format}`, exact: true }).click(); files.push(await readFile((await (await pending).path())!)); }
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    // Count dark pixels in the top-right corner, where the arrow sits clear of the roads.
+    const dark = await page.evaluate(async data => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); const pixels = ctx.getImageData(680, 0, 120, 120).data; let count = 0; for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 1] < 100 && pixels[i + 2] < 100) count++; return count; }, [...files[1]]);
+    return { svg: files[0].toString('utf8'), dark };
+  };
+  const shown = await exported(); expect(shown.svg).toContain('>N</text>'); expect(shown.dark).toBeGreaterThan(50);
+  await page.getByLabel('Show north arrow').uncheck(); await expect(arrow).toHaveCount(0);
+  expect((await share(page)).searchParams.get('north')).toBe('0');
+  const hidden = await exported(); expect(hidden.svg).not.toContain('>N</text>'); expect(hidden.dark).toBe(0);
+});
+
 test('saved designs restore settings after reload, can be deleted, and recent cities reopen', async ({ page }) => {
   await page.goto('/'); await sample(page); await page.getByLabel('Label text').fill('Saved 東京'); await page.getByRole('button', { name: 'Night', exact: true }).click(); await page.getByRole('button', { name: 'Save design', exact: true }).click();
   await page.goto('/'); await detail(page, 'Saved designs'); await page.getByRole('button', { name: 'Saved 東京', exact: true }).click(); await expect(status(page)).toContainText('ready'); await expect(page.getByLabel('Road color')).toHaveValue('#e1e7d9');

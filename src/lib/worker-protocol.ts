@@ -1,4 +1,4 @@
-import type { Boundary, Camera, LoadProgress, Origin, PreparationTimings, Providers, SourceInfo } from './domain.ts';
+import type { Boundary, Camera, LoadProgress, Origin, PreparationTimings, Providers, RoadDetail, RoadRank, SourceInfo } from './domain.ts';
 export interface WorkerLoad {
   boundary: Boundary;
   providers: Providers;
@@ -6,12 +6,14 @@ export interface WorkerLoad {
   useCache: boolean;
   allowLarge: boolean;
   forceNetwork?: boolean;
+  /** Live downloads fetch only these road classes; cached datasets contain every class. */
+  detail: RoadDetail;
 }
 export type WorkerCommand = WorkerLoad | { type: 'cancel' };
 export type WorkerResult =
   | { type: 'cancelled' }
   | { type: 'progress'; progress: LoadProgress }
-  | { type: 'chunk'; positions: ArrayBuffer; bounds: Camera; origin: Origin; index: number }
-  | { type: 'done'; source: SourceInfo; segmentCount: number; preparation?: PreparationTimings }
+  | { type: 'chunk'; positions: ArrayBuffer; bounds: Camera; origin: Origin; index: number; rank: RoadRank }
+  | { type: 'done'; source: SourceInfo; segmentCount: number; coverage: RoadDetail; preparation?: PreparationTimings }
   | { type: 'large'; bytes: number }
   | { type: 'error'; message: string };

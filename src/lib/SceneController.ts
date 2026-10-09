@@ -1,7 +1,8 @@
 import { createScene } from 'w-gl';
 import type { Scene } from 'w-gl';
 import { OwnedWireCollection } from './OwnedWireCollection.ts';
-import type { Camera, Design, GeoView, Geometry } from './domain.ts';
+import { detailRank } from './domain.ts';
+import type { Camera, Design, GeoView, Geometry, RoadRank } from './domain.ts';
 import { cameraFromView, viewFromCamera } from './view.ts';
 
 export function color(hex: string, alpha = 1) {
@@ -37,11 +38,11 @@ export class SceneController {
     this.canvas = canvas;
     this.settings = copyDesign(settings);
     this.lineWidth = lineWidth;
-    this.geometry = { ...geometry, buffers: [] };
+    this.geometry = { ...geometry, buffers: [], ranks: [] };
     if (!canvas.getContext('webgl', { alpha: true, antialias: true })) throw new Error('WebGL unavailable. Try a browser with hardware acceleration enabled.');
     this.renderer = createScene(canvas, { devicePixelRatio: fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, 2), allowRotation: false, allowPinchRotation: false, size: fixedSize });
     this.geometry.segmentCount = 0;
-    for (const buffer of geometry.buffers) this.append(buffer);
+    geometry.buffers.forEach((buffer, index) => this.append(buffer, geometry.ranks[index] ?? 0));
     this.applyColors(settings);
     this.setCamera(camera || (settings.view ? cameraFromView(settings.view, geometry.origin) : geometry.bounds));
     this.onTransform = onView ? () => onView(this.view()) : undefined;
@@ -61,24 +62,31 @@ export class SceneController {
   private browserWheel = (event: WheelEvent) => { if (event.ctrlKey || event.metaKey) event.stopImmediatePropagation(); };
   private browserKeys = (event: KeyboardEvent) => { if ((event.ctrlKey || event.metaKey) && ['+', '=', '-', '0'].includes(event.key)) event.stopImmediatePropagation(); };
 
-  append(positions: Float32Array) {
+  private hidden(rank: RoadRank) { return rank > detailRank(this.settings.detail); }
+
+  append(positions: Float32Array, rank: RoadRank = 0) {
     if (this.disposed || !positions.length || positions.length % 4) throw new Error('Invalid geometry');
-    const collection = new OwnedWireCollection(positions, this.lineWidth);
+    const collection = new OwnedWireCollection(positions, this.lineWidth, rank);
     collection.color = color(this.settings.roadColor, this.settings.roadOpacity);
+    collection.hidden = this.hidden(rank);
     this.collections.push(collection);
     this.geometry.buffers.push(positions);
+    this.geometry.ranks.push(rank);
     this.geometry.segmentCount += positions.length / 4;
     this.renderer.appendChild(collection);
     this.renderer.renderFrame();
   }
 
-  async appendGeometry(positions: Float32Array, signal?: AbortSignal): Promise<number | undefined> {
+  async appendGeometry(positions: Float32Array, rank: RoadRank = 0, signal?: AbortSignal): Promise<number | undefined> {
     if (!positions.length || positions.length % 4) throw new Error('Invalid geometry');
     let firstFrameAt: number | undefined;
+    const hidden = this.hidden(rank);
     for (let offset = 0; offset < positions.length; offset += UPLOAD_FLOATS) {
       signal?.throwIfAborted();
       if (this.disposed) return firstFrameAt;
-      this.append(positions.subarray(offset, offset + UPLOAD_FLOATS));
+      this.append(positions.subarray(offset, offset + UPLOAD_FLOATS), rank);
+      // Hidden road classes upload only when shown, so they cost no frames now.
+      if (hidden) continue;
       // Draw this batch before yielding, rather than accumulating one large upload.
       this.render();
       await this.nextFrame(signal);
@@ -105,8 +113,13 @@ export class SceneController {
 
   setSettings(settings: Design) {
     const changed = settings.roadColor !== this.settings.roadColor || settings.roadOpacity !== this.settings.roadOpacity || settings.backgroundColor !== this.settings.backgroundColor || settings.backgroundOpacity !== this.settings.backgroundOpacity;
+    const detailChanged = settings.detail !== this.settings.detail;
     this.settings = copyDesign(settings);
     if (changed) this.applyColors(settings);
+    if (detailChanged) {
+      for (const collection of this.collections) collection.hidden = this.hidden(collection.rank);
+      this.renderer.renderFrame();
+    }
   }
   private applyColors(settings: Design) {
     const lineColor = color(settings.roadColor, settings.roadOpacity);
@@ -141,7 +154,8 @@ export class SceneController {
   view(): GeoView { return viewFromCamera(this.camera(), this.geometry.origin); }
   snapshot(): SceneSnapshot {
     const rect = this.canvas.getBoundingClientRect();
-    return { buffers: [...this.geometry.buffers], bounds: { ...this.geometry.bounds }, camera: this.camera(), design: copyDesign(this.settings), width: rect.width, height: rect.height, pixelRatio: this.renderer.getPixelRatio() };
+    // Exports contain only the road classes currently shown.
+    return { buffers: this.geometry.buffers.filter((_buffer, index) => !this.hidden(this.geometry.ranks[index])), bounds: { ...this.geometry.bounds }, camera: this.camera(), design: copyDesign(this.settings), width: rect.width, height: rect.height, pixelRatio: this.renderer.getPixelRatio() };
   }
   render() { this.renderer.renderFrame(true); }
 

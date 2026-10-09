@@ -38,7 +38,7 @@ test('render, pan/zoom, colors, Unicode labels and PNG/SVG downloads', async ({ 
   const svg = await readFile((await (await svgDownload).path())!, 'utf8');
   expect(svg).toContain('東京 &amp; &lt;City&gt;'); expect(svg).toContain('OpenStreetMap contributors'); expect(svg).toContain('<path');
   expect(svg).not.toMatch(/undefined|NaN|Infinity/);
-  expect((svg.match(/M[-0-9]/g) || []).length).toBe(512);
+  expect((svg.match(/M[-0-9.]+,/g) || []).length).toBe(512);
   expect(await page.evaluate(source => new DOMParser().parseFromString(source, 'image/svg+xml').querySelector('parsererror')?.textContent, svg)).toBeUndefined();
   const pngDownload = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download PNG' }).click();

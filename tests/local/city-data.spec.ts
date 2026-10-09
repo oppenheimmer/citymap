@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises';
+import type { Page } from '@playwright/test';
 import { test, expect, status, detail, share, stats, control, cacheKeys } from '../support/local.ts';
 
 const city = '/?q=Monaco&osm_type=relation&osm_id=1124039&auto=1';
 
 test('a real offline-extract city decodes actual gzip delivery, exports every segment and pins its revision', async ({ page, request }, testInfo) => {
-  await page.goto(city); await expect(status(page)).toContainText('Monaco ready');
+  await page.goto(`${city}&detail=all`); await expect(status(page)).toContainText('Monaco ready');
   await detail(page,'Load timings'); await expect(page.locator('aside')).toContainText('15,369 segments');
   await detail(page,'Data and source'); await expect(page.locator('aside')).toContainText('R2 cache');
   const calls = await stats(request); expect(calls.roads).toHaveLength(0); expect(calls.datasets.filter(key => key.endsWith('.pbf'))).toHaveLength(10);
@@ -17,7 +18,7 @@ test('a real offline-extract city decodes actual gzip delivery, exports every se
   await page.getByRole('button',{ name:'Export', exact:true }).click();
   const pending = page.waitForEvent('download'); await page.getByRole('button',{ name:'Download SVG', exact:true }).click();
   const file = await pending, bytes = await readFile((await file.path())!);
-  expect((bytes.toString('utf8').match(/M[-0-9]/g) || []).length).toBe(15369);
+  expect((bytes.toString('utf8').match(/M[-0-9.]+,/g) || []).length).toBe(15369);
   expect(bytes.toString('utf8')).toContain('OpenStreetMap contributors');
   await testInfo.attach('monaco.svg',{ body:bytes, contentType:'image/svg+xml' });
   await page.getByLabel('Width in pixels').fill('1024'); await page.getByLabel('Height in pixels').fill('768');
@@ -47,4 +48,21 @@ for (const failure of [503, 'cors'] as const) test(`an unavailable dataset point
   await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect(status(page)).toContainText('Monaco ready');
   expect((await stats(request)).roads).toHaveLength(1);
   await detail(page, 'Data and source'); await expect(page.locator('aside')).toContainText('Live OpenStreetMap data');
+});
+
+async function svgSegments(page: Page) {
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
+  const xml = (await readFile((await (await pending).path())!)).toString('utf8');
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  return (xml.match(/M[-0-9.]+,/g) || []).length;
+}
+test('road detail switches instantly for a cached city and limits exports to the classes shown', async ({ page, request }) => {
+  await page.goto(city); await expect(status(page)).toContainText('Monaco ready');
+  const requests = (await stats(request)).datasets.length;
+  expect(await svgSegments(page)).toBe(5383);
+  await page.getByLabel('Roads shown').selectOption('all'); expect(await svgSegments(page)).toBe(15369);
+  await page.getByLabel('Roads shown').selectOption('major'); expect(await svgSegments(page)).toBe(2741);
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+  expect((await stats(request)).datasets).toHaveLength(requests); expect((await stats(request)).roads).toHaveLength(0);
 });

@@ -11,11 +11,12 @@ const options: WorkerLoad = {
   providers: { search: 'http://localhost/search', overpass: 'http://localhost/roads', cityDataBase: '', legacyCacheBase: '' },
   useCache: false,
   allowLarge: true,
+  detail: 'streets',
 };
 const bounds = { left: -1, bottom: -1, right: 2, top: 2 };
 const source = { kind: 'live' as const, complete: true, downloadedAt: '2026-10-08T00:00:00.000Z' };
-const chunk = (): WorkerResult => ({ type: 'chunk', positions: new Float32Array([0, 0, 1, 1]).buffer, bounds, origin: [139.7, 35.6], index: 0 });
-const done = (): WorkerResult => ({ type: 'done', source, segmentCount: 1 });
+const chunk = (): WorkerResult => ({ type: 'chunk', positions: new Float32Array([0, 0, 1, 1]).buffer, bounds, origin: [139.7, 35.6], index: 0, rank: 1 });
+const done = (): WorkerResult => ({ type: 'done', source, segmentCount: 1, coverage: 'streets' });
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function gate() {
   let resolve!: () => void;
@@ -77,6 +78,7 @@ test('worker delivery waits for drawing before reporting complete geometry', asy
   assert.deepEqual([...h.geometries[0].buffers[0]], [0, 0, 1, 1]);
   assert.deepEqual(h.geometries[0].source, source);
   assert.deepEqual(h.geometries[0].origin, [139.7, 35.6]);
+  assert.deepEqual(h.geometries[0].ranks, [1]); assert.equal(h.geometries[0].coverage, 'streets');
   assert.equal(h.geometries[0].segmentCount, 1);
   assert.equal(h.worker.terminated, 1);
   assert.deepEqual(h.errors, []);
@@ -84,7 +86,7 @@ test('worker delivery waits for drawing before reporting complete geometry', asy
 
 test('worker preparation timings reach the completed geometry without changing buffer ownership', async t => {
   const h=harness(t),preparation={downloadMs:10,decodeMs:2,indexMs:3,projectMs:4};
-  h.worker.emit(chunk());h.worker.emit({type:'done',source,segmentCount:1,preparation});await flush();
+  h.worker.emit(chunk());h.worker.emit({type:'done',source,segmentCount:1,coverage:'streets',preparation});await flush();
   assert.deepEqual(h.geometries[0].preparation,preparation);
   assert.equal(h.geometries[0].buffers[0].byteLength,16);
 });
@@ -131,11 +133,13 @@ test('drawing failures terminate the worker and report one recoverable error', a
 });
 
 const invalid: [string, WorkerResult[]][] = [
-  ['empty buffer', [{ type: 'chunk', positions: new ArrayBuffer(0), bounds, origin: [0, 0], index: 0 }]],
-  ['unaligned buffer', [{ type: 'chunk', positions: new Float32Array(3).buffer, bounds, origin: [0, 0], index: 0 }]],
+  ['empty buffer', [{ type: 'chunk', positions: new ArrayBuffer(0), bounds, origin: [0, 0], index: 0, rank: 0 }]],
+  ['unaligned buffer', [{ type: 'chunk', positions: new Float32Array(3).buffer, bounds, origin: [0, 0], index: 0, rank: 0 }]],
+  ['unknown road rank', [{ type: 'chunk', positions: new Float32Array(4).buffer, bounds, origin: [0, 0], index: 0, rank: 3 as 0 }]],
+  ['unknown coverage', [chunk(), { ...done(), type: 'done', source, segmentCount: 1, coverage: 'some' as 'all' }]],
   ['no geometry', [done()]],
-  ['segment mismatch', [chunk(), { ...done(), type: 'done', source, segmentCount: 2 }]],
-  ['incomplete source', [chunk(), { type: 'done', source: { ...source, complete: false }, segmentCount: 1 }]],
+  ['segment mismatch', [chunk(), { ...done(), type: 'done', source, segmentCount: 2, coverage: 'streets' }]],
+  ['incomplete source', [chunk(), { type: 'done', source: { ...source, complete: false }, segmentCount: 1, coverage: 'streets' }]],
 ];
 for (const [name, messages] of invalid) test(`worker ${name} cannot produce an exportable city`, async t => {
   const h = harness(t);

@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import MapCanvas from './MapCanvas.svelte';
-  import { bbox, boundaryFromNominatim, publicUrl } from './lib/domain.ts';
-  import type { Boundary, Design, GeoView, Geometry, LoadProgress, PreparationTimings, Providers, SourceInfo } from './lib/domain.ts';
+  import { bbox, boundaryFromNominatim, covers, publicUrl } from './lib/domain.ts';
+  import type { Boundary, Design, GeoView, Geometry, LoadProgress, PreparationTimings, Providers, RoadDetail, SourceInfo } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   import { request } from './lib/request.ts';
@@ -26,6 +26,8 @@
   let searching = $state(false), loading = $state(false), ready = $state(false), mounted = $state(false);
   let generation = $state(0);
   let source = $state.raw<SourceInfo | null>(null);
+  // The most detailed road level the current map's geometry contains.
+  let coverage = $state<RoadDetail | null>(null);
   let progress = $state.raw<LoadProgress | null>(null);
   let options = $state.raw<(WorkerLoad & { forceNetwork?: boolean }) | null>(null);
   let confirmation = $state<number | null>(null);
@@ -62,18 +64,18 @@
     if (!ready || !selected) return;
     historyTimer = setTimeout(() => { window.history.replaceState(null, '', url()); }, 250);
   }
-  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity]; history(); });
+  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.detail, design.north]; history(); });
   function cancel() {
     generation++; mounted = false; loading = false; ready = false; controller = null;
     confirmation = null; progress = null; status = 'Load cancelled.';
   }
   function choose(boundary: Boundary, allowLarge = true, forceNetwork = false, restore?: Design) {
-    generation++; mounted = false; ready = false; controller = null; source = null; metrics = null; error = ''; confirmation = null;
+    generation++; mounted = false; ready = false; controller = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
     if (restore) design = { ...restore, label: { ...restore.label } };
     else { design.view = undefined; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
     bboxText = boundary.bbox?.join(',') || '';
-    options = { boundary, providers, useCache, allowLarge, forceNetwork, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined };
+    options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined };
     mounted = true;
   }
   function sample(size: 'small' | 'medium' | 'large') { choose({ key: `fixture-${size}`, fixture: size, name: `${size[0].toUpperCase()}${size.slice(1)} synthetic grid`, kind: 'synthetic' }); }
@@ -104,7 +106,7 @@
   function editQuery() { searchAbort?.abort(); searchRun++; searching = false; }
   function loaded(scene: SceneController, geometry: Geometry, first: number, total: number, id: number) {
     if (id !== generation) return;
-    controller = scene; ready = true; loading = false; source = geometry.source; confirmation = null;
+    controller = scene; ready = true; loading = false; source = geometry.source; coverage = geometry.coverage; confirmation = null;
     metrics = { first, total, segments: geometry.segmentCount, preparation: geometry.preparation };
     status = `${selected!.name} ready.`;
     remember(selected!); recent = recents(); history();
@@ -112,6 +114,12 @@
   function failed(message: string, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; ready = false; controller = null; error = message; status = 'Map could not be loaded.'; }
   function large(bytes: number, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; confirmation = bytes; status = 'Confirm this download to continue.'; }
   function view(view: GeoView, id: number) { if (id === generation) { design.view = view; history(); } }
+  function setDetail(level: RoadDetail) {
+    design.detail = level;
+    // Live geometry holds only the classes it was downloaded with; fetch more when needed.
+    // Otherwise the map shows or hides the loaded classes without downloading.
+    if (selected && mounted && !(ready && coverage && covers(coverage, level))) choose(selected, true, false, copy());
+  }
   function applyPreset(preset: typeof presets[number]) { design.roadColor = preset.roads; design.backgroundColor = preset.background; design.label.color = preset.labels; }
   function boxLoad() {
     try {
@@ -200,9 +208,10 @@
     {#if selected}
       <fieldset disabled={!ready}><legend>Map controls</legend><div class="buttons"><button onclick={() => controller?.zoom(1.25)} aria-label="Zoom in">+</button><button onclick={() => controller?.zoom(0.8)} aria-label="Zoom out">−</button><button onclick={() => controller?.fit()}>Fit map</button><button onclick={openExport}>Export</button></div></fieldset>
       <details open><summary>Customize</summary>
+        <fieldset><legend>Road detail</legend><label for="detail">Roads shown</label><select id="detail" value={design.detail} onchange={event => setDetail(event.currentTarget.value as RoadDetail)}><option value="major">Major roads</option><option value="streets">Streets</option><option value="all">All ways, including footpaths and service roads</option></select><p class="hint">Footpaths, sidewalks and service ways can make dense cities solid black.</p></fieldset>
         <fieldset><legend>Presets</legend><div class="buttons">{#each presets as preset (preset.name)}<button onclick={() => applyPreset(preset)}>{preset.name}</button>{/each}</div></fieldset>
         <fieldset><legend>Colors</legend><label>Road color <input type="color" bind:value={design.roadColor}></label><label for="road-opacity">Road opacity</label><input id="road-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.roadOpacity}><label>Background color <input type="color" bind:value={design.backgroundColor}></label><label for="background-opacity">Background opacity</label><input id="background-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.backgroundOpacity}></fieldset>
-        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><label for="label-opacity">Label opacity</label><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity}><label for="size">Label size</label><input id="size" type="range" min="10" max="128" bind:value={design.label.size}><p class="hint">Drag the map label or focus it and use arrow keys.</p></fieldset>
+        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><label for="label-opacity">Label opacity</label><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity}><label for="size">Label size</label><input id="size" type="range" min="10" max="128" bind:value={design.label.size}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><p class="hint">Drag the map label or focus it and use arrow keys.</p></fieldset>
       </details>
       <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button></div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
       <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose({ ...selected!, revision: undefined, manifestSha256: undefined }, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
@@ -232,7 +241,8 @@ header p, .hint, footer { color: #626d60; font-size: 13px; line-height: 1.5; }
 label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 6px; }
 input:not([type=color]):not([type=range]) { width: 100%; border: 1px solid #bcc5b7; border-radius: 6px; padding: 10px; background: #fff; }
 input[type=color] { width: 44px; height: 30px; margin-left: 8px; padding: 0; vertical-align: middle; }
-input[type=range] { width: 100%; }
+input[type=range], select { width: 100%; }
+select { border: 1px solid #bcc5b7; border-radius: 6px; padding: 9px; background: #fff; font: inherit; }
 .results { display: grid; gap: 6px; margin-top: 10px; }
 .results button { text-align: left; }
 .results small { display: block; color: #657461; margin-top: 5px; }
