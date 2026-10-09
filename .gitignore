@@ -5,6 +5,7 @@ npm-debug.log*
 # Editor directories and files
 .idea
 .vscode
+.kilo
 *.suo
 *.ntvs*
 *.njsproj
@@ -15,6 +16,5 @@ npm-debug.log*
 .env*
 !.env.example
 /public/fixtures/
-
 /test-results/
 /playwright-report/
