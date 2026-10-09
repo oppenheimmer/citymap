@@ -1,12 +1,12 @@
 # Set up Citymap on Cloudflare R2 and Vercel
 
-This guide connects the R2 dataset bucket **`citymap`** to the Vercel project
+This guide connects the R2 dataset bucket **`citymap-data`** to the Vercel project
 **`citymaps`**. It uses the selected public Nominatim search service, backed by a
 second, private R2 bucket named **`citymap-search`**.
 
 | Resource | Purpose | Access |
 | --- | --- | --- |
-| R2 `citymap` | Versioned road chunks, manifests and discovery catalogs | Public reads through a delivery domain; publisher-only writes |
+| R2 `citymap-data` | Versioned road chunks, manifests and discovery catalogs | Public reads through a delivery domain; publisher-only writes |
 | R2 `citymap-search` | Shared search results and application-wide rate limiter | Private; Vercel search function reads/writes |
 | Vercel `citymaps` | Svelte frontend and `/api/search` | App users |
 
@@ -19,9 +19,9 @@ examples, `https://citymaps.vercel.app` is an app-URL placeholder and
 
 1. Open the Cloudflare dashboard and select the account that will own the data.
 2. Open **R2 Object Storage → Overview**. Complete R2 activation if prompted.
-3. Select **Create bucket**, enter **`citymap`**, and use the **Standard** storage
+3. Select **Create bucket**, enter **`citymap-data`**, and use the **Standard** storage
    class for these frequently read datasets. Select a suitable location or use
-   automatic placement, then create the bucket. If `citymap` already exists,
+   automatic placement, then create the bucket. If `citymap-data` already exists,
    use it without deleting or replacing its contents.
 4. Create **`citymap-search`** in the same account. Keep both its public development
    URL and custom-domain access disabled.
@@ -30,7 +30,7 @@ examples, `https://citymaps.vercel.app` is an app-URL placeholder and
    requests, not as the browser's public data URL.
 
 The private search bucket is needed because enabling public delivery on
-`citymap` exposes its objects. A `search/` prefix in that public bucket would
+`citymap-data` exposes its objects. A `search/` prefix in that public bucket would
 not make search state private. Bucket creation and default private access are
 covered by [Cloudflare's bucket documentation](https://developers.cloudflare.com/r2/buckets/create-buckets/).
 
@@ -43,7 +43,7 @@ bucket:
 | Suggested token name | Bucket scope | Where to store it |
 | --- | --- | --- |
 | `citymap-search-vercel` | `citymap-search` only | Vercel server environment; optional local development environment |
-| `citymap-data-publisher` | `citymap` only | Local/batch publisher environment |
+| `citymap-data-publisher` | `citymap-data` only | Local/batch publisher environment |
 
 Record each token's **Access Key ID** and **Secret Access Key** when it is created.
 The code uses this S3 credential pair, not the dashboard API-token string.
@@ -54,17 +54,17 @@ The Vercel search function needs only the `citymap-search` credential. It does
 not upload city datasets. Keep publisher credentials out of Vercel and all
 credentials out of `VITE_*` variables. Only public delivery URLs belong there.
 
-## 3. Give `citymap` a public delivery domain
+## 3. Give `citymap-data` a public delivery domain
 
 For production, use a domain managed in the same Cloudflare account:
 
-1. Open **R2 → citymap → Settings → Custom Domains → Add**.
+1. Open **R2 → citymap-data → Settings → Custom Domains → Add**.
 2. Enter a subdomain such as `data.example.com`, review the DNS record, and select
    **Connect Domain**. Wait for the status to become **Active**.
 3. The browser data base URL is now `https://data.example.com`, without the bucket
    name or `/v2` appended. The loader appends versioned object keys itself.
 
-If you do not yet have a domain, `citymap`'s public `r2.dev` URL can be enabled
+If you do not yet have a domain, `citymap-data`'s public `r2.dev` URL can be enabled
 for development. Replace it with a custom domain before production; `r2.dev`
 is rate-limited and does not provide the custom-domain caching features.
 [Cloudflare public delivery and domain setup](https://developers.cloudflare.com/r2/buckets/public-buckets/)
@@ -130,7 +130,7 @@ compiled into the app. See [Vercel environment variables](https://vercel.com/doc
 
 ## 5. Allow the app to read the dataset bucket
 
-Once the app URL is known, open **R2 → citymap → Settings → CORS Policy → Add CORS
+Once the app URL is known, open **R2 → citymap-data → Settings → CORS Policy → Add CORS
 policy → JSON**. Paste [r2-cors.example.json](../deployment/r2-cors.example.json),
 replacing `https://citymaps.vercel.app` with the actual app origin:
 
@@ -183,7 +183,7 @@ explicit while preserving the publisher's different lifetimes:
 describe the origin-header options. A blanket long TTL would make latest/catalog
 updates stale. Retain immutable revisions so pinned design links keep working.
 
-## 7. Publish a real city to `citymap`
+## 7. Publish a real city to `citymap-data`
 
 The public bucket stores generated city objects, not raw OSM extracts.
 [The city-data guide](CITY_DATA.md) defines the complete-way input contract.
@@ -206,7 +206,7 @@ credential pair:
 R2_ACCOUNT_ID=<your-account-id>
 R2_ACCESS_KEY_ID=<publisher-access-key-id>
 R2_SECRET_ACCESS_KEY=<publisher-secret-access-key>
-R2_DATA_BUCKET=citymap
+R2_DATA_BUCKET=citymap-data
 ```
 
 First review the offline upload plan:
