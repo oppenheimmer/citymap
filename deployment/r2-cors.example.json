@@ -1,7 +1,7 @@
 [
   {
     "AllowedOrigins": [
-      "https://citymaps.vercel.app",
+      "https://citymap.vercel.app",
       "http://localhost:8080"
     ],
     "AllowedMethods": [

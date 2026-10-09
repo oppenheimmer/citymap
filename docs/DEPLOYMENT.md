@@ -1,18 +1,18 @@
 # Set up Citymap on Cloudflare R2 and Vercel
 
 This guide connects the R2 dataset bucket **`citymap-data`** to the Vercel project
-**`citymaps`**. It uses the selected public Nominatim search service, backed by a
+**`citymap`**. It uses the selected public Nominatim search service, backed by a
 second, private R2 bucket named **`citymap-search`**.
 
 | Resource | Purpose | Access |
 | --- | --- | --- |
 | R2 `citymap-data` | Versioned road chunks, manifests and discovery catalogs | Public reads through a delivery domain; publisher-only writes |
 | R2 `citymap-search` | Shared search results and application-wide rate limiter | Private; Vercel search function reads/writes |
-| Vercel `citymaps` | Svelte frontend and `/api/search` | App users |
+| Vercel `citymap` | Svelte frontend and `/api/search` | App users |
 
 Use your actual assigned app hostname throughout. A Vercel project named
-`citymaps` does not guarantee that `citymaps.vercel.app` is available. In the
-examples, `https://citymaps.vercel.app` is an app-URL placeholder and
+`citymap` does not guarantee that `citymap.vercel.app` is available. In the
+examples, `https://citymap.vercel.app` is an app-URL placeholder and
 `https://data.example.com` is a delivery-domain placeholder.
 
 ## 1. Create the R2 buckets
@@ -73,15 +73,15 @@ describes both options. Leave `citymap-search` private.
 An empty dataset bucket is valid during setup. Until a city has been published,
 the frontend can fall back to live Overpass roads.
 
-## 4. Connect the Vercel project `citymaps`
+## 4. Connect the Vercel project `citymap`
 
-In the existing `citymaps` project, open **Settings → Git** and connect this
+In the existing `citymap` project, open **Settings → Git** and connect this
 GitHub repository (or, for a new project, select **Add New → Project** and import
 it). Then check **Settings → Build and Deployment** and **Settings → General**:
 
 | Project setting | Value |
 | --- | --- |
-| Project name | `citymaps` |
+| Project name | `citymap` |
 | Root directory | Repository root (`./`) |
 | Framework preset | **Vite** |
 | Install command | `npm ci` |
@@ -132,12 +132,12 @@ compiled into the app. See [Vercel environment variables](https://vercel.com/doc
 
 Once the app URL is known, open **R2 → citymap-data → Settings → CORS Policy → Add CORS
 policy → JSON**. Paste [r2-cors.example.json](../deployment/r2-cors.example.json),
-replacing `https://citymaps.vercel.app` with the actual app origin:
+replacing `https://citymap.vercel.app` with the actual app origin:
 
 ```json
 [
   {
-    "AllowedOrigins": ["https://citymaps.vercel.app", "http://localhost:8080"],
+    "AllowedOrigins": ["https://citymap.vercel.app", "http://localhost:8080"],
     "AllowedMethods": ["GET", "HEAD"],
     "AllowedHeaders": ["If-None-Match", "If-Modified-Since"],
     "ExposeHeaders": ["ETag", "Content-Encoding", "CF-Cache-Status"],
@@ -257,7 +257,7 @@ After deployment, test search with one request using the actual app URL:
 
 ```sh
 curl --get --data-urlencode 'q=Tokyo, Japan' \
-  'https://citymaps.vercel.app/api/search'
+  'https://citymap.vercel.app/api/search'
 ```
 
 Expect a JSON array. A 503 suggests missing/invalid private R2 credentials or a
@@ -274,7 +274,7 @@ also uses that shared limiter.
 Check a published road object without downloading the whole city:
 
 ```sh
-curl -I -H 'Origin: https://citymaps.vercel.app' \
+curl -I -H 'Origin: https://citymap.vercel.app' \
   'https://data.example.com/v2/cities/<city-key>/<revision>/full/00000.pbf'
 ```
 

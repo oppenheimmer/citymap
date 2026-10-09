@@ -18,7 +18,7 @@ npm run dev
 Open `http://localhost:8080`. Copy `.env.example` to `.env.local` for optional
 provider settings.
 Production search uses public Nominatim with a shared private R2 cache/limiter.
-[Set up the R2 buckets `citymap-data` and `citymap-search` and the Vercel project `citymaps`](docs/DEPLOYMENT.md).
+[Set up the R2 buckets `citymap-data` and `citymap-search` and the Vercel project `citymap`](docs/DEPLOYMENT.md).
 
 ## Lightweight checks and production build
 
