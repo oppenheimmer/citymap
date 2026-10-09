@@ -1,7 +1,7 @@
 import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
 import type { Geometry } from './domain.ts';
-import { EXPORT_BORDER, northCentre, scaleBarCentre } from './marks.ts';
+import { EXPORT_BORDER, placeMarks } from './marks.ts';
 import type { Centre, Size } from './marks.ts';
 import { NORTH_ARROW } from './north-arrow.ts';
 import { fittedWidth, metresPerSceneUnit, scaleBar, SCALE_BAR } from './scale-bar.ts';
@@ -51,8 +51,12 @@ function drawGrid(context: CanvasRenderingContext2D, grid: GridDrawing, ink: str
     context.stroke();
   };
   stroke(grid.lines, grid.lineOpacity); stroke(grid.teeth, 1);
-  context.globalAlpha = 1; context.font = `${grid.font}px sans-serif`; context.textAlign = 'left'; context.textBaseline = 'middle';
-  for (const text of grid.texts) context.fillText(text.text, text.x, text.y);
+  context.globalAlpha = 1; context.font = `${grid.font}px sans-serif`; context.textAlign = 'center'; context.textBaseline = 'middle';
+  for (const text of grid.texts) {
+    context.save(); context.translate(text.x, text.y); context.rotate(text.angle * Math.PI / 180);
+    context.fillText(text.text, 0, 0);
+    context.restore();
+  }
   context.restore();
 }
 
@@ -78,16 +82,20 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     context.drawImage(canvas, 0, 0);
     const label = snapshot.design.label, scale = options.width / snapshot.width;
     // Coordinate grid above the roads, below the label and marks.
-    const grid = gridDrawing(fitCamera(snapshot.camera, options.width / options.height), snapshot.view, options.width, options.height, scale, options.grid, EXPORT_BORDER);
+    // The export's own framing sets its scale; one CSS pixel is `scale` export pixels.
+    const bar = snapshot.design.scaleBar ? scaleBar(fittedWidth(snapshot.camera, options.width / options.height) / options.width * metresPerSceneUnit(snapshot.view.lat) * scale) : undefined;
+    const area = { width: options.width, height: options.height };
+    const grid = gridDrawing(fitCamera(snapshot.camera, options.width / options.height), snapshot.view, options.width, options.height, scale, options.grid, EXPORT_BORDER, snapshot.design.rotation || 0);
     if (grid) drawGrid(context, grid, snapshot.design.roadColor);
+    // Marks and the label move inward a few pixels when they would cover grid teeth or labels.
+    const placed = placeMarks(snapshot.design, area, scale, bar, grid?.keepouts, 4 * Math.max(1, scale));
     const c = color(label.color, label.opacity);
     context.fillStyle = `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`;
     context.font = `${label.size * scale}px sans-serif`;
     context.textAlign = 'center'; context.textBaseline = 'middle';
-    context.fillText(label.text, label.x * options.width, label.y * options.height);
+    context.fillText(label.text, placed.label.x, placed.label.y);
     // Marks are CSS-pixel geometry, laid out as on screen and scaled to the export.
     const ink = `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
-    const area = { width: options.width, height: options.height };
     const mark = (centre: Centre, size: Size, draw: () => void) => {
       context.save();
       context.translate(centre.x - size.width * scale / 2, centre.y - size.height * scale / 2); context.scale(scale, scale);
@@ -95,8 +103,10 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
       draw();
       context.restore();
     };
-    if (snapshot.design.north) mark(northCentre(snapshot.design, area, scale), NORTH_ARROW, () => {
-      const { path, circles, stroke, letter } = NORTH_ARROW;
+    if (snapshot.design.north) mark(placed.north, NORTH_ARROW, () => {
+      const { path, circles, stroke, letter, cx, cy } = NORTH_ARROW;
+      // Turn with the map so it points to map north.
+      context.translate(cx, cy); context.rotate((snapshot.design.rotation || 0) * Math.PI / 180); context.translate(-cx, -cy);
       context.lineWidth = stroke; context.lineJoin = 'round'; context.lineCap = 'round';
       const rose = new Path2D(path);
       for (const circle of circles) { rose.moveTo(circle.cx + circle.r, circle.cy); rose.arc(circle.cx, circle.cy, circle.r, 0, 2 * Math.PI); }
@@ -104,9 +114,7 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
       context.font = `bold ${letter.size}px sans-serif`;
       context.fillText('N', letter.x, letter.y);
     });
-    // The export's own framing sets its scale; one CSS pixel is `scale` export pixels.
-    const bar = snapshot.design.scaleBar ? scaleBar(fittedWidth(snapshot.camera, options.width / options.height) / options.width * metresPerSceneUnit(snapshot.view.lat) * scale) : undefined;
-    if (bar) mark(scaleBarCentre(snapshot.design, bar, area, scale), bar, () => {
+    if (bar && placed.scaleBar) mark(placed.scaleBar, bar, () => {
       context.lineWidth = SCALE_BAR.stroke; context.lineCap = 'square';
       context.beginPath();
       for (const line of bar.lines) { context.moveTo(line.x1, line.y1); context.lineTo(line.x2, line.y2); }

@@ -141,6 +141,31 @@ test('the options sidebar collapses to a hamburger button and the map takes the 
   await expect.poll(async () => (await canvas.boundingBox())!.width).toBeCloseTo(before, 0);
 });
 
+test('map rotation turns the map and compass, keeps the view, survives links and exports, and resets for a new city', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const view = async () => (await share(page)).searchParams.get('view')!.split(',').map(Number);
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  const before = await view();
+  await slider(page, 'Map rotation', 45);
+  await expect(page.locator('output[for="rotation"]')).toHaveText('45°');
+  // rotate(45deg) is the matrix cos 45°, sin 45°, −sin 45°, cos 45°.
+  await expect(page.getByRole('button', { name: /^North arrow/ }).locator('svg')).toHaveCSS('transform', /^matrix\(0\.707\d*, 0\.707\d*, -0\.707\d*, 0\.707\d*, 0, 0\)$/);
+  // Turning the map keeps its centre and zoom.
+  const turned = await view();
+  expect(turned[0]).toBeCloseTo(before[0], 5); expect(turned[1]).toBeCloseTo(before[1], 5); expect(turned[2]).toBeCloseTo(before[2], 0);
+  const map = (await page.locator('canvas').boundingBox())!; await page.mouse.move(map.x + map.width / 2, map.y + map.height / 2); await page.mouse.down(); await page.mouse.move(map.x + map.width / 2 + 40, map.y + map.height / 2 + 20, { steps: 5 }); await page.mouse.up();
+  const link = await share(page), expected = link.searchParams.get('view')!.split(',').map(Number);
+  expect(link.searchParams.get('rotation')).toBe('45');
+  await page.goto(link.href); await expect(status(page)).toContainText('ready');
+  await expect(page.getByLabel('Map rotation')).toHaveValue('45');
+  (await view()).forEach((value, index) => expect(value).toBeCloseTo(expected[index], index < 2 ? 5 : 0));
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
+  expect((await readFile((await (await pending).path())!)).toString('utf8')).toMatch(/scale\([\d.]+\) rotate\(45 /);
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await sample(page); await expect(page.getByLabel('Map rotation')).toHaveValue('0');
+});
+
 test('saved designs restore settings after reload and can be deleted; no recent-city list is shown', async ({ page }) => {
   await page.goto('/'); await sample(page); await page.getByLabel('Label text').fill('Saved 東京'); await page.getByRole('button', { name: 'Night', exact: true }).click(); await page.getByRole('button', { name: 'Save design', exact: true }).click();
   await page.goto('/'); await detail(page, 'Saved designs'); await page.getByRole('button', { name: 'Saved 東京', exact: true }).click(); await expect(status(page)).toContainText('ready'); await expect(page.getByLabel('Road color')).toHaveValue('#e1e7d9');

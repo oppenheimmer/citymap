@@ -40,6 +40,15 @@ test('short distances switch to whole metres and feet', () => {
   assert.deepEqual(bar.texts.map(text => text.text), ['0', '100', '200', '300 m', '0', '500', '1000 ft']);
   assert.equal(scaleBar(10)!.summary, '1000 m and 4000 ft'); // 1.4 km and 4,593 ft: fewer than two whole km or miles
   const wide = scaleBar(10)!; assert.ok(wide.texts.every(text => text.x + halfWidth(text.text) <= wide.width));
+  // 140 px is about 2,700 ft: 500 ft steps (26 px) would crowd their labels, so 1000 ft steps.
+  assert.deepEqual(scaleBar(5.88)!.texts.filter(text => text.y > 19).map(text => text.text), ['0', '1000', '2000 ft']);
+  // When no two-step feet scale is readable within 140 px (about 990 ft), one step is used.
+  assert.deepEqual(scaleBar(2.16)!.texts.filter(text => text.y > 19).map(text => text.text), ['0', '500 ft']);
+  for (const metres of [0.2, 0.7, 1.3, 2.16, 2.5, 5.88, 10, 25, 80, 300, 2000]) {
+    assert.ok(scaleBar(metres), `no scale bar at ${metres} m/px`);
+    const bar = scaleBar(metres)!;
+    for (const side of [bar.texts.filter(text => text.y < 19), bar.texts.filter(text => text.y > 19)]) for (let i = 1; i < side.length; i++) assert.ok(side[i].x - side[i - 1].x >= halfWidth(side[i].text) + halfWidth(side[i - 1].text), `${metres} m/px: ${side[i - 1].text} and ${side[i].text} overlap`);
+  }
   assert.equal(scaleBar(0), undefined); assert.equal(scaleBar(Infinity), undefined);
 });
 

@@ -1,10 +1,12 @@
 /**
  * Minimal line-art compass rose with a single "N", in CSS pixels. It is a draggable map
- * mark on screen and in PNG/SVG exports. Map rotation is disabled, so north is always
- * straight up.
+ * mark on screen and in PNG/SVG exports, rotated about its ring centre to point at map
+ * north. The box is square around that centre so the "N" stays inside at any rotation.
  */
 const UNIT = 1.25;
-const CX = 28 * UNIT, CY = 44 * UNIT;
+const LETTER_RADIUS = 35 * UNIT, LETTER_SIZE = 16;
+const HALF = Math.ceil(LETTER_RADIUS + LETTER_SIZE / 2 + 1);
+const CX = HALF, CY = HALF;
 const RING = 18.5 * UNIT, HUB = 3.5 * UNIT, CARDINAL = 24 * UNIT, WAIST = 5 * UNIT, DIAGONAL = 16 * UNIT;
 // Diagonal points start this far from the star's waist along its edges, keeping them pointed.
 const SPLIT = 0.12;
@@ -27,9 +29,11 @@ const diagonals = [45, 135, 225, 315].map((angle, i) => {
 });
 
 export const NORTH_ARROW = {
-  width: 56 * UNIT, height: 72 * UNIT, stroke: 1.5,
+  width: HALF * 2, height: HALF * 2, stroke: 1.5,
+  /** Rotation centre: the ring's centre. */
+  cx: CX, cy: CY,
   // Stroke-only geometry; coordinates use spaces so SVG road-segment counts ignore it.
   path: [star, ...facets, ...diagonals].join(' '),
   circles: [{ cx: CX, cy: CY, r: RING }, { cx: CX, cy: CY, r: HUB }],
-  letter: { x: CX, y: 9 * UNIT, size: 16 },
+  letter: { x: CX, y: CY - LETTER_RADIUS, size: LETTER_SIZE },
 } as const;

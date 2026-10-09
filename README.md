@@ -49,9 +49,15 @@ Maps default to street-level road detail; footpaths, sidewalks and service ways
 are optional, and live loads download only the classes shown. A minimal compass
 rose and a railway-style scale bar (whole kilometres or metres above, miles or feet
 below, measured at the map centre) can be dragged anywhere on the map; the scale
-bar sits below the compass until moved. Exports carry both and a 3 px road-colour
-border, with an optional latitude/longitude grid: ticks on the border or light grid
-lines at a chosen opacity, labelled in degrees, minutes and seconds. Exported images
+bar sits below the compass until moved. A rotation slider (0–180°) turns the map to
+fill the frame, and the compass keeps pointing at map north. Exports carry both
+marks and a 3 px road-colour border, with an optional latitude/longitude grid: ticks
+on the border or light grid lines at a chosen opacity, labelled in degrees and
+minutes (decimal minutes, never seconds). Labels sit at the tooth tips,
+perpendicular to the teeth and upright. Longitudes stay on the top and bottom edges
+and latitudes on the sides, swapping past 45° of rotation. Marks and the title that
+would cover grid teeth or labels move inward just enough to clear them; a scale bar
+that follows the compass moves with it. Exported images
 carry no visible OpenStreetMap credit (SVG keeps it in its metadata; the app shows
 it in the sidebar footer), so credit OpenStreetMap wherever you share them.
 On desktop the options sidebar collapses to a menu button.

@@ -66,3 +66,24 @@ test('road detail switches instantly for a cached city and limits exports to the
   await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
   expect((await stats(request)).datasets).toHaveLength(requests); expect((await stats(request)).roads).toHaveLength(0);
 });
+
+test('exports rotate the roads with the map', async ({ page }) => {
+  await page.goto(`${city}&detail=all`); await expect(status(page)).toContainText('Monaco ready');
+  // Width and height of the road drawing, from every exported segment end.
+  const extent = async () => {
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
+    await page.getByLabel('Width in pixels').fill('1000'); await page.getByLabel('Height in pixels').fill('1000');
+    const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
+    const xml = (await readFile((await (await pending).path())!)).toString('utf8');
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    const xs: number[] = [], ys: number[] = [];
+    for (const [, x1, y1, x2, y2] of xml.matchAll(/M([-\d.]+),([-\d.]+)L([-\d.]+),([-\d.]+)/g)) { xs.push(+x1, +x2); ys.push(+y1, +y2); }
+    return [Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)];
+  };
+  const [width, height] = await extent();
+  await page.getByLabel('Map rotation').evaluate(el => { (el as HTMLInputElement).value = '90'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+  await page.getByRole('button', { name: 'Fit map', exact: true }).click();
+  const [turnedWidth, turnedHeight] = await extent();
+  // A quarter turn swaps the drawing's proportions.
+  expect(turnedWidth / turnedHeight).toBeCloseTo(height / width, 1);
+});

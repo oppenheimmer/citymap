@@ -95,7 +95,7 @@
     {#if design.north}
       <button class="map-mark compass" style:left={`${compassAt.x}px`} style:top={`${compassAt.y}px`} style:color={design.label.color} aria-label="North arrow. Drag or use arrow keys to move it."
         onpointerdown={grab('northAt')} onpointermove={move} onpointerup={release} onpointercancel={release} onkeydown={key('northAt')}>
-        <svg viewBox={`0 0 ${NORTH_ARROW.width} ${NORTH_ARROW.height}`} width={NORTH_ARROW.width} height={NORTH_ARROW.height} aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width={NORTH_ARROW.stroke} stroke-linejoin="round" stroke-linecap="round"><path d={NORTH_ARROW.path} />{#each NORTH_ARROW.circles as circle (circle.r)}<circle cx={circle.cx} cy={circle.cy} r={circle.r} />{/each}</g><text x={NORTH_ARROW.letter.x} y={NORTH_ARROW.letter.y} font-size={NORTH_ARROW.letter.size}>N</text></svg>
+        <svg viewBox={`0 0 ${NORTH_ARROW.width} ${NORTH_ARROW.height}`} width={NORTH_ARROW.width} height={NORTH_ARROW.height} aria-hidden="true" style:transform={`rotate(${design.rotation || 0}deg)`} style:transform-origin={`${NORTH_ARROW.cx}px ${NORTH_ARROW.cy}px`}><g fill="none" stroke="currentColor" stroke-width={NORTH_ARROW.stroke} stroke-linejoin="round" stroke-linecap="round"><path d={NORTH_ARROW.path} />{#each NORTH_ARROW.circles as circle (circle.r)}<circle cx={circle.cx} cy={circle.cy} r={circle.r} />{/each}</g><text x={NORTH_ARROW.letter.x} y={NORTH_ARROW.letter.y} font-size={NORTH_ARROW.letter.size}>N</text></svg>
       </button>
     {/if}
     {#if scale && scaleAt}

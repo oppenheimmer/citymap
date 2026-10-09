@@ -48,6 +48,8 @@ export interface Design {
   north: boolean;
   northAt: MarkPosition;
   scaleBar: boolean;
+  /** Clockwise map rotation in degrees, 0–180; the north arrow turns with it. */
+  rotation: number;
   /** Unset until moved: the scale bar then sits just below the north arrow. */
   scaleBarAt?: MarkPosition;
   view?: GeoView;
@@ -55,7 +57,7 @@ export interface Design {
 export const DEFAULT_DESIGN: Design = {
   roadColor: '#1a1a1a', roadOpacity: 0.8, backgroundColor: '#f7f2e8', backgroundOpacity: 1,
   label: { text: '', x: 0.75, y: 0.83, size: 28, color: '#161616', opacity: 1 },
-  detail: 'streets', north: true, northAt: { x: 0.9, y: 0.12 }, scaleBar: true,
+  detail: 'streets', north: true, northAt: { x: 0.9, y: 0.12 }, scaleBar: true, rotation: 0,
 };
 /** `cityDataBundled` marks `cityDataBase` as the app's own `/data`, which holds only the bundled cities. */
 export interface Providers { cityDataBase: string; cityDataBundled?: boolean; legacyCacheBase: string; overpass: string; search: string }

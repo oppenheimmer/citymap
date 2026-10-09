@@ -74,8 +74,9 @@ test('exports offer no grid, border ticks or light grid lines, without an on-ima
   expect(none).not.toContain('°'); expect(none).not.toContain('>© OpenStreetMap contributors<'); expect(none).toContain('<metadata>Data © OpenStreetMap contributors');
   await page.getByLabel('Ticks on the border').check(); await expect(page.getByLabel('Grid line opacity')).toHaveCount(0);
   const ticks = await svg();
-  // The small sample sits near 122°25′W 37°46′N; this frame needs whole-second labels.
-  expect(ticks).toMatch(/>122°2\d′\d\d″W</); expect(ticks).toMatch(/>37°4\d′\d\d″N</); expect(ticks).not.toContain('stroke-opacity="0.3"');
+  // The small sample sits near 122°25′W 37°46′N; this frame needs decimal minutes, never seconds.
+  expect(ticks).toMatch(/>122°2\d\.\d′W</); expect(ticks).toMatch(/>37°4\d\.\d′N</); expect(ticks).not.toContain('″'); expect(ticks).not.toContain('stroke-opacity="0.3"');
+  expect(ticks).toMatch(/ (m|km)<\/text>/); expect(ticks).toMatch(/ (ft|mi)<\/text>/);
   const teeth = (ticks.match(/<line /g) || []).length;
   await page.getByLabel('Light grid lines').check(); await slider(page, 'Grid line opacity', 0.5);
   await expect(page.locator('output[for="grid-opacity"]')).toHaveText('50%');

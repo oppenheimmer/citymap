@@ -6,16 +6,16 @@ const METRES_PER_MILE = 1609.344, METRES_PER_FOOT = 0.3048;
 export const metresPerSceneUnit = (lat: number) => EARTH_RADIUS * Math.cos(lat * Math.PI / 180) / SCALE;
 
 /**
- * Longest whole-number step (1/2/5×10ⁿ, at least 1) with 2–5 divisions that fits; ties
- * keep fewer divisions. Undefined when even two 1-unit steps do not fit.
+ * Longest whole-number step (1/2/5×10ⁿ, at least 1) with `minCount`–5 divisions that fits;
+ * ties keep fewer divisions. Undefined when no such step fits.
  */
-export function niceDivisions(maxUnits: number): { step: number; count: number } | undefined {
+export function niceDivisions(maxUnits: number, accept: (step: number, count: number) => boolean = () => true, minCount = 2): { step: number; count: number } | undefined {
   if (!(maxUnits > 0) || !Number.isFinite(maxUnits)) return;
   let best: { step: number; count: number } | undefined;
   const exponent = Math.floor(Math.log10(maxUnits));
   for (let e = Math.max(0, exponent - 2); e <= exponent; e++) for (const m of [1, 2, 5]) {
     const step = m * 10 ** e, count = Math.min(5, Math.floor(maxUnits / step + 1e-9));
-    if (count < 2) continue;
+    if (count < minCount || !accept(step, count)) continue;
     const total = step * count, bestTotal = best ? best.step * best.count : 0;
     if (!best || total > bestTotal * (1 + 1e-9) || total >= bestTotal * (1 - 1e-9) && count < best.count) best = { step, count };
   }
@@ -31,10 +31,22 @@ export const SCALE_BAR = { maxLength: 140, font: 10, tooth: 6, stroke: 1.25 } as
 const TOP_TEXT = 5, RAIL = 19, BOTTOM_TEXT = 33, HEIGHT = 38;
 const label = (value: number) => String(Math.round(value));
 
+// About 0.6 em per character in the sans-serif labels.
+const labelWidth = (text: string) => text.length * SCALE_BAR.font * 0.6;
 // The larger unit is used when at least two whole units fit; otherwise the smaller one.
+// Steps too narrow for their neighbouring labels are skipped; when no two-step scale is
+// readable, a single labelled step is used.
 function axis(metresPerPx: number, units: { unit: string; metres: number }[]) {
-  for (const { unit, metres } of units) {
-    const divisions = niceDivisions(SCALE_BAR.maxLength * metresPerPx / metres);
+  for (const minCount of [2, 1]) for (const { unit, metres } of units) {
+    const readable = (step: number, count: number) => {
+      const px = step * metres / metresPerPx;
+      for (let i = 0; i < count; i++) {
+        const next = label((i + 1) * step) + (i + 1 === count ? ` ${unit}` : '');
+        if (px < (labelWidth(label(i * step)) + labelWidth(next)) / 2 + 4) return false;
+      }
+      return true;
+    };
+    const divisions = niceDivisions(SCALE_BAR.maxLength * metresPerPx / metres, readable, minCount);
     if (divisions) return { ...divisions, unit, px: divisions.step * metres / metresPerPx };
   }
 }

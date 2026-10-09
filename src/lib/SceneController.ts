@@ -115,7 +115,10 @@ export class SceneController {
   setSettings(settings: Design) {
     const changed = settings.roadColor !== this.settings.roadColor || settings.roadOpacity !== this.settings.roadOpacity || settings.backgroundColor !== this.settings.backgroundColor || settings.backgroundOpacity !== this.settings.backgroundOpacity;
     const detailChanged = settings.detail !== this.settings.detail;
+    // Rotating keeps the view's centre and zoom, like turning the paper.
+    const rotated = (settings.rotation || 0) !== (this.settings.rotation || 0) ? this.camera() : undefined;
     this.settings = copyDesign(settings);
+    if (rotated) this.setCamera(rotated);
     if (changed) this.applyColors(settings);
     if (detailChanged) {
       for (const collection of this.collections) collection.hidden = this.hidden(collection.rank);
@@ -130,6 +133,10 @@ export class SceneController {
     this.renderer.renderFrame();
   }
 
+  /**
+   * Shows `camera` (a centre with extents along the screen's axes) at the design's
+   * rotation. w-gl's setViewBox resets the camera to north-up, so rotation follows it.
+   */
   setCamera(camera: Camera) {
     const { width, height } = this.renderer.getDrawContext();
     const verticalSpan = Math.max(camera.top - camera.bottom, (camera.right - camera.left) / (width / height));
@@ -137,19 +144,44 @@ export class SceneController {
     // w-gl's fit function multiplies its world bounds by DPR. Compensate once here.
     const half = verticalSpan / (2 * this.renderer.getPixelRatio());
     this.renderer.setViewBox({ left: cx, right: cx, top: cy + half, bottom: cy - half });
+    const rotation = (this.settings.rotation || 0) * Math.PI / 180;
+    if (rotation) {
+      // Increasing w-gl's phi turns the map clockwise on screen.
+      const controls = this.renderer.getCameraController();
+      controls.rotateByAngle(rotation, 0); controls.redraw();
+    }
     this.renderer.renderFrame();
   }
-  fit() { this.setCamera(this.geometry.bounds); }
+  /** Fits the roads; when rotated, fits their actual extent along the rotated screen axes. */
+  fit() {
+    const rotation = (this.settings.rotation || 0) * Math.PI / 180;
+    if (!rotation) { this.setCamera(this.geometry.bounds); return; }
+    const cos = Math.cos(rotation), sin = Math.sin(rotation);
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const buffer of this.geometry.buffers) for (let i = 0; i < buffer.length; i += 2) {
+      const x = buffer[i] * cos + buffer[i + 1] * sin, y = -buffer[i] * sin + buffer[i + 1] * cos;
+      if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    if (!Number.isFinite(minX)) return;
+    // Same padding as the unrotated bounds from the projector.
+    const pad = Math.max(maxX - minX, maxY - minY, 1) * 0.12;
+    const width = maxX - minX + 2 * pad, height = maxY - minY + 2 * pad, sx = (minX + maxX) / 2, sy = (minY + maxY) / 2;
+    const cx = sx * cos - sy * sin, cy = sx * sin + sy * cos;
+    this.setCamera({ left: cx - width / 2, right: cx + width / 2, bottom: cy - height / 2, top: cy + height / 2 });
+  }
   zoom(factor: number) {
     const camera = this.renderer.getCameraController();
     camera.zoomCenterByScaleFactor(1 - 1 / factor, 0, 0);
     camera.redraw();
   }
+  /** The visible centre with its extents along the (possibly rotated) screen axes. */
   camera(): Camera {
     const rect = this.canvas.getBoundingClientRect();
-    const a = this.renderer.getSceneCoordinate(rect.left, rect.top);
-    const b = this.renderer.getSceneCoordinate(rect.right, rect.bottom);
-    return { left: Math.min(a[0], b[0]), right: Math.max(a[0], b[0]), top: Math.max(a[1], b[1]), bottom: Math.min(a[1], b[1]) };
+    const midX = (rect.left + rect.right) / 2, midY = (rect.top + rect.bottom) / 2;
+    const at = (x: number, y: number) => this.renderer.getSceneCoordinate(x, y);
+    const centre = at(midX, midY), left = at(rect.left, midY), right = at(rect.right, midY), top = at(midX, rect.top), bottom = at(midX, rect.bottom);
+    const width = Math.hypot(right[0] - left[0], right[1] - left[1]), height = Math.hypot(top[0] - bottom[0], top[1] - bottom[1]);
+    return { left: centre[0] - width / 2, right: centre[0] + width / 2, bottom: centre[1] - height / 2, top: centre[1] + height / 2 };
   }
   /** The current camera as a geographic view that survives different data extents. */
   view(): GeoView { return viewFromCamera(this.camera(), this.geometry.origin); }

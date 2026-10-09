@@ -29,6 +29,7 @@ export function parseUrl(search: string): { query: string; boundary?: Boundary; 
     north: p.get('north') !== '0',
     northAt: { x: number(p.get('northX'), DEFAULT_DESIGN.northAt.x, 0, 1), y: number(p.get('northY'), DEFAULT_DESIGN.northAt.y, 0, 1) },
     scaleBar: p.get('scaleBar') !== '0',
+    rotation: Math.round(number(p.get('rotation'), 0, 0, 180)),
     view: parseView(p.get('view')),
   };
   // A scale bar without its own position follows the north arrow.
@@ -86,6 +87,7 @@ export function shareUrl(origin: string, path: string, boundary: Boundary, desig
   if (design.north === false) p.set('north', '0');
   if (design.northAt) { p.set('northX', String(design.northAt.x)); p.set('northY', String(design.northAt.y)); }
   if (design.scaleBar === false) p.set('scaleBar', '0');
+  if (design.rotation) p.set('rotation', String(design.rotation));
   if (design.scaleBarAt) { p.set('scaleX', String(design.scaleBarAt.x)); p.set('scaleY', String(design.scaleBarAt.y)); }
   if (design.view) p.set('view', [design.view.lon.toFixed(7), design.view.lat.toFixed(7), design.view.width.toFixed(2), design.view.height.toFixed(2)].map(Number).join(','));
   return url.href;

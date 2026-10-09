@@ -45,7 +45,7 @@ test('legacy links restore validated targets, cache and automatic-loading intent
 
 test('complete design links round-trip the view, Unicode labels, colors, opacity and immutable revision', () => {
   const boundary = { key: 'osm-relation-123', name: '東京', kind: 'city', osmType: 'relation' as const, osmId: '123', areaId: '3600000123', revision: 'a'.repeat(64), manifestSha256: 'b'.repeat(64) };
-  const design = { ...DEFAULT_DESIGN, roadColor: '#125634', roadOpacity: 0.25, backgroundOpacity: 0.5, label: { ...DEFAULT_DESIGN.label, text: '東京 & <test>', x: 0.1, y: 0.3, size: 52, opacity: 0.4 }, detail: 'major' as const, north: false, northAt: { x: 0.2, y: 0.15 }, scaleBar: false, scaleBarAt: { x: 0.7, y: 0.4 }, view: { lon: 139.7671234, lat: 35.6812345, width: 1234.5, height: 987.25 } };
+  const design = { ...DEFAULT_DESIGN, roadColor: '#125634', roadOpacity: 0.25, backgroundOpacity: 0.5, label: { ...DEFAULT_DESIGN.label, text: '東京 & <test>', x: 0.1, y: 0.3, size: 52, opacity: 0.4 }, detail: 'major' as const, north: false, northAt: { x: 0.2, y: 0.15 }, scaleBar: false, scaleBarAt: { x: 0.7, y: 0.4 }, rotation: 35, view: { lon: 139.7671234, lat: 35.6812345, width: 1234.5, height: 987.25 } };
   const url = shareUrl('https://citymap.example.com', '/', boundary, design, false);
   const restored = parseUrl(new URL(url).search);
   assert.deepEqual(restored.design, design); assert.equal(restored.boundary?.revision, boundary.revision); assert.equal(restored.cache, false);
@@ -56,6 +56,7 @@ test('complete design links round-trip the view, Unicode labels, colors, opacity
   for (const query of ['', '?scaleX=0.5', '?scaleX=0.5&scaleY=-1']) assert.equal(parseUrl(query).design.scaleBarAt, undefined);
   assert.deepEqual(parseUrl('?scaleX=0.5&scaleY=0.25').design.scaleBarAt, { x: 0.5, y: 0.25 });
   assert.equal(parseUrl('?scaleBar=0').design.scaleBar, false);
+  for (const [query, rotation] of [['', 0], ['?rotation=90', 90], ['?rotation=181', 0], ['?rotation=-5', 0], ['?rotation=12.6', 13]] as const) assert.equal(parseUrl(query).design.rotation, rotation);
 });
 
 const near = (a: number, b: number, tolerance: number) => assert.ok(Math.abs(a - b) <= tolerance, `${a} != ${b}`);
