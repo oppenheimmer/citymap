@@ -5,10 +5,12 @@ import { PILOT_CASES } from './city-data/fixtures.ts';
 import type { CityInput } from './city-data/build.ts';
 
 const root = fileURLToPath(new URL('../public/fixtures/', import.meta.url));
+// Sample maps exist only for tests; production builds ship no fixtures.
+const testBuild = process.env.VITE_TEST_FIXTURES === '1';
 await rm(root, { recursive: true, force: true });
-await mkdir(root, { recursive: true });
+if (testBuild) await mkdir(root, { recursive: true });
 let generated = 0;
-for (const fixture of PILOT_CASES.filter(f => process.env.VITE_TEST_FIXTURES === '1' || f.name === 'small')) {
+for (const fixture of testBuild ? PILOT_CASES : []) {
   const half = fixture.roads / 2;
   const elements: Record<string, unknown>[] = [];
   const nodes = new Map<string, string>();

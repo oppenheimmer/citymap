@@ -110,8 +110,8 @@ Before deploying, add these project environment variables. Use the
 
 Leave `VITE_SEARCH_URL` blank to use same-origin `/api/search`. Leave
 `VITE_OVERPASS_URL`, `VITE_AREA_SERVER` and `SEARCH_PROVIDER_API_KEY` blank for
-this setup. Do not set `VITE_TEST_FIXTURES`: the normal build ships one small
-sample rather than the larger test maps. `R2_DATA_BUCKET` is a local publisher
+this setup. Do not set `VITE_TEST_FIXTURES`: it enables synthetic sample maps
+meant only for tests, and the normal build ships none. `R2_DATA_BUCKET` is a local publisher
 setting and is not required by Vercel.
 
 Apply the search settings to **Production and Preview**, using the same private

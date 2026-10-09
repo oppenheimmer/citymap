@@ -7,15 +7,16 @@ browser benchmark below measures the current application only.
 With Node 24, a production build and an already installed working Chromium:
 
 ```sh
-npm run build
+npm run build:test
 npm run benchmark:browser -- --runs 3
 ```
 
-This defaults to the small fixture and writes ignored output to
+The benchmark drives the synthetic sample maps, which exist only in test builds.
+It defaults to the small fixture and writes ignored output to
 `.benchmarks/browser.json`. It starts a local server and mocks road delivery;
 it neither installs browsers nor contacts a map provider. To measure the larger
-locally generated fixtures, run `npm run build:test`, then pass
-`--sizes small,medium,large`. Rebuild normally before deployment.
+fixtures, pass `--sizes small,medium,large`. Run `npm run build` again before
+deployment.
 
 ```sh
 npm run benchmark:browser -- --runs 3 --sizes small,medium,large

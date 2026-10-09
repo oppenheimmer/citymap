@@ -16,7 +16,7 @@ npm run dev
 ```
 
 Open `http://localhost:8080`. Copy `.env.example` to `.env.local` for optional
-provider settings. A small synthetic sample needs no provider connection.
+provider settings.
 Production search uses public Nominatim with a shared private R2 cache/limiter.
 [Set up the R2 bucket and Vercel project, both named `citymap`](docs/DEPLOYMENT.md).
 
@@ -33,8 +33,8 @@ npm run preview
 ```
 
 These checks download no browser archives or containers. `npm ci` installs the
-locked application/development packages when needed. `build` writes `dist/` with
-one small sample. Static preview does not run `/api/search`; use the dev server
+locked application/development packages when needed. `build` writes `dist/`.
+Static preview does not run `/api/search`; use the dev server
 or a Vercel deployment for search.
 
 The renderer and exports load on demand. Workers prepare road geometry and SVG
@@ -42,6 +42,9 @@ output. Map and PNG geometry uploads use 1 MiB batches with cancellation between
 frames. Complete IndexedDB geometry has size limits and LRU eviction; saved
 local designs are stored separately and export as JSON with a restore link.
 On phones, controls use a collapsible sheet with accessible cancellation.
+Loading shows a progress bar: exact for cached city data, and for any download
+that reports its size. Otherwise it shows bytes received, elapsed time and a
+warning when the service goes quiet.
 Maps default to street-level road detail; footpaths, sidewalks and service ways
 are optional, and live loads download only the classes shown. A north arrow is
 drawn on the map and in exports.

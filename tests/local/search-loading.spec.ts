@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { test, expect, status, sample, search, live, detail, stats, control } from '../support/local.ts';
 
 test('npm dev page and actual local search proxy validate methods, queries and provider identification', async ({ page, request }) => {
@@ -110,4 +111,23 @@ test('cancel button, Escape and switching prevent delayed roads from replacing t
   const events = await page.evaluate(() => (window as unknown as { cancelProbe: { type: string }[] }).cancelProbe);
   expect(events.filter(event => event.type === 'sent:cancel')).toHaveLength(3);
   expect(events.filter(event => event.type === 'received:cancelled')).toHaveLength(3);
+});
+
+const choosePlace = async (page: Page, name: string) => { await search(page, name); await page.getByRole('button', { name: `${name}, Japan city · relation`, exact: true }).click(); };
+const position = (page: Page) => page.getByRole('progressbar', { name: 'Map download' }).evaluate(bar => (bar as HTMLProgressElement).position);
+
+test('a known download size shows a determinate progress bar with bytes and percentage', async ({ page, request }) => {
+  await control(request, { roads: { trickle: 400 } }); await page.goto('/'); await choosePlace(page, 'Progress city');
+  await expect.poll(() => position(page)).toBeGreaterThan(0);
+  await expect(page.locator('.load-status')).toContainText(/Downloading live roads… · \d+ KB of \d+ KB \(\d+%\)/);
+  await expect(status(page)).toContainText('ready'); await expect(page.getByRole('progressbar', { name: 'Map download' })).toHaveCount(0);
+});
+
+test('a silent wait shows an indeterminate bar with a running timer and stays cancellable', async ({ page, request }) => {
+  await control(request, { roads: { hold: true } }); await page.goto('/'); await choosePlace(page, 'Silent city');
+  await expect.poll(() => position(page)).toBe(-1);
+  const line = page.locator('.load-status .hint').first(), seconds = async () => Number((await line.textContent())!.match(/(\d+) s$/)![1]);
+  await expect(line).toContainText('Waiting for the road service…');
+  const first = await seconds(); await expect.poll(seconds).toBeGreaterThan(first);
+  await page.getByRole('button', { name: 'Cancel load', exact: true }).click(); await expect(status(page)).toContainText('cancelled');
 });

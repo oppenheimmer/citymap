@@ -1,7 +1,7 @@
 import { test, expect, sample, live, stats, status, cacheKeys } from '../support/local.ts';
 
 test('storage denial and malformed saved JSON do not prevent online rendering', async ({ page }) => {
-  await page.addInitScript(() => { localStorage.setItem('citymap:designs:v1', '{'); localStorage.setItem('citymap:recents:v1', '[null,{}]'); Object.defineProperty(window, 'indexedDB', { get() { throw new DOMException('Denied', 'SecurityError'); } }); });
+  await page.addInitScript(() => { localStorage.setItem('citymap:designs:v1', '{'); Object.defineProperty(window, 'indexedDB', { get() { throw new DOMException('Denied', 'SecurityError'); } }); });
   await page.goto('/'); await sample(page); await expect(page.getByRole('button', { name: 'Save design', exact: true })).toBeEnabled();
 });
 
@@ -52,8 +52,8 @@ test('LRU eviction removes the oldest geometry and lightweight histories stay bo
     await new Promise<void>((resolve, reject) => { const open = indexedDB.open('citymap-geometry', 1); open.onsuccess = () => { const db = open.result, tx = db.transaction('metadata', 'readwrite'); tx.objectStore('metadata').put({ key: 'oldest', bytes: 64 * 1024 * 1024, lastUsed: 1 }); tx.objectStore('metadata').put({ key: 'newer', bytes: 64 * 1024 * 1024, lastUsed: 2 }); tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error); }; });
     await storage.putCity('latest', geometry);
     const domainPath = '/src/lib/domain.ts', { DEFAULT_DESIGN } = await import(domainPath);
-    for (let i = 0; i < 25; i++) { const boundary = { key: `recent-${i}`, name: `City ${i}`, kind: 'test' }; storage.remember(boundary); storage.saveDesign(boundary, DEFAULT_DESIGN); }
-    return { oldest: !!await storage.getCity('oldest'), newer: !!await storage.getCity('newer'), latest: !!await storage.getCity('latest'), recents: storage.recents().length, designs: storage.designs().length };
+    for (let i = 0; i < 25; i++) storage.saveDesign({ key: `city-${i}`, name: `City ${i}`, kind: 'test' }, DEFAULT_DESIGN);
+    return { oldest: !!await storage.getCity('oldest'), newer: !!await storage.getCity('newer'), latest: !!await storage.getCity('latest'), designs: storage.designs().length };
   });
-  expect(result).toEqual({ oldest: false, newer: true, latest: true, recents: 10, designs: 20 });
+  expect(result).toEqual({ oldest: false, newer: true, latest: true, designs: 20 });
 });

@@ -10,6 +10,8 @@ test('presets, all colors/opacity and label settings are reflected in DOM and a 
   await page.getByLabel('Road color').fill('#123456'); await page.getByLabel('Background color').fill('#abcdef'); await page.getByLabel('Label color').fill('#234567'); await page.getByLabel('Label text').fill('東京 & <Map>');
   await slider(page, 'Road opacity', 0.25); await slider(page, 'Background opacity', 0.5); await slider(page, 'Label opacity', 0.35); await slider(page, 'Label size', 48);
   await expect(label(page)).toHaveCSS('font-size', '48px'); await expect(label(page)).toHaveCSS('opacity', '0.35');
+  for (const [id, text] of [['road-opacity', '25%'], ['background-opacity', '50%'], ['label-opacity', '35%'], ['size', '48 px']]) await expect(page.locator(`output[for="${id}"]`)).toHaveText(text);
+  await expect(page.getByLabel('Road opacity', { exact: true })).toHaveAttribute('aria-valuetext', '25%');
   const link = await share(page); expect(link.searchParams.get('roads')).toBe('123456'); expect(link.searchParams.get('background')).toBe('abcdef'); expect(link.searchParams.get('roadOpacity')).toBe('0.25');
   await page.goto(link.href); await expect(status(page)).toContainText('ready'); await expect(label(page)).toHaveText('東京 & <Map>'); await expect(label(page)).toHaveCSS('font-size', '48px'); await expect(page.getByLabel('Background opacity')).toHaveValue('0.5');
 });
@@ -85,11 +87,11 @@ test('the north arrow shows by default, appears in PNG and SVG exports and can b
   const hidden = await exported(); expect(hidden.svg).not.toContain('>N</text>'); expect(hidden.dark).toBe(0);
 });
 
-test('saved designs restore settings after reload, can be deleted, and recent cities reopen', async ({ page }) => {
+test('saved designs restore settings after reload and can be deleted; no recent-city list is shown', async ({ page }) => {
   await page.goto('/'); await sample(page); await page.getByLabel('Label text').fill('Saved 東京'); await page.getByRole('button', { name: 'Night', exact: true }).click(); await page.getByRole('button', { name: 'Save design', exact: true }).click();
   await page.goto('/'); await detail(page, 'Saved designs'); await page.getByRole('button', { name: 'Saved 東京', exact: true }).click(); await expect(status(page)).toContainText('ready'); await expect(page.getByLabel('Road color')).toHaveValue('#e1e7d9');
   await page.getByRole('button', { name: 'Delete design Saved 東京' }).click(); await expect(page.getByText('Saved designs', { exact: true })).toHaveCount(0);
-  await detail(page, 'Recent cities'); await page.getByRole('button', { name: 'Small synthetic grid', exact: true }).click(); await expect(status(page)).toContainText('ready');
+  await expect(page.getByText('Recent cities')).toHaveCount(0);
 });
 
 test('local cache avoids roads, refresh bypasses it and clearing preserves designs', async ({ page, request }) => {

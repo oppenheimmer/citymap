@@ -1,4 +1,4 @@
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { loadEnv } from 'vite';
@@ -14,7 +14,7 @@ check(!!entry, 'Hashed entry script');
 if (entry) {
   const source = await readFile(`dist/assets/${entry}`, 'utf8');
   check(gzipSync(source).length <= 100_000, 'Entry JavaScript under 100 KB gzip');
-  check(!source.includes('Medium sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data'), 'Test controls/provider absent');
+  check(!source.includes('Small sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data'), 'Test sample controls/provider absent');
   const env = { ...loadEnv('production', process.cwd(), ''), ...process.env };
   for (const key of ['R2_SECRET_ACCESS_KEY', 'R2_ACCESS_KEY_ID', 'SEARCH_PROVIDER_API_KEY']) if (env[key]) check(!source.includes(env[key]), `${key} stays server-only`);
   if (!values.offline) {
@@ -29,9 +29,7 @@ if (entry) {
   }
 }
 for (const name of ['roads.worker-', 'svg.worker-', 'SceneController-', 'exports-']) check(files.some(file => file.startsWith(name)), `${name} lazy artifact`);
-const fixtures = await readdir('dist/fixtures');
-check(fixtures.length === 1 && fixtures[0] === 'small.json', 'Only small sample ships');
-check((await stat('dist/fixtures/small.json')).size < 100_000, 'Sample under 100 KB');
+check(!(await readdir('dist')).includes('fixtures'), 'No sample fixtures ship');
 const config = JSON.parse(await readFile('vercel.json', 'utf8'));
 check(config.outputDirectory === 'dist' && config.installCommand === 'npm ci', 'Vercel single-package build');
 check(config.functions?.['api/search.ts']?.maxDuration === 30, 'Bounded Vercel search function');

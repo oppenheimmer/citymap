@@ -57,7 +57,8 @@ export interface PreparationTimings { downloadMs: number; decodeMs: number; inde
 /** `ranks` parallels `buffers`; `coverage` is the most detailed level the geometry contains. */
 export interface Geometry { buffers: Float32Array[]; ranks: RoadRank[]; coverage: RoadDetail; bounds: Camera; origin: Origin; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }
 export type LoadStage = 'cache' | 'download' | 'decode' | 'project' | 'draw';
-export interface LoadProgress { stage: LoadStage; message: string; bytes?: number; completedChunks?: number; totalChunks?: number }
+/** `bytes` counts decoded bytes received so far; `totalBytes` is present only when the size is known. */
+export interface LoadProgress { stage: LoadStage; message: string; bytes?: number; totalBytes?: number; completedChunks?: number; totalChunks?: number }
 
 export function id(value: unknown): string {
   if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) return String(value);

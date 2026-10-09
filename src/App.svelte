@@ -8,20 +8,24 @@
   import { request } from './lib/request.ts';
   import { parseUrl, shareUrl } from './lib/url-state.ts';
   import { responseJson } from './lib/data/response-body.ts';
-  import { clearCityCache, designs, recents, remember, removeDesign, saveDesign } from './lib/city-storage.ts';
+  import { clearCityCache, designs, removeDesign, saveDesign } from './lib/city-storage.ts';
   import type { SavedDesign } from './lib/city-storage.ts';
   import { designFile } from './lib/design-file.ts';
   import { download } from './lib/download.ts';
+  import { describeLoad, formatBytes } from './lib/load-status.ts';
+  import type { Transfer } from './lib/load-status.ts';
 
+  // Synthetic sample maps exist only in test builds, for deterministic browser tests.
+  const SAMPLES = import.meta.env.VITE_TEST_FIXTURES === '1';
   const link = parseUrl(location.search);
+  const linked = link.boundary?.fixture && !SAMPLES ? undefined : link.boundary;
   let query = $state(link.query);
   let results = $state.raw<Boundary[]>([]);
-  let recent = $state.raw<Boundary[]>(recents());
   let saved = $state.raw<SavedDesign[]>(designs());
-  let selected = $state.raw<Boundary | null>(link.boundary || null);
+  let selected = $state.raw<Boundary | null>(linked || null);
   let design = $state<Design>(link.design);
   let useCache = $state(link.cache);
-  let status = $state('Search for a city or try a sample.');
+  let status = $state('Search for a city to start.');
   let error = $state(link.warning || '');
   let searching = $state(false), loading = $state(false), ready = $state(false), mounted = $state(false);
   let generation = $state(0);
@@ -29,6 +33,10 @@
   // The most detailed road level the current map's geometry contains.
   let coverage = $state<RoadDetail | null>(null);
   let progress = $state.raw<LoadProgress | null>(null);
+  let transfer = $state.raw<Transfer | null>(null);
+  let startedAt = $state(0), lastActivityAt = $state(0), clock = $state(0);
+  const activity = $derived(describeLoad(progress, transfer, startedAt, lastActivityAt, clock));
+  const percent = (value: number) => `${Math.round(value * 100)}%`;
   let options = $state.raw<(WorkerLoad & { forceNetwork?: boolean }) | null>(null);
   let confirmation = $state<number | null>(null);
   let metrics = $state.raw<{ first: number; total: number; segments: number; preparation?: PreparationTimings } | null>(null);
@@ -67,11 +75,25 @@
   $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.detail, design.north]; history(); });
   function cancel() {
     generation++; mounted = false; loading = false; ready = false; controller = null;
-    confirmation = null; progress = null; status = 'Load cancelled.';
+    confirmation = null; progress = null; transfer = null; status = 'Load cancelled.';
   }
+  // Any new stage or received bytes counts as activity for the stall warning.
+  function track(value: LoadProgress, id: number) {
+    if (id !== generation) return;
+    const now = performance.now();
+    if (value.bytes !== undefined) transfer = { bytes: value.bytes, total: value.totalBytes };
+    if (value.bytes !== undefined || value.message !== progress?.message) lastActivityAt = now;
+    progress = value; clock = now;
+  }
+  $effect(() => {
+    if (!loading) return;
+    const timer = setInterval(() => { clock = performance.now(); }, 1000);
+    return () => clearInterval(timer);
+  });
   function choose(boundary: Boundary, allowLarge = true, forceNetwork = false, restore?: Design) {
     generation++; mounted = false; ready = false; controller = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
+    progress = null; transfer = null; startedAt = lastActivityAt = clock = performance.now();
     if (restore) design = { ...restore, label: { ...restore.label } };
     else { design.view = undefined; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
     bboxText = boundary.bbox?.join(',') || '';
@@ -109,7 +131,7 @@
     controller = scene; ready = true; loading = false; source = geometry.source; coverage = geometry.coverage; confirmation = null;
     metrics = { first, total, segments: geometry.segmentCount, preparation: geometry.preparation };
     status = `${selected!.name} ready.`;
-    remember(selected!); recent = recents(); history();
+    history();
   }
   function failed(message: string, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; ready = false; controller = null; error = message; status = 'Map could not be loaded.'; }
   function large(bytes: number, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; confirmation = bytes; status = 'Confirm this download to continue.'; }
@@ -158,7 +180,7 @@
     else status = 'Local storage is unavailable. Use a share link to keep this design.';
   }
   function restore(record: SavedDesign) {
-    try { const parsed = parseUrl(new URL(shareUrl(location.origin, location.pathname, record.boundary, record.design)).search); if (!parsed.boundary || parsed.warning) throw new Error('Invalid saved design'); choose(parsed.boundary, true, false, parsed.design); }
+    try { const parsed = parseUrl(new URL(shareUrl(location.origin, location.pathname, record.boundary, record.design)).search); if (!parsed.boundary || parsed.warning || parsed.boundary.fixture && !SAMPLES) throw new Error('Invalid saved design'); choose(parsed.boundary, true, false, parsed.design); }
     catch { error = 'This saved design could not be restored. You can remove it and create a new one.'; }
   }
   function exportDesign(record: SavedDesign) {
@@ -176,9 +198,9 @@
     resize(); media.addEventListener('change', resize);
     try {
       providers = { cityDataBase: publicUrl(import.meta.env.VITE_CITY_DATA_BASE_URL || ''), legacyCacheBase: publicUrl(import.meta.env.VITE_AREA_SERVER || ''), overpass: publicUrl(import.meta.env.VITE_OVERPASS_URL || '', 'https://overpass-api.de/api/interpreter'), search: publicUrl(import.meta.env.VITE_SEARCH_URL || '', new URL('/api/search', location.origin).href) };
-      if (link.boundary) {
-        if (link.auto && !link.warning) choose(link.boundary, false, false, link.design);
-        else { status = 'This link selects a city. Load its roads to continue.'; bboxText = link.boundary.bbox?.join(',') || ''; }
+      if (linked) {
+        if (link.auto && !link.warning) choose(linked, false, false, link.design);
+        else { status = 'This link selects a city. Load its roads to continue.'; bboxText = linked.bbox?.join(',') || ''; }
       }
     } catch (e) { error = e instanceof Error ? e.message : 'Invalid provider configuration'; }
     return () => { media.removeEventListener('change', resize); searchAbort?.abort(); exportAbort?.abort(); clearTimeout(historyTimer); };
@@ -192,6 +214,7 @@
       <span class="sheet-title">{selected?.name.split(',')[0] || 'Citymap'}</span>
       {#if !controlsOpen && loading}<button onclick={cancel}>Cancel load</button>{/if}
       <button aria-expanded={controlsOpen} aria-controls="settings-content" onclick={() => { controlsOpen = !controlsOpen; }}>{controlsOpen ? 'Hide controls' : 'Show controls'}</button>
+      {#if loading}{#if activity.max}<progress class="sheet-progress" aria-hidden="true" max={activity.max} value={activity.value}></progress>{:else}<progress class="sheet-progress" aria-hidden="true"></progress>{/if}{/if}
     </div>
     {#if mobile && !controlsOpen}<p class="sheet-status" role="status" aria-live="polite">{status}</p>{/if}
     <div id="settings-content" hidden={mobile && !controlsOpen}>
@@ -200,18 +223,25 @@
       <label for="search">Find a city</label><div class="search-row"><input id="search" type="search" bind:value={query} oninput={editQuery} placeholder="Tokyo, Japan" autocomplete="off" maxlength="256"><button type="submit" disabled={searching || !query.trim()}>Search</button></div>
       <div class="results">{#each results as city (city.key)}<button type="button" onclick={() => choose(city)}>{city.name}<small>{city.kind}{city.osmType ? ` · ${city.osmType}` : ''}</small></button>{/each}</div>
     </form>
-    <details class="samples"><summary>Try a sample map</summary><div class="buttons"><button onclick={() => sample('small')}>Small sample</button>{#if import.meta.env.VITE_TEST_FIXTURES === '1'}<button onclick={() => sample('medium')}>Medium sample</button><button onclick={() => sample('large')}>Large sample</button>{/if}</div><p class="hint">Synthetic geometry for testing; no provider requests.</p></details>
+    {#if SAMPLES}<details class="samples"><summary>Try a sample map</summary><div class="buttons"><button onclick={() => sample('small')}>Small sample</button><button onclick={() => sample('medium')}>Medium sample</button><button onclick={() => sample('large')}>Large sample</button></div><p class="hint">Test build only: synthetic geometry without provider requests.</p></details>{/if}
     <p role="status" aria-live="polite">{status}</p>
-    {#if loading}<p class="hint">{progress?.message}{#if progress?.totalChunks} {progress.completedChunks || 0}/{progress.totalChunks} chunks{/if}</p><button onclick={cancel}>Cancel load</button>{/if}
+    {#if loading}
+      <div class="load-status">
+        {#if activity.max}<progress aria-label="Map download" max={activity.max} value={activity.value}></progress>{:else}<progress aria-label="Map download"></progress>{/if}
+        <p class="hint">{activity.text}</p>
+        {#if activity.warning}<p class="hint warning" aria-live="polite">{activity.warning}</p>{/if}
+        <button onclick={cancel}>Cancel load</button>
+      </div>
+    {/if}
     {#if error}<div role="alert" class="error">{error}{#if selected}<button onclick={() => choose(selected!, true, true, copy())}>Retry map</button>{/if}</div>{/if}
-    {#if confirmation !== null}<div class="notice">{confirmation ? `This map needs about ${(confirmation / 1048576).toFixed(1)} MiB of cached data.` : 'Live downloads can be large. Load this map when you are ready.'}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button></div>{:else if selected && !mounted && !loading}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button>{/if}
+    {#if confirmation !== null}<div class="notice">{confirmation ? `This map needs about ${formatBytes(confirmation)} of cached data.` : 'Live downloads can be large. Load this map when you are ready.'}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button></div>{:else if selected && !mounted && !loading}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button>{/if}
     {#if selected}
       <fieldset disabled={!ready}><legend>Map controls</legend><div class="buttons"><button onclick={() => controller?.zoom(1.25)} aria-label="Zoom in">+</button><button onclick={() => controller?.zoom(0.8)} aria-label="Zoom out">−</button><button onclick={() => controller?.fit()}>Fit map</button><button onclick={openExport}>Export</button></div></fieldset>
       <details open><summary>Customize</summary>
         <fieldset><legend>Road detail</legend><label for="detail">Roads shown</label><select id="detail" value={design.detail} onchange={event => setDetail(event.currentTarget.value as RoadDetail)}><option value="major">Major roads</option><option value="streets">Streets</option><option value="all">All ways, including footpaths and service roads</option></select><p class="hint">Footpaths, sidewalks and service ways can make dense cities solid black.</p></fieldset>
         <fieldset><legend>Presets</legend><div class="buttons">{#each presets as preset (preset.name)}<button onclick={() => applyPreset(preset)}>{preset.name}</button>{/each}</div></fieldset>
-        <fieldset><legend>Colors</legend><label>Road color <input type="color" bind:value={design.roadColor}></label><label for="road-opacity">Road opacity</label><input id="road-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.roadOpacity}><label>Background color <input type="color" bind:value={design.backgroundColor}></label><label for="background-opacity">Background opacity</label><input id="background-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.backgroundOpacity}></fieldset>
-        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><label for="label-opacity">Label opacity</label><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity}><label for="size">Label size</label><input id="size" type="range" min="10" max="128" bind:value={design.label.size}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><p class="hint">Drag the map label or focus it and use arrow keys.</p></fieldset>
+        <fieldset><legend>Colors</legend><label>Road color <input type="color" bind:value={design.roadColor}></label><div class="slider-label"><label for="road-opacity">Road opacity</label><output for="road-opacity">{percent(design.roadOpacity)}</output></div><input id="road-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.roadOpacity} aria-valuetext={percent(design.roadOpacity)}><label>Background color <input type="color" bind:value={design.backgroundColor}></label><div class="slider-label"><label for="background-opacity">Background opacity</label><output for="background-opacity">{percent(design.backgroundOpacity)}</output></div><input id="background-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.backgroundOpacity} aria-valuetext={percent(design.backgroundOpacity)}></fieldset>
+        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><div class="slider-label"><label for="label-opacity">Label opacity</label><output for="label-opacity">{percent(design.label.opacity)}</output></div><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity} aria-valuetext={percent(design.label.opacity)}><div class="slider-label"><label for="size">Label size</label><output for="size">{design.label.size} px</output></div><input id="size" type="range" min="10" max="128" bind:value={design.label.size} aria-valuetext={`${design.label.size} pixels`}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><p class="hint">Drag the map label or focus it and use arrow keys.</p></fieldset>
       </details>
       <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button></div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
       <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose({ ...selected!, revision: undefined, manifestSha256: undefined }, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
@@ -220,13 +250,12 @@
       </details>
       {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p>{#if metrics.preparation}<p>Download {metrics.preparation.downloadMs.toFixed(1)} ms · decode {metrics.preparation.decodeMs.toFixed(1)} ms · index {metrics.preparation.indexMs.toFixed(1)} ms · projection {metrics.preparation.projectMs.toFixed(1)} ms</p><p class="hint">Download time includes delivery waits; parallel request times can overlap.</p>{/if}</details>{/if}
     {/if}
-    {#if recent.length}<details><summary>Recent cities</summary><div class="results">{#each recent as city (city.key)}<button onclick={() => choose(city)}>{city.name}</button>{/each}</div></details>{/if}
     {#if saved.length}<details><summary>Saved designs</summary>{#each saved as record (record.id)}<div class="saved"><button onclick={() => restore(record)}>{record.name}</button><button aria-label={`Export settings ${record.name}`} onclick={() => exportDesign(record)}>Export JSON</button><button aria-label={`Delete design ${record.name}`} onclick={() => { removeDesign(record.id); saved = designs(); }}>Delete</button></div>{/each}</details>{/if}
     <footer>Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors, ODbL</a>.</footer>
     </div>
   </aside>
   <section class="map-panel" aria-label="Map preview">
-    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} onview={view} onerror={failed} onlarge={large} onprogress={(value, id) => { if (id === generation) progress = value; }} onready={loaded} />{/key}
+    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
@@ -242,6 +271,14 @@ label { display: block; font-size: 13px; font-weight: 600; margin: 10px 0 6px; }
 input:not([type=color]):not([type=range]) { width: 100%; border: 1px solid #bcc5b7; border-radius: 6px; padding: 10px; background: #fff; }
 input[type=color] { width: 44px; height: 30px; margin-left: 8px; padding: 0; vertical-align: middle; }
 input[type=range], select { width: 100%; }
+.slider-label { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 10px 0 6px; }
+.slider-label label { margin: 0; }
+output { font-size: 13px; font-variant-numeric: tabular-nums; color: #3f4a3c; }
+.load-status { margin: 8px 0 12px; }
+.load-status progress { display: block; width: 100%; height: 10px; accent-color: #507e5c; }
+.load-status .hint { margin: 6px 0; font-variant-numeric: tabular-nums; }
+.warning { color: #7a4b00; }
+.sheet-progress { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 3px; accent-color: #507e5c; }
 select { border: 1px solid #bcc5b7; border-radius: 6px; padding: 9px; background: #fff; font: inherit; }
 .results { display: grid; gap: 6px; margin-top: 10px; }
 .results button { text-align: left; }

@@ -3,7 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { providerProxy } from './provider-proxy.ts';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildDataset } from '../../tools/city-data/build.ts';
-interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; failures?: number; retryAfter?: string }
+// `trickle` streams a Content-Length body in four parts, this many milliseconds apart.
+interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; trickle?: number; failures?: number; retryAfter?: string }
 interface SearchCall { query: string; userAgent?: string; format: string | null; limit: string | null }
 let scenarios: { search: Scenario; roads: Scenario } = { search: {}, roads: {} };
 const realCity = buildDataset(JSON.parse(gunzipSync(await readFile(new URL('../fixtures/real-city/monaco.json.gz', import.meta.url))).toString('utf8')), 2048);
@@ -53,7 +54,14 @@ const server = createServer(async (req, res) => {
     if (scenario.retryAfter) res.setHeader('Retry-After', scenario.retryAfter);
     const normal = kind === 'search' ? [{ osm_type: 'relation', osm_id: '101', display_name: `${url.searchParams.get('q')}, Japan`, type: 'city', boundingbox: ['35', '35.1', '139', '139.1'] }] : JSON.parse(await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8'));
     if (kind === 'roads') normal.osm3s = { timestamp_osm_base: '2026-10-07T00:00:00.000Z' };
-    res.end(typeof scenario.body === 'string' ? scenario.body : JSON.stringify(scenario.body ?? normal));
+    const text = typeof scenario.body === 'string' ? scenario.body : JSON.stringify(scenario.body ?? normal);
+    if (scenario.trickle) {
+      const bytes = Buffer.from(text), size = Math.ceil(bytes.length / 4);
+      res.setHeader('Content-Length', bytes.length);
+      for (let part = 0; part < 4 && !res.destroyed; part++) { res.write(bytes.subarray(part * size, (part + 1) * size)); await new Promise(resolve => setTimeout(resolve, scenario.trickle)); }
+      res.end(); return;
+    }
+    res.end(text);
   } catch { if (!res.destroyed) { res.statusCode = 500; res.end('{"error":"local fixture provider failed"}'); } }
 });
 server.listen(8091, '127.0.0.1', () => console.log('Local fixture provider: http://127.0.0.1:8091'));

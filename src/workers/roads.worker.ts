@@ -36,9 +36,30 @@ function measure<T>(phase: keyof typeof preparation, work: () => T): T {
   const start = performance.now();
   try { return work(); } finally { preparation[phase] += performance.now() - start; }
 }
-async function downloaded(url: string, options: RequestInit, limit: number, deadline?: number): Promise<Uint8Array<ArrayBuffer>> {
+let reportedAt = 0;
+/** Throttled byte progress. Final reports always send, so the bar reaches the end. */
+function reportBytes(message: string, bytes: number, total?: number, extra: Partial<LoadProgress> = {}, final = false) {
+  const now = performance.now();
+  if (!final && now - reportedAt < 100) return;
+  reportedAt = now;
+  progress({ stage: 'download', message, bytes, totalBytes: total, ...extra });
+}
+/** Content-Length, or undefined when absent. It counts encoded bytes, so the UI drops it if exceeded. */
+function contentLength(response: Response) {
+  const length = Number(response.headers.get('Content-Length'));
+  return Number.isSafeInteger(length) && length > 0 ? length : undefined;
+}
+type ByteProgress = (bytes: number, total: number | undefined, final: boolean) => void;
+
+async function downloaded(url: string, options: RequestInit, limit: number, deadline?: number, onBytes?: ByteProgress): Promise<Uint8Array<ArrayBuffer>> {
   const start = performance.now();
-  try { return await responseBytes(await request(url, { ...options, signal: abort.signal }, deadline), limit); }
+  try {
+    const response = await request(url, { ...options, signal: abort.signal }, deadline);
+    const total = contentLength(response);
+    const bytes = await responseBytes(response, limit, onBytes && (received => onBytes(received, total, false)));
+    onBytes?.(bytes.byteLength, total, true);
+    return bytes;
+  }
   finally { preparation.downloadMs += performance.now() - start; }
 }
 function json(bytes: Uint8Array) { return measure('decodeMs', () => JSON.parse(new TextDecoder().decode(bytes))); }
@@ -84,8 +105,13 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   const fragments = new Map<string, { next: number; end: [number, number]; tags: string }>();
   let segments = 0;
   const chunks = manifest.chunks;
+  // The manifest knows every chunk's decoded size, so city downloads have an exact total.
+  const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.decoded_bytes, 0);
+  const received = chunks.map(() => 0);
+  let completed = 0;
+  const reportChunks = (final: boolean) => reportBytes('Loading cached road chunks…', received.reduce((sum, bytes) => sum + bytes, 0), totalBytes, { completedChunks: completed, totalChunks: chunks.length }, final);
   const fetchChunk = async (descriptor: ChunkDescriptor) => {
-    const decoded = await downloaded(`${base}/${descriptor.key}`, { cache: load.forceNetwork ? 'reload' : 'default' }, 64 * 1024 * 1024);
+    const decoded = await downloaded(`${base}/${descriptor.key}`, { cache: load.forceNetwork ? 'reload' : 'default' }, 64 * 1024 * 1024, undefined, (bytes, _total, final) => { received[descriptor.index] = bytes; reportChunks(final); });
     assert(decoded.byteLength === descriptor.decoded_bytes && await checksum(decoded) === descriptor.decoded_sha256, 'Cached chunk checksum/size mismatch');
     return { descriptor, chunk: measure('decodeMs', () => decodeChunk(decoded)) };
   };
@@ -105,7 +131,8 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
       segments += positions.length / 4;
       sendChunk(positions, projection!, descriptor.index, rank);
     }
-    progress({ stage: 'download', message: 'Loading cached road chunks…', completedChunks: descriptor.index + 1, totalChunks: chunks.length });
+    completed = descriptor.index + 1;
+    reportChunks(true);
   };
   for (let index = 0; index < CHUNK_WINDOW; index++) prefetch(index);
   // Chunks are consumed in manifest order for deterministic fragment validation.
@@ -141,7 +168,7 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
 async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.fixtureUrl) {
     progress({ stage: 'download', message: 'Loading sample roads…' });
-    const data = json(await downloaded(load.fixtureUrl, { cache: load.forceNetwork ? 'reload' : 'default' }, MAX_BYTES));
+    const data = json(await downloaded(load.fixtureUrl, { cache: load.forceNetwork ? 'reload' : 'default' }, MAX_BYTES, undefined, (bytes, total, final) => reportBytes('Loading sample roads…', bytes, total, {}, final)));
     progress({ stage: 'project', message: 'Preparing sample geometry…' });
     sendParts(preparedJson(data));
     return { kind: 'fixture', downloadedAt: new Date().toISOString(), snapshotAt: data.metadata?.source?.snapshot_at, complete: true };
@@ -160,7 +187,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   if (load.useCache && load.providers.legacyCacheBase && load.boundary.areaId) {
     try {
       progress({ stage: 'download', message: 'Loading the legacy city cache…' });
-      const bytes = await downloaded(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { cache: load.forceNetwork ? 'reload' : 'default' }, 64 * 1024 * 1024);
+      const bytes = await downloaded(`${load.providers.legacyCacheBase}/${load.boundary.areaId}.pbf`, { cache: load.forceNetwork ? 'reload' : 'default' }, 64 * 1024 * 1024, undefined, (received, total, final) => reportBytes('Loading the legacy city cache…', received, total, {}, final));
       const data = measure('decodeMs', () => place.read(new Pbf(bytes)));
       assert(data.version === 1, 'Unsupported legacy cache version');
       const elements = [ ...data.nodes.map(node => ({ ...node, type: 'node' })), ...data.ways.map((way, index) => ({ ...way, id: String(index + 1), type: 'way' })) ];
@@ -172,7 +199,8 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
       progress({ stage: 'cache', message: 'Legacy city cache is unavailable. Loading live roads…' });
     }
   }
-  progress({ stage: 'download', message: 'Downloading live OpenStreetMap roads…' });
+  // Overpass computes the whole query before streaming, so this wait can be long and silent.
+  progress({ stage: 'download', message: 'Waiting for the road service…' });
   if (!load.allowLarge) { scope.postMessage({ type: 'large', bytes: 0 }); throw new Error('Live download needs confirmation'); }
   const downloadStarted = performance.now();
   coverage = load.detail;
@@ -180,11 +208,13 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   const length = Number(response.headers.get('Content-Length'));
   assert(!length || length <= MAX_BYTES, 'This download exceeds the response limit. Choose a smaller area.');
   if (length > LARGE_BYTES && !load.allowLarge) { await response.body?.cancel(); scope.postMessage({ type: 'large', bytes: length }); throw new Error('Large download needs confirmation'); }
-  const body = await responseBytes(response, MAX_BYTES, undefined, OVERPASS_IDLE);
+  const liveBytes = (bytes: number, final: boolean) => reportBytes('Downloading live roads…', bytes, length || undefined, {}, final);
+  const body = await responseBytes(response, MAX_BYTES, bytes => liveBytes(bytes, false), OVERPASS_IDLE);
+  liveBytes(body.byteLength, true);
   preparation.downloadMs += performance.now() - downloadStarted;
   const data = json(body);
   if (typeof data.remark === 'string') throw new Error('The road provider could not complete this query. Retry or choose a smaller area.');
-  progress({ stage: 'project', message: 'Indexing and projecting roads…', bytes: length || undefined });
+  progress({ stage: 'project', message: 'Indexing and projecting roads…' });
   let geometry: ReturnType<typeof osmGeometry>;
   try { geometry = preparedJson(data); }
   catch (error) {
