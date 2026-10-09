@@ -12,9 +12,11 @@ test('PNG and SVG preserve dimensions, visible roads, Unicode, palette, transpar
   const png = await download(page, 'PNG'); expect([...png.bytes.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]); expect(png.bytes.readUInt32BE(16)).toBe(800); expect(png.bytes.readUInt32BE(20)).toBe(600);
   await testInfo.attach('map.png', { body: png.bytes, contentType: 'image/png' });
   await testInfo.attach('map.svg', { body: svg.bytes, contentType: 'image/svg+xml' });
-  const pixels = async (bytes: Buffer) => page.evaluate(async data => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close(); const sample = ctx.getImageData(250, 200, 300, 200).data; let roads = 0; for (let i = 0; i < sample.length; i += 4) if (sample[i + 1] < 200 && sample[i] < 200 && sample[i + 3] > 0) roads++; return { roads, corner: ctx.getImageData(0, 0, 1, 1).data[3] }; }, [...bytes]);
+  const pixels = async (bytes: Buffer) => page.evaluate(async data => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close(); const sample = ctx.getImageData(250, 200, 300, 200).data; let roads = 0; for (let i = 0; i < sample.length; i += 4) if (sample[i + 1] < 200 && sample[i] < 200 && sample[i + 3] > 0) roads++; return { roads, corner: ctx.getImageData(8, 8, 1, 1).data[3], border: [...ctx.getImageData(1, 1, 1, 1).data] }; }, [...bytes]);
   expect((await pixels(png.bytes)).roads).toBeGreaterThan(500); expect((await pixels(png.bytes)).corner).toBe(255);
-  await page.getByLabel('Transparent background', { exact: true }).check(); expect((await pixels((await download(page, 'PNG')).bytes)).corner).toBe(0); expect((await download(page, 'SVG')).bytes.toString()).not.toContain('<rect');
+  // A 3 px border in the road colour at full opacity frames every export.
+  expect((await pixels(png.bytes)).border).toEqual([0x12, 0x56, 0x34, 255]); expect(xml).toContain('stroke="#125634" stroke-width="3"/>');
+  await page.getByLabel('Transparent background', { exact: true }).check(); expect((await pixels((await download(page, 'PNG')).bytes)).corner).toBe(0); expect((await download(page, 'SVG')).bytes.toString()).not.toContain('<rect width="100%"');
   await page.getByRole('button', { name: 'Close', exact: true }).click(); await expect(label(page)).toHaveText('東京 & <City>: map');
 });
 

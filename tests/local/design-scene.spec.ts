@@ -71,20 +71,74 @@ test('live loads download only the road detail shown and fetch more only when ne
 
 test('the north arrow shows by default, appears in PNG and SVG exports and can be turned off', async ({ page }) => {
   await page.goto('/'); await sample(page);
-  const arrow = page.getByRole('img', { name: 'North arrow' }); await expect(arrow).toBeVisible();
+  const arrow = page.getByRole('button', { name: /^North arrow/ }); await expect(arrow).toBeVisible();
   const exported = async () => {
     await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByLabel('Width in pixels').fill('800'); await page.getByLabel('Height in pixels').fill('600');
     const files: Buffer[] = [];
     for (const format of ['SVG', 'PNG']) { const pending = page.waitForEvent('download'); await page.getByRole('button', { name: `Download ${format}`, exact: true }).click(); files.push(await readFile((await (await pending).path())!)); }
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     // Count dark pixels in the top-right corner, where the arrow sits clear of the roads.
-    const dark = await page.evaluate(async data => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); const pixels = ctx.getImageData(680, 0, 120, 120).data; let count = 0; for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 1] < 100 && pixels[i + 2] < 100) count++; return count; }, [...files[1]]);
+    const dark = await page.evaluate(async data => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(data)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); const pixels = ctx.getImageData(680, 6, 114, 114).data; let count = 0; for (let i = 0; i < pixels.length; i += 4) if (pixels[i] < 100 && pixels[i + 1] < 100 && pixels[i + 2] < 100) count++; return count; }, [...files[1]]);
     return { svg: files[0].toString('utf8'), dark };
   };
   const shown = await exported(); expect(shown.svg).toContain('>N</text>'); expect(shown.dark).toBeGreaterThan(50);
   await page.getByLabel('Show north arrow').uncheck(); await expect(arrow).toHaveCount(0);
   expect((await share(page)).searchParams.get('north')).toBe('0');
   const hidden = await exported(); expect(hidden.svg).not.toContain('>N</text>'); expect(hidden.dark).toBe(0);
+});
+
+test('the north arrow and scale bar move by drag and arrow keys, and links restore their positions', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const compass = page.getByRole('button', { name: /^North arrow/ }), bar = page.getByRole('button', { name: /^Scale bar/ });
+  const centre = async (element: typeof compass) => { const b = (await element.boundingBox())!, m = (await page.locator('.map').boundingBox())!; return [(b.x + b.width / 2 - m.x) / m.width, (b.y + b.height / 2 - m.y) / m.height]; };
+  const map = (await page.locator('.map').boundingBox())!, box = (await compass.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(map.x + map.width * 0.3, map.y + map.height * 0.4, { steps: 6 }); await page.mouse.up();
+  let link = await share(page);
+  expect(Number(link.searchParams.get('northX'))).toBeCloseTo(0.3, 2); expect(Number(link.searchParams.get('northY'))).toBeCloseTo(0.4, 2);
+  // Until it is moved, the scale bar follows just below the north arrow.
+  const [compassX, compassY] = await centre(compass), [barX, barY] = await centre(bar);
+  expect(barX).toBeCloseTo(compassX, 2); expect(barY).toBeGreaterThan(compassY); expect(link.searchParams.has('scaleX')).toBe(false);
+  await compass.focus(); await page.keyboard.press('ArrowLeft');
+  const [followX, followY] = await centre(bar); expect(followX).toBeCloseTo(barX - 0.01, 2); expect(followY).toBeCloseTo(barY, 2);
+  await bar.focus(); await page.keyboard.press('Shift+ArrowUp');
+  link = await share(page);
+  expect(Number(link.searchParams.get('northX'))).toBeCloseTo(0.29, 2);
+  expect(Number(link.searchParams.get('scaleX'))).toBeCloseTo(followX, 2); expect(Number(link.searchParams.get('scaleY'))).toBeCloseTo(followY - 0.05, 2);
+  await page.goto(link.href); await expect(status(page)).toContainText('ready');
+  const [x, y] = await centre(compass); expect(x).toBeCloseTo(0.29, 2); expect(y).toBeCloseTo(0.4, 2);
+  expect((await centre(bar))[1]).toBeCloseTo(followY - 0.05, 2);
+});
+
+test('the railway scale bar shows kilometre and mile teeth, follows zoom, exports and can be hidden', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const bar = page.getByRole('button', { name: /^Scale bar/ }), name = async () => (await bar.getAttribute('aria-label'))!;
+  const before = await name(); expect(before).toMatch(/^Scale bar, \d+ (km|m) and \d+ (mi|ft) at the map centre/);
+  await expect(bar.locator('text').last()).toHaveText(/^\d+ (mi|ft)$/);
+  // Teeth mark whole numbers only.
+  for (const text of await bar.locator('text').allTextContents()) expect(text).toMatch(/^\d+( (km|m|mi|ft))?$/);
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click(); await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect.poll(name).not.toBe(before);
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
+  const xml = (await readFile((await (await pending).path())!)).toString('utf8');
+  expect(xml).toMatch(/ (km|m)<\/text>/); expect(xml).toMatch(/ (mi|ft)<\/text>/);
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByLabel('Show scale bar').uncheck(); await expect(bar).toHaveCount(0);
+  expect((await share(page)).searchParams.get('scaleBar')).toBe('0');
+});
+
+test('the options sidebar collapses to a hamburger button and the map takes the full width', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const canvas = page.locator('canvas'), before = (await canvas.boundingBox())!.width;
+  await page.getByRole('button', { name: 'Hide options', exact: true }).click();
+  await expect(page.getByRole('complementary', { name: 'Map settings' })).toBeHidden();
+  const show = page.getByRole('button', { name: 'Show options', exact: true });
+  await expect(show).toBeFocused(); await expect(show).toHaveAttribute('aria-expanded', 'false');
+  await expect.poll(async () => (await canvas.boundingBox())!.width).toBeGreaterThan(before + 300);
+  await expect(page.getByRole('button', { name: /^Scale bar/ })).toBeVisible();
+  await show.click(); await expect(page.getByLabel('Find a city')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Hide options', exact: true })).toBeFocused();
+  await expect.poll(async () => (await canvas.boundingBox())!.width).toBeCloseTo(before, 0);
 });
 
 test('saved designs restore settings after reload and can be deleted; no recent-city list is shown', async ({ page }) => {
@@ -148,6 +202,8 @@ test.describe('mobile accessibility', () => {
       const event = new KeyboardEvent('keydown', { key: '+', ctrlKey: true, bubbles: true, cancelable: true });
       canvas.dispatchEvent(event); return !event.defaultPrevented;
     })).toBe(true);
-    await expect(page.getByRole('link', { name: '© OpenStreetMap contributors', exact: true }).first()).toHaveAttribute('href', 'https://www.openstreetmap.org/copyright');
+    // Attribution stays in the settings and exports, not on the map itself.
+    await expect(page.getByRole('link', { name: '© OpenStreetMap contributors, ODbL', exact: true })).toHaveAttribute('href', 'https://www.openstreetmap.org/copyright');
+    await expect(page.locator('.map a')).toHaveCount(0);
   });
 });

@@ -36,6 +36,8 @@ export function roadRank(highway: unknown): RoadRank {
 export const detailRank = (detail: RoadDetail): RoadRank => ROAD_DETAILS.indexOf(detail) as RoadRank;
 /** Whether geometry downloaded at `coverage` contains every road shown at `detail`. */
 export const covers = (coverage: RoadDetail, detail: RoadDetail) => detailRank(coverage) >= detailRank(detail);
+/** Normalized centre of a draggable map mark, as a fraction of the map's width and height. */
+export interface MarkPosition { x: number; y: number }
 export interface Design {
   roadColor: string;
   roadOpacity: number;
@@ -44,12 +46,16 @@ export interface Design {
   label: { text: string; x: number; y: number; size: number; color: string; opacity: number };
   detail: RoadDetail;
   north: boolean;
+  northAt: MarkPosition;
+  scaleBar: boolean;
+  /** Unset until moved: the scale bar then sits just below the north arrow. */
+  scaleBarAt?: MarkPosition;
   view?: GeoView;
 }
 export const DEFAULT_DESIGN: Design = {
   roadColor: '#1a1a1a', roadOpacity: 0.8, backgroundColor: '#f7f2e8', backgroundOpacity: 1,
   label: { text: '', x: 0.75, y: 0.83, size: 28, color: '#161616', opacity: 1 },
-  detail: 'streets', north: true,
+  detail: 'streets', north: true, northAt: { x: 0.9, y: 0.12 }, scaleBar: true,
 };
 /** `cityDataBundled` marks `cityDataBase` as the app's own `/data`, which holds only the bundled cities. */
 export interface Providers { cityDataBase: string; cityDataBundled?: boolean; legacyCacheBase: string; overpass: string; search: string }

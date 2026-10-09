@@ -51,13 +51,13 @@ test('render, pan/zoom, colors, Unicode labels and PNG/SVG downloads', async ({ 
     const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close();
     const sample = ctx.getImageData(Math.floor(canvas.width * 0.3), Math.floor(canvas.height * 0.3), Math.floor(canvas.width * 0.4), Math.floor(canvas.height * 0.4)).data;
     let roads = 0; for (let i = 0; i < sample.length; i += 4) if (sample[i] < 100 && sample[i + 1] < 100 && sample[i + 2] < 100 && sample[i + 3] > 0) roads++;
-    return { roads, cornerAlpha: ctx.getImageData(0, 0, 1, 1).data[3] };
+    return { roads, cornerAlpha: ctx.getImageData(8, 8, 1, 1).data[3] };
   }, [...png]);
   expect(pixels.roads).toBeGreaterThan(500); expect(pixels.cornerAlpha).toBe(255);
   await page.getByLabel('Transparent background', { exact: true }).check();
   const transparentDownload = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PNG' }).click();
   const transparent = await readFile((await (await transparentDownload).path())!);
-  expect(await page.evaluate(async bytes => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close(); return ctx.getImageData(0, 0, 1, 1).data[3]; }, [...transparent])).toBe(0);
+  expect(await page.evaluate(async bytes => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); bitmap.close(); return ctx.getImageData(8, 8, 1, 1).data[3]; }, [...transparent])).toBe(0);
   await page.getByRole('button', { name: 'Close', exact: true }).click();
   expect(errors).toEqual([]);
 });

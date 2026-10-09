@@ -27,8 +27,13 @@ export function parseUrl(search: string): { query: string; boundary?: Boundary; 
     label: { text: (p.get('label') || '').slice(0, 256), color: color(p.get('labelColor'), label.color), opacity: number(p.get('labelOpacity'), 1, 0, 1), x: number(p.get('labelX'), label.x, 0, 1), y: number(p.get('labelY'), label.y, 0, 1), size: number(p.get('labelSize'), label.size, 10, 128) },
     detail: ROAD_DETAILS.includes(p.get('detail') as RoadDetail) ? p.get('detail') as RoadDetail : DEFAULT_DESIGN.detail,
     north: p.get('north') !== '0',
+    northAt: { x: number(p.get('northX'), DEFAULT_DESIGN.northAt.x, 0, 1), y: number(p.get('northY'), DEFAULT_DESIGN.northAt.y, 0, 1) },
+    scaleBar: p.get('scaleBar') !== '0',
     view: parseView(p.get('view')),
   };
+  // A scale bar without its own position follows the north arrow.
+  const scaleX = number(p.get('scaleX'), -1, 0, 1), scaleY = number(p.get('scaleY'), -1, 0, 1);
+  if (scaleX >= 0 && scaleY >= 0) design.scaleBarAt = { x: scaleX, y: scaleY };
   let boundary: Boundary | undefined, warning: string | undefined;
   if (p.has('v') && p.get('v') !== '2') warning = 'This design link uses an unsupported version. City identifiers can still be loaded.';
   try {
@@ -79,6 +84,9 @@ export function shareUrl(origin: string, path: string, boundary: Boundary, desig
   // Designs saved before these settings existed keep the defaults.
   if (design.detail) p.set('detail', design.detail);
   if (design.north === false) p.set('north', '0');
+  if (design.northAt) { p.set('northX', String(design.northAt.x)); p.set('northY', String(design.northAt.y)); }
+  if (design.scaleBar === false) p.set('scaleBar', '0');
+  if (design.scaleBarAt) { p.set('scaleX', String(design.scaleBarAt.x)); p.set('scaleY', String(design.scaleBarAt.y)); }
   if (design.view) p.set('view', [design.view.lon.toFixed(7), design.view.lat.toFixed(7), design.view.width.toFixed(2), design.view.height.toFixed(2)].map(Number).join(','));
   return url.href;
 }

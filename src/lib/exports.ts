@@ -1,7 +1,10 @@
 import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
 import type { Geometry } from './domain.ts';
+import { EXPORT_BORDER, northCentre, scaleBarCentre } from './marks.ts';
+import type { Centre, Size } from './marks.ts';
 import { NORTH_ARROW } from './north-arrow.ts';
+import { fittedWidth, metresPerSceneUnit, scaleBar, SCALE_BAR } from './scale-bar.ts';
 export { download } from './download.ts';
 
 export interface ExportOptions { width: number; height: number; transparent: boolean }
@@ -20,7 +23,7 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
     });
     void result.catch(() => {});
     const scale = options.width / snapshot.width;
-    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, scale, labelSize: snapshot.design.label.size * scale, licenseSize: Math.max(10, 12 * scale), strokeWidth: scale / snapshot.pixelRatio });
+    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, latitude: snapshot.view.lat, scale, labelSize: snapshot.design.label.size * scale, licenseSize: Math.max(10, 12 * scale), strokeWidth: scale / snapshot.pixelRatio });
     for (const buffer of snapshot.buffers) {
       signal?.throwIfAborted();
       // Bounded copies preserve screen/export geometry ownership and allow UI feedback.
@@ -61,21 +64,42 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     context.font = `${label.size * scale}px sans-serif`;
     context.textAlign = 'center'; context.textBaseline = 'middle';
     context.fillText(label.text, label.x * options.width, label.y * options.height);
-    if (snapshot.design.north) {
-      const { width, margin, path, letter } = NORTH_ARROW;
+    // Marks are CSS-pixel geometry, laid out as on screen and scaled to the export.
+    const ink = `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
+    const area = { width: options.width, height: options.height };
+    const mark = (centre: Centre, size: Size, draw: () => void) => {
       context.save();
-      context.translate(options.width - (margin + width) * scale, margin * scale); context.scale(scale, scale);
-      context.fillStyle = `rgb(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)})`;
-      context.fill(new Path2D(path));
-      context.font = `bold ${letter.size}px sans-serif`; context.textAlign = 'center'; context.textBaseline = 'middle';
-      context.fillText('N', letter.x, letter.y);
+      context.translate(centre.x - size.width * scale / 2, centre.y - size.height * scale / 2); context.scale(scale, scale);
+      context.fillStyle = context.strokeStyle = ink; context.textAlign = 'center'; context.textBaseline = 'middle';
+      draw();
       context.restore();
-    }
+    };
+    if (snapshot.design.north) mark(northCentre(snapshot.design, area, scale), NORTH_ARROW, () => {
+      const { path, circles, stroke, letter } = NORTH_ARROW;
+      context.lineWidth = stroke; context.lineJoin = 'round'; context.lineCap = 'round';
+      const rose = new Path2D(path);
+      for (const circle of circles) { rose.moveTo(circle.cx + circle.r, circle.cy); rose.arc(circle.cx, circle.cy, circle.r, 0, 2 * Math.PI); }
+      context.stroke(rose);
+      context.font = `bold ${letter.size}px sans-serif`;
+      context.fillText('N', letter.x, letter.y);
+    });
+    // The export's own framing sets its scale; one CSS pixel is `scale` export pixels.
+    const bar = snapshot.design.scaleBar ? scaleBar(fittedWidth(snapshot.camera, options.width / options.height) / options.width * metresPerSceneUnit(snapshot.view.lat) * scale) : undefined;
+    if (bar) mark(scaleBarCentre(snapshot.design, bar, area, scale), bar, () => {
+      context.lineWidth = SCALE_BAR.stroke; context.lineCap = 'square';
+      context.beginPath();
+      for (const line of bar.lines) { context.moveTo(line.x1, line.y1); context.lineTo(line.x2, line.y2); }
+      context.stroke();
+      context.font = `${SCALE_BAR.font}px sans-serif`;
+      for (const text of bar.texts) context.fillText(text.text, text.x, text.y);
+    });
     context.font = `${Math.max(10, 12 * scale)}px sans-serif`; context.textAlign = 'right';
     context.strokeStyle = '#ffffff'; context.lineWidth = Math.max(10, 12 * scale) / 6;
     context.strokeText('© OpenStreetMap contributors', options.width * 0.97, options.height * 0.97);
     context.fillStyle = '#303030';
     context.fillText('© OpenStreetMap contributors', options.width * 0.97, options.height * 0.97);
+    context.strokeStyle = snapshot.design.roadColor; context.lineWidth = EXPORT_BORDER;
+    context.strokeRect(EXPORT_BORDER / 2, EXPORT_BORDER / 2, options.width - EXPORT_BORDER, options.height - EXPORT_BORDER);
     return await new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG export failed')), 'image/png'));
   } finally { controller?.dispose(); }
 }

@@ -9,8 +9,9 @@ export function color(hex: string, alpha = 1) {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) throw new Error('Invalid color');
   return { r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a: alpha };
 }
-export function copyDesign(settings: Design): Design { return { ...settings, label: { ...settings.label }, view: settings.view ? { ...settings.view } : undefined }; }
-export interface SceneSnapshot { buffers: Float32Array[]; bounds: Camera; camera: Camera; design: Design; width: number; height: number; pixelRatio: number }
+export function copyDesign(settings: Design): Design { return { ...settings, label: { ...settings.label }, northAt: { ...settings.northAt }, scaleBarAt: settings.scaleBarAt ? { ...settings.scaleBarAt } : undefined, view: settings.view ? { ...settings.view } : undefined }; }
+/** `view` gives the latitude exports need to measure their scale bar. */
+export interface SceneSnapshot { buffers: Float32Array[]; bounds: Camera; camera: Camera; view: GeoView; design: Design; width: number; height: number; pixelRatio: number }
 export interface SceneOptions {
   /** Called with the data-independent view after camera and size changes. */
   onView?: (view: GeoView) => void;
@@ -155,7 +156,7 @@ export class SceneController {
   snapshot(): SceneSnapshot {
     const rect = this.canvas.getBoundingClientRect();
     // Exports contain only the road classes currently shown.
-    return { buffers: this.geometry.buffers.filter((_buffer, index) => !this.hidden(this.geometry.ranks[index])), bounds: { ...this.geometry.bounds }, camera: this.camera(), design: copyDesign(this.settings), width: rect.width, height: rect.height, pixelRatio: this.renderer.getPixelRatio() };
+    return { buffers: this.geometry.buffers.filter((_buffer, index) => !this.hidden(this.geometry.ranks[index])), bounds: { ...this.geometry.bounds }, camera: this.camera(), view: this.view(), design: copyDesign(this.settings), width: rect.width, height: rect.height, pixelRatio: this.renderer.getPixelRatio() };
   }
   render() { this.renderer.renderFrame(true); }
 

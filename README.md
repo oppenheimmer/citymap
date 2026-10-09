@@ -46,8 +46,12 @@ Loading shows a progress bar: exact for cached city data, and for any download
 that reports its size. Otherwise it shows bytes received, elapsed time and a
 warning when the service goes quiet.
 Maps default to street-level road detail; footpaths, sidewalks and service ways
-are optional, and live loads download only the classes shown. A north arrow is
-drawn on the map and in exports.
+are optional, and live loads download only the classes shown. A minimal compass
+rose and a railway-style scale bar (whole kilometres or metres above, miles or feet
+below, measured at the map centre) can be dragged anywhere on the map; the scale
+bar sits below the compass until moved. Exports carry both, a 3 px road-colour
+border and the OpenStreetMap credit, which the screen keeps in the sidebar footer.
+On desktop the options sidebar collapses to a menu button.
 Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 

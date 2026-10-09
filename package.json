@@ -32,7 +32,7 @@
     "benchmark:browser": "node tools/browser-benchmark.mjs",
     "deploy:check": "node tools/deployment-check.mjs",
     "browser:check": "tsc --project tsconfig.browser.json",
-    "test:local:unit": "node --test --test-isolation=none tests/app-core.test.ts tests/load-city.test.ts tests/renderer-compat.test.ts tests/request.test.ts tests/response-body.test.ts tests/bundled-cities.test.ts tests/load-status.test.ts tests/roads-worker.test.ts tests/search.test.ts",
+    "test:local:unit": "node --test --test-isolation=none tests/app-core.test.ts tests/load-city.test.ts tests/renderer-compat.test.ts tests/request.test.ts tests/response-body.test.ts tests/bundled-cities.test.ts tests/load-status.test.ts tests/roads-worker.test.ts tests/scale-bar.test.ts tests/search.test.ts",
     "test:local:browser": "playwright test --config playwright.local.config.ts",
     "test:local": "npm run check && npm run lint && npm run test:local:unit && npm run test:local:browser"
   },

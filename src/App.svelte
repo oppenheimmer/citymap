@@ -1,8 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import MapCanvas from './MapCanvas.svelte';
   import { bbox, boundaryFromNominatim, covers, publicUrl } from './lib/domain.ts';
-  import type { Boundary, Design, GeoView, Geometry, LoadProgress, PreparationTimings, Providers, RoadDetail, SourceInfo } from './lib/domain.ts';
+  import type { Boundary, Design, GeoView, Geometry, LoadProgress, MarkPosition, PreparationTimings, Providers, RoadDetail, SourceInfo } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   import { request } from './lib/request.ts';
@@ -51,6 +51,13 @@
   let historyTimer: ReturnType<typeof setTimeout> | undefined;
   let providers: Providers;
   let mobile = $state(false), controlsOpen = $state(true);
+  // Desktop sidebar; phones use the collapsible sheet instead.
+  let sidebarOpen = $state(true);
+  let showOptions = $state<HTMLButtonElement>(), hideOptions = $state<HTMLButtonElement>();
+  async function toggleSidebar(open: boolean) {
+    sidebarOpen = open; await tick();
+    (open ? hideOptions : showOptions)?.focus();
+  }
   const dateFormatter = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   // This request cache is not UI state and does not need reactive entries.
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -62,7 +69,7 @@
     { name: 'Plum', background: '#302a3b', roads: '#e4d8c7', labels: '#fbecd4' },
   ];
 
-  function copy(): Design { return { ...design, label: { ...design.label }, view: controller?.view() || design.view }; }
+  function copy(): Design { return { ...design, label: { ...design.label }, northAt: { ...design.northAt }, scaleBarAt: design.scaleBarAt ? { ...design.scaleBarAt } : undefined, view: controller?.view() || design.view }; }
   function boundaryForShare(): Boundary {
     return { ...selected!, revision: source?.kind === 'r2' ? source.revision : selected?.revision, manifestSha256: source?.kind === 'r2' ? source.manifestSha256 : selected?.manifestSha256 };
   }
@@ -72,7 +79,7 @@
     if (!ready || !selected) return;
     historyTimer = setTimeout(() => { window.history.replaceState(null, '', url()); }, 250);
   }
-  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.detail, design.north]; history(); });
+  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.detail, design.north, design.northAt.x, design.northAt.y, design.scaleBar, design.scaleBarAt?.x, design.scaleBarAt?.y]; history(); });
   function cancel() {
     generation++; mounted = false; loading = false; ready = false; controller = null;
     confirmation = null; progress = null; transfer = null; status = 'Load cancelled.';
@@ -94,7 +101,7 @@
     generation++; mounted = false; ready = false; controller = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
     progress = null; transfer = null; startedAt = lastActivityAt = clock = performance.now();
-    if (restore) design = { ...restore, label: { ...restore.label } };
+    if (restore) design = { ...restore, label: { ...restore.label }, northAt: { ...restore.northAt }, scaleBarAt: restore.scaleBarAt ? { ...restore.scaleBarAt } : undefined };
     else { design.view = undefined; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
     bboxText = boundary.bbox?.join(',') || '';
     options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined };
@@ -210,8 +217,9 @@
 </script>
 
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && loading) cancel(); }} />
-<main class="layout">
-  <aside class:collapsed={mobile && !controlsOpen} aria-label="Map settings">
+{#snippet hamburger()}<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>{/snippet}
+<main class="layout" class:sidebar-closed={!mobile && !sidebarOpen}>
+  <aside id="options" class:collapsed={mobile && !controlsOpen} hidden={!mobile && !sidebarOpen} aria-label="Map settings">
     <div class="sheet-toolbar">
       <span class="sheet-title">{selected?.name.split(',')[0] || 'Citymap'}</span>
       {#if !controlsOpen && loading}<button onclick={cancel}>Cancel load</button>{/if}
@@ -220,7 +228,7 @@
     </div>
     {#if mobile && !controlsOpen}<p class="sheet-status" role="status" aria-live="polite">{status}</p>{/if}
     <div id="settings-content" hidden={mobile && !controlsOpen}>
-    <header><p class="eyebrow">CITYMAP</p><h1>Make a map.</h1><p>Your city, drawn in roads.</p></header>
+    <header>{#if !mobile}<button class="menu-toggle hide-options" bind:this={hideOptions} aria-label="Hide options" aria-expanded="true" aria-controls="options" onclick={() => toggleSidebar(false)}>{@render hamburger()}</button>{/if}<p class="eyebrow">CITYMAP</p><h1>Make a map.</h1><p>Your city, drawn in roads.</p></header>
     <form onsubmit={event => { event.preventDefault(); void search(); }}>
       <label for="search">Find a city</label><div class="search-row"><input id="search" type="search" bind:value={query} oninput={editQuery} placeholder="Tokyo, Japan" autocomplete="off" maxlength="256"><button type="submit" disabled={searching || !query.trim()}>Search</button></div>
       <div class="results">{#each results as city (city.key)}<button type="button" onclick={() => choose(city)}>{city.name}<small>{city.kind}{city.osmType ? ` · ${city.osmType}` : ''}</small></button>{/each}</div>
@@ -243,7 +251,7 @@
         <fieldset><legend>Road detail</legend><label for="detail">Roads shown</label><select id="detail" value={design.detail} onchange={event => setDetail(event.currentTarget.value as RoadDetail)}><option value="major">Major roads</option><option value="streets">Streets</option><option value="all">All ways, including footpaths and service roads</option></select><p class="hint">Footpaths, sidewalks and service ways can make dense cities solid black.</p></fieldset>
         <fieldset><legend>Presets</legend><div class="buttons">{#each presets as preset (preset.name)}<button onclick={() => applyPreset(preset)}>{preset.name}</button>{/each}</div></fieldset>
         <fieldset><legend>Colors</legend><label>Road color <input type="color" bind:value={design.roadColor}></label><div class="slider-label"><label for="road-opacity">Road opacity</label><output for="road-opacity">{percent(design.roadOpacity)}</output></div><input id="road-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.roadOpacity} aria-valuetext={percent(design.roadOpacity)}><label>Background color <input type="color" bind:value={design.backgroundColor}></label><div class="slider-label"><label for="background-opacity">Background opacity</label><output for="background-opacity">{percent(design.backgroundOpacity)}</output></div><input id="background-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.backgroundOpacity} aria-valuetext={percent(design.backgroundOpacity)}></fieldset>
-        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><div class="slider-label"><label for="label-opacity">Label opacity</label><output for="label-opacity">{percent(design.label.opacity)}</output></div><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity} aria-valuetext={percent(design.label.opacity)}><div class="slider-label"><label for="size">Label size</label><output for="size">{design.label.size} px</output></div><input id="size" type="range" min="10" max="128" bind:value={design.label.size} aria-valuetext={`${design.label.size} pixels`}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><p class="hint">Drag the map label or focus it and use arrow keys.</p></fieldset>
+        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><div class="slider-label"><label for="label-opacity">Label opacity</label><output for="label-opacity">{percent(design.label.opacity)}</output></div><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity} aria-valuetext={percent(design.label.opacity)}><div class="slider-label"><label for="size">Label size</label><output for="size">{design.label.size} px</output></div><input id="size" type="range" min="10" max="128" bind:value={design.label.size} aria-valuetext={`${design.label.size} pixels`}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><label class="checkbox"><input type="checkbox" bind:checked={design.scaleBar}> Show scale bar</label><p class="hint">Drag the label, north arrow or scale bar on the map, or focus one and use arrow keys.</p></fieldset>
       </details>
       <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button></div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
       <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose({ ...selected!, revision: undefined, manifestSha256: undefined }, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
@@ -257,7 +265,8 @@
     </div>
   </aside>
   <section class="map-panel" aria-label="Map preview">
-    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
+    {#if !mobile && !sidebarOpen}<button class="menu-toggle show-options" bind:this={showOptions} aria-label="Show options" aria-expanded="false" aria-controls="options" onclick={() => toggleSidebar(true)}>{@render hamburger()}</button>{/if}
+    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
@@ -289,7 +298,12 @@ fieldset { border: 0; border-top: 1px solid var(--ui-border); margin: 20px 0 0; 
 legend { padding-right: 10px; font-size: 13px; font-weight: 700; }
 .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .error { color: #8e2525; font-size: 14px; line-height: 1.5; }.error button { display: block; margin-top: 8px; }
-.map-panel { min-width: 0; min-height: 0; }
+.map-panel { position: relative; min-width: 0; min-height: 0; }
+.layout.sidebar-closed { grid-template-columns: minmax(0, 1fr); }
+header { position: relative; }
+.menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; }
+.hide-options { position: absolute; top: -6px; right: 0; }
+.show-options { position: absolute; top: 12px; left: 12px; z-index: 2; box-shadow: 0 1px 4px #0002; }
 .empty { display: grid; align-content: center; height: 100%; padding: 40px; text-align: center; color: #54654d; }
 .empty h2 { font-size: clamp(28px, 5vw, 60px); font-weight: 400; letter-spacing: -2px; margin: 0; }
 footer { margin-top: 28px; }
