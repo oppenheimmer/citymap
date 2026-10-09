@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
+import { readFile } from 'node:fs/promises';
 import { buildDataset } from '../tools/city-data/build.ts';
 import type { WorkerLoad, WorkerResult } from '../src/lib/worker-protocol.ts';
 
@@ -98,4 +99,17 @@ test('a selected revision that later fails does not fall back to live roads', as
   const { messages, requests } = await run(t, {}, url => url === manifest ? new Response('', { status: 500 }) : r2(url));
   assert.equal(messages.at(-1)!.type, 'error');
   assert.ok(!requests.includes(overpass));
+});
+
+test('a bundled-only data origin serves its own cities and is never probed for others', async t => {
+  const shipped = 'http://app.example.com/data';
+  const fromShipped: Route = async url => url.startsWith(`${shipped}/`) ? new Response(new Uint8Array(await readFile(new URL(`../public/data/${url.slice(shipped.length + 1)}`, import.meta.url)))) : new Response(JSON.stringify(liveRoads));
+  const providers = { cityDataBase: shipped, cityDataBundled: true, legacyCacheBase: '', overpass, search: '' };
+  const monaco = await run(t, { boundary: { key: 'osm-relation-1124039', name: 'Monaco', kind: 'city', areaId: '3601124039' }, providers }, fromShipped);
+  const done = monaco.messages.at(-1)!;
+  assert.ok(done.type === 'done' && done.source.kind === 'r2' && done.source.bundled === true && done.segmentCount === 15369);
+  assert.ok(!monaco.requests.includes(overpass));
+  const other = await run(t, { boundary: { key: 'osm-relation-77', name: 'Elsewhere', kind: 'city', areaId: '3600000077' }, providers }, fromShipped);
+  assert.deepEqual(other.requests, [overpass]);
+  assert.equal(other.messages.at(-1)!.type, 'done');
 });

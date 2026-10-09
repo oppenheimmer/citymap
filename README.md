@@ -123,7 +123,13 @@ npm run data:extract -- --input /path/to/region.osm.pbf --config /path/to/cities
 npm run data:build -- --input /path/to/city.json --output .city-data
 npm run data:validate -- --output .city-data --manifest <manifest-object-key>
 npm run data:publish -- --root .city-data --manifest <manifest-object-key>
+npm run data:bundle
 ```
+
+Monaco ships with the app as a same-origin version-2 dataset in `public/data`, so it
+loads in a fraction of a second without R2 or Overpass. Without
+`VITE_CITY_DATA_BASE_URL` the app only looks there for bundled cities; every other
+city loads live. `npm run data:bundle` regenerates the shipped files.
 
 The default pilot is synthetic; the [real Monaco pilot](docs/benchmarks/20261009-monaco.md)
 provides pinned source/selection and format evidence. Extraction is optional

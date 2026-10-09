@@ -51,8 +51,9 @@ export const DEFAULT_DESIGN: Design = {
   label: { text: '', x: 0.75, y: 0.83, size: 28, color: '#161616', opacity: 1 },
   detail: 'streets', north: true,
 };
-export interface Providers { cityDataBase: string; legacyCacheBase: string; overpass: string; search: string }
-export interface SourceInfo { kind: 'fixture' | 'r2' | 'legacy' | 'live'; downloadedAt: string; snapshotAt?: string; revision?: string; manifestSha256?: string; complete: boolean; local?: boolean }
+/** `cityDataBundled` marks `cityDataBase` as the app's own `/data`, which holds only the bundled cities. */
+export interface Providers { cityDataBase: string; cityDataBundled?: boolean; legacyCacheBase: string; overpass: string; search: string }
+export interface SourceInfo { kind: 'fixture' | 'r2' | 'legacy' | 'live'; downloadedAt: string; snapshotAt?: string; revision?: string; manifestSha256?: string; complete: boolean; local?: boolean; bundled?: boolean }
 export interface PreparationTimings { downloadMs: number; decodeMs: number; indexMs: number; projectMs: number }
 /** `ranks` parallels `buffers`; `coverage` is the most detailed level the geometry contains. */
 export interface Geometry { buffers: Float32Array[]; ranks: RoadRank[]; coverage: RoadDetail; bounds: Camera; origin: Origin; segmentCount: number; source: SourceInfo; preparation?: PreparationTimings }

@@ -186,3 +186,11 @@ test.describe('touch layout and unavailable local storage', () => {
     await expect(page.locator('canvas')).toBeVisible();
   });
 });
+
+test('the bundled city loads from data shipped in the production build, without the road service', async ({ page }) => {
+  await page.unroute('**/data/**');
+  let live = 0; await page.route('https://overpass-api.de/api/interpreter', route => { live++; return route.abort(); });
+  await page.goto('/?q=Monaco&osm_type=relation&osm_id=1124039&auto=1');
+  await expect(page.locator('aside [role=status]')).toContainText('Monaco ready', { timeout: 15_000 });
+  expect(live).toBe(0);
+});

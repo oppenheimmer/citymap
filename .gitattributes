@@ -1,0 +1,2 @@
+# Protobuf road data is binary; never diff, merge or whitespace-check it as text.
+*.pbf binary

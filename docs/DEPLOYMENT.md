@@ -100,7 +100,7 @@ Before deploying, add these project environment variables. Use the
 
 | Variable | Value | Used by |
 | --- | --- | --- |
-| `VITE_CITY_DATA_BASE_URL` | `https://data.example.com` or your temporary development delivery URL | Browser, embedded during build |
+| `VITE_CITY_DATA_BASE_URL` | `https://data.example.com` or your temporary development delivery URL. Leave it unset to use only the bundled city (Monaco) and live roads for the rest. | Browser, embedded during build |
 | `SEARCH_PROVIDER_URL` | `https://nominatim.openstreetmap.org/search` | Search function |
 | `APP_ORIGIN` | Actual production app URL | Search application identification |
 | `R2_ACCOUNT_ID` | Your Cloudflare Account ID | Search function |

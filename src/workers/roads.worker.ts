@@ -5,6 +5,7 @@ import { decodeChunk, geometryStats, manifestKey, roadPoints, validateManifest }
 import type { ChunkDescriptor, CityManifest, CityRoadChunk, PointE7 } from '../lib/data/city-types.ts';
 import { osmGeometry, pointBounds, polylineGeometry, projector, MAX_SEGMENTS } from '../lib/geometry.ts';
 import { overpassQuery, roadRank } from '../lib/domain.ts';
+import { BUNDLED_CITIES } from '../lib/bundled-cities.ts';
 import type { LoadProgress, RoadDetail, RoadRank, SourceInfo } from '../lib/domain.ts';
 import { RequestError, request } from '../lib/request.ts';
 import type { WorkerCommand, WorkerLoad, WorkerResult } from '../lib/worker-protocol.ts';
@@ -162,7 +163,7 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
     deferred.forEach(draw);
   }
   assert(segments === manifest.segment_count && fragments.size === manifest.unique_way_count, 'City dataset is incomplete');
-  return { kind: 'r2', downloadedAt: new Date().toISOString(), snapshotAt: manifest.source.snapshot_at, revision: manifest.dataset_revision, manifestSha256: pointer.manifest_sha256, complete: true };
+  return { kind: 'r2', downloadedAt: new Date().toISOString(), snapshotAt: manifest.source.snapshot_at, revision: manifest.dataset_revision, manifestSha256: pointer.manifest_sha256, complete: true, bundled: load.providers.cityDataBundled || undefined };
 }
 
 async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
@@ -173,7 +174,9 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
     sendParts(preparedJson(data));
     return { kind: 'fixture', downloadedAt: new Date().toISOString(), snapshotAt: data.metadata?.source?.snapshot_at, complete: true };
   }
-  if (load.useCache && load.providers.cityDataBase && /^osm-/.test(load.boundary.key)) {
+  // The app's bundled `/data` holds only listed cities; skip the lookup for every other city.
+  const datasets = load.providers.cityDataBase && (!load.providers.cityDataBundled || BUNDLED_CITIES.includes(load.boundary.key));
+  if (load.useCache && datasets && /^osm-/.test(load.boundary.key)) {
     try { return await r2(load); }
     catch (error) {
       // Before a revision is selected no cached geometry exists, so any pointer failure

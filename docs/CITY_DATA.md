@@ -195,6 +195,19 @@ verification, TypeScript checking, deterministic tests and the production build
 on Node 24.
 
 
+## Bundled cities
+
+Cities listed in `src/lib/bundled-cities.ts` ship with the frontend in
+`public/data`, using the same object keys as R2. `npm run data:bundle` rebuilds them
+from their selected inputs with the default point budget. Static hosts do not add
+`Content-Encoding` to stored gzip, so chunks are written decoded. Their manifests
+still describe the gzip form R2 would store, and the browser checks decoded sizes
+and hashes as usual. Commit the regenerated files: the revision depends on the
+gzip encoder (`zlib` version), so rebuilding at deploy time could change it and
+break share links that pin it. When `VITE_CITY_DATA_BASE_URL` is unset, the app uses
+`/data` only for these cities. When an R2 origin is configured, publish the same
+cities there; built with the same Node version they keep the same revision.
+
 ## Remote publication
 
 `npm run data:publish -- --root <output-path> --manifest <object-key>` is an

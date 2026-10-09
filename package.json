@@ -19,6 +19,7 @@
     "data:validate": "node tools/city-data/cli.ts validate",
     "data:pilot": "node tools/city-data/cli.ts pilot",
     "data:benchmark": "node tools/city-data/benchmark.ts",
+    "data:bundle": "node tools/city-data/bundle.ts",
     "test": "node --test tests/*.test.ts",
     "lint": "eslint .",
     "server:check": "tsc --project tsconfig.server.json",
@@ -31,7 +32,7 @@
     "benchmark:browser": "node tools/browser-benchmark.mjs",
     "deploy:check": "node tools/deployment-check.mjs",
     "browser:check": "tsc --project tsconfig.browser.json",
-    "test:local:unit": "node --test --test-isolation=none tests/app-core.test.ts tests/load-city.test.ts tests/renderer-compat.test.ts tests/request.test.ts tests/response-body.test.ts tests/load-status.test.ts tests/roads-worker.test.ts tests/search.test.ts",
+    "test:local:unit": "node --test --test-isolation=none tests/app-core.test.ts tests/load-city.test.ts tests/renderer-compat.test.ts tests/request.test.ts tests/response-body.test.ts tests/bundled-cities.test.ts tests/load-status.test.ts tests/roads-worker.test.ts tests/search.test.ts",
     "test:local:browser": "playwright test --config playwright.local.config.ts",
     "test:local": "npm run check && npm run lint && npm run test:local:unit && npm run test:local:browser"
   },

@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { loadEnv } from 'vite';
+import { BUNDLED_CITIES } from '../src/lib/bundled-cities.ts';
 const { values } = parseArgs({ options: { offline: { type: 'boolean' } } });
 const failures = [], checks = [];
 function check(ok, name) { (ok ? checks : failures).push(name); }
@@ -30,8 +31,10 @@ if (entry) {
 }
 for (const name of ['roads.worker-', 'svg.worker-', 'SceneController-', 'exports-']) check(files.some(file => file.startsWith(name)), `${name} lazy artifact`);
 check(!(await readdir('dist')).includes('fixtures'), 'No sample fixtures ship');
+for (const key of BUNDLED_CITIES) check(await readFile(`dist/data/v2/cities/${key}/latest.json`).then(() => true, () => false), `Bundled ${key} ships`);
 const config = JSON.parse(await readFile('vercel.json', 'utf8'));
 check(config.outputDirectory === 'dist' && config.installCommand === 'npm ci', 'Vercel single-package build');
 check(config.functions?.['api/search.ts']?.maxDuration === 30, 'Bounded Vercel search function');
+check(config.headers.some(rule => rule.source.endsWith('/latest.json')) && config.headers.some(rule => rule.source.startsWith('/data/') && rule.headers.some(header => header.value.includes('immutable'))), 'Bundled data cache headers');
 console.log(JSON.stringify({ mode: values.offline ? 'artifact-only' : 'deployment-environment', passed: checks, failures }, null, 2));
 if (failures.length) process.exitCode = 1;
