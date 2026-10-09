@@ -1,13 +1,8 @@
 # Performance measurements
 
-The dated reports retain the migration's measurements and limitations. Their
-Vue comparison is historical; its code remains in Git at `94eba3e`.
-The active benchmark measures the current application only.
-
-The [October 8 upload investigation](20261008-uploads.md) records bounded
-geometry uploads, cancellation evidence and the remaining responsiveness limits.
-The [October 9 phase and cleanup audit](20261009-local.md) adds worker/process
-memory, trusted input and cancellation feedback, plus twenty repeated switches.
+The [Monaco format comparison](20261009-monaco.md) records real-city stored
+size, decode time and memory for the version-1 and version-2 data formats. The
+browser benchmark below measures the current application only.
 
 With Node 24, a production build and an already installed working Chromium:
 

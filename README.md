@@ -109,8 +109,7 @@ static/unit/build checks; the browser matrix is requested manually through
 **Actions → Checks → Run workflow → browser_checks**.
 
 `npm run benchmark:browser` measures the current build with an installed browser,
-defaulting to one small fixture. See [benchmark instructions](docs/benchmarks/README.md)
-and the [historical migration comparison](docs/benchmarks/20261007-browser.md).
+defaulting to one small fixture. See [benchmark instructions](docs/benchmarks/README.md).
 
 ## City datasets
 
@@ -130,11 +129,8 @@ plan; actual uploads require real-city input and explicit `--execute`.
 [Input/format details](docs/CITY_DATA.md) and
 [credentials, publishing and deployment](docs/DEPLOYMENT.md) describe the workflow.
 
-Local verification evidence is recorded in the
-[completion audit](docs/LOCAL_MIGRATION_AUDIT.md); remaining remote-release work
-is in [the deployment runbook](docs/DEPLOYMENT.md). No account resources have
-been provisioned by the documentation. Historical source is retained in Git
-rather than an extra framework checkout.
+Remaining remote-release work is in [the deployment runbook](docs/DEPLOYMENT.md).
+No account resources have been provisioned by the documentation.
 
 ## License
 
