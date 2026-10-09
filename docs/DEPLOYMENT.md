@@ -292,8 +292,8 @@ preview's function logs, before relying on search.
 Browser suites are optional downloads: use **GitHub Actions → Checks → Run
 workflow → browser_checks** when a full browser run is wanted. They are not
 installed during normal local builds or ordinary push/PR checks. Historical
-Chromium/Firefox evidence is recorded in the modernization log; WebKit/actual
-remote delivery remain unverified until those checks run successfully.
+browser evidence is recorded in the [local completion audit](LOCAL_MIGRATION_AUDIT.md);
+actual remote delivery remains unverified until those checks run successfully.
 
 ## Updates and rollback
 
