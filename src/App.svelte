@@ -14,6 +14,7 @@
   import { download } from './lib/download.ts';
   import { describeLoad, formatBytes } from './lib/load-status.ts';
   import type { Transfer } from './lib/load-status.ts';
+  import type { GridMode } from './lib/graticule.ts';
 
   // Synthetic sample maps exist only in test builds, for deterministic browser tests.
   const SAMPLES = import.meta.env.VITE_TEST_FIXTURES === '1';
@@ -41,6 +42,7 @@
   let confirmation = $state<number | null>(null);
   let metrics = $state.raw<{ first: number; total: number; segments: number; preparation?: PreparationTimings } | null>(null);
   let exporting = $state(false), exportWidth = $state(1280), exportHeight = $state(960), transparent = $state(false);
+  let gridMode = $state<GridMode>('none'), gridOpacity = $state(0.3);
   let exportError = $state('');
   let shareText = $state(''), bboxText = $state('');
   let controller: SceneController | null = null;
@@ -169,7 +171,7 @@
     try {
       await new Promise(requestAnimationFrame);
       const { exportMap, download } = await import('./lib/exports.ts');
-      const blob = await exportMap(snapshot, { width: exportWidth, height: exportHeight, transparent }, format, exportAbort.signal);
+      const blob = await exportMap(snapshot, { width: exportWidth, height: exportHeight, transparent, grid: { mode: gridMode, opacity: gridOpacity } }, format, exportAbort.signal);
       exportAbort.signal.throwIfAborted();
       download(blob, `${snapshot.design.label.text || selected!.name}.${format}`);
       status = `${format.toUpperCase()} exported.`;
@@ -270,7 +272,7 @@
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
-<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><p class="hint">Up to 16 megapixels. Attribution stays visible.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
+<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
 
 <style>
 .layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100dvh; }
@@ -328,4 +330,6 @@ details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
 .export-dialog { border: 0; background: var(--ui-surface); padding: 24px; border-radius: 10px; max-width: 440px; width: calc(100% - 40px); max-height: 90dvh; overflow: auto; }
 .export-dialog::backdrop { background: #20282080; }
 .export-dialog h2 { margin-top: 0; }
+.grid-options { margin-top: 12px; }
+.grid-options .checkbox { margin: 6px 0; }
 </style>

@@ -65,3 +65,29 @@ test('PNG canvas failure and font loading failure are visible without losing the
   await page.evaluate(() => { Object.defineProperty(document.fonts, 'ready', { get() { return Promise.reject(new Error('Test fonts unavailable')); } }); });
   await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByRole('button', { name: 'Download SVG', exact: true }).click(); await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Test fonts unavailable');
 });
+
+test('exports offer no grid, border ticks or light grid lines, without an on-image map credit', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByLabel('Width in pixels').fill('800'); await page.getByLabel('Height in pixels').fill('600');
+  const svg = async () => (await download(page, 'SVG')).bytes.toString('utf8');
+  const none = await svg();
+  expect(none).not.toContain('°'); expect(none).not.toContain('>© OpenStreetMap contributors<'); expect(none).toContain('<metadata>Data © OpenStreetMap contributors');
+  await page.getByLabel('Ticks on the border').check(); await expect(page.getByLabel('Grid line opacity')).toHaveCount(0);
+  const ticks = await svg();
+  // The small sample sits near 122°25′W 37°46′N; this frame needs whole-second labels.
+  expect(ticks).toMatch(/>122°2\d′\d\d″W</); expect(ticks).toMatch(/>37°4\d′\d\d″N</); expect(ticks).not.toContain('stroke-opacity="0.3"');
+  const teeth = (ticks.match(/<line /g) || []).length;
+  await page.getByLabel('Light grid lines').check(); await slider(page, 'Grid line opacity', 0.5);
+  await expect(page.locator('output[for="grid-opacity"]')).toHaveText('50%');
+  const lines = await svg();
+  expect(lines).toContain('stroke-opacity="0.5"'); expect((lines.match(/<line /g) || []).length).toBeLessThan(teeth);
+  await page.getByLabel('None', { exact: true }).check();
+  const plain = (await download(page, 'PNG')).bytes;
+  await page.getByLabel('Light grid lines').check();
+  const gridded = (await download(page, 'PNG')).bytes;
+  const changed = await page.evaluate(async ([a, b]) => {
+    const read = async (bytes: number[]) => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); return ctx.getImageData(0, 0, canvas.width, canvas.height).data; };
+    const [x, y] = [await read(a), await read(b)]; let count = 0; for (let i = 0; i < x.length; i += 4) if (x[i] !== y[i]) count++; return count;
+  }, [[...plain], [...gridded]]);
+  expect(changed).toBeGreaterThan(1000);
+});

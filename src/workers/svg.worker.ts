@@ -3,9 +3,12 @@ import { NORTH_ARROW } from '../lib/north-arrow.ts';
 import { metresPerSceneUnit, scaleBar, SCALE_BAR } from '../lib/scale-bar.ts';
 import { EXPORT_BORDER, northCentre, scaleBarCentre } from '../lib/marks.ts';
 import type { Centre, Size } from '../lib/marks.ts';
+import { gridDrawing } from '../lib/graticule.ts';
+import type { GridOptions } from '../lib/graticule.ts';
+import { fitCamera } from '../lib/view.ts';
 
 type Request =
-  | { type: 'start'; width: number; height: number; camera: Camera; design: Design; latitude: number; scale: number; labelSize: number; licenseSize: number; strokeWidth: number; transparent: boolean }
+  | { type: 'start'; width: number; height: number; camera: Camera; design: Design; centre: { lon: number; lat: number }; grid: GridOptions; scale: number; labelSize: number; strokeWidth: number; transparent: boolean }
   | { type: 'geometry'; positions: ArrayBuffer }
   | { type: 'finish' };
 const scope = self as unknown as { onmessage: (event: MessageEvent<Request>) => void; postMessage: (value: { blob?: Blob; error?: string }) => void };
@@ -32,10 +35,7 @@ scope.onmessage = event => {
     const request = event.data;
     if (request.type === 'start') {
       setup = request;
-      const c = setup.camera, aspect = setup.width / setup.height;
-      const h = Math.max(c.top - c.bottom, (c.right - c.left) / aspect);
-      const cx = (c.left + c.right) / 2, cy = (c.bottom + c.top) / 2;
-      setup.camera = { left: cx - h * aspect / 2, right: cx + h * aspect / 2, bottom: cy - h / 2, top: cy + h / 2 };
+      setup.camera = fitCamera(setup.camera, setup.width / setup.height);
       parts.push(`<?xml version="1.0" encoding="UTF-8"?><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${setup.width}" height="${setup.height}" viewBox="0 0 ${setup.width} ${setup.height}"><metadata>Data © OpenStreetMap contributors, ODbL 1.0. https://www.openstreetmap.org/copyright</metadata>`);
       if (!setup.transparent && setup.design.backgroundOpacity > 0) parts.push(`<rect width="100%" height="100%" fill="${setup.design.backgroundColor}" fill-opacity="${setup.design.backgroundOpacity}"/>`);
       parts.push(`<g fill="none" stroke="${setup.design.roadColor}" stroke-opacity="${setup.design.roadOpacity}" stroke-width="${setup.strokeWidth}" stroke-linecap="butt">`);
@@ -52,15 +52,23 @@ scope.onmessage = event => {
     } else {
       const label = setup.design.label, arrow = NORTH_ARROW;
       parts.push('</g>');
+      // Coordinate grid above the roads, below the label and marks.
+      const grid = gridDrawing(setup.camera, setup.centre, setup.width, setup.height, setup.scale, setup.grid, EXPORT_BORDER);
+      if (grid) {
+        const lines = (list: typeof grid.lines) => list.map(line => `<line x1="${n(line.x1)}" y1="${n(line.y1)}" x2="${n(line.x2)}" y2="${n(line.y2)}"/>`).join('');
+        if (grid.lines.length) parts.push(`<g stroke="${setup.design.roadColor}" stroke-width="${grid.lineWidth}" stroke-opacity="${grid.lineOpacity}">${lines(grid.lines)}</g>`);
+        if (grid.teeth.length) parts.push(`<g stroke="${setup.design.roadColor}" stroke-width="${grid.lineWidth}">${lines(grid.teeth)}</g>`);
+        parts.push(`<g fill="${setup.design.roadColor}" font-family="sans-serif" font-size="${n(grid.font)}" dominant-baseline="middle">${grid.texts.map(text => `<text x="${n(text.x)}" y="${n(text.y)}">${escape(text.text)}</text>`).join('')}</g>`);
+      }
       // Marks are CSS-pixel geometry, laid out as on screen and scaled to the export.
       const area = { width: setup.width, height: setup.height };
       const place = (centre: Centre, size: Size) => `translate(${n(centre.x - size.width * setup.scale / 2)} ${n(centre.y - size.height * setup.scale / 2)}) scale(${n(setup.scale)})`;
       if (setup.design.north) parts.push(`<g transform="${place(northCentre(setup.design, area, setup.scale), arrow)}"><g fill="none" stroke="${label.color}" stroke-width="${arrow.stroke}" stroke-linejoin="round" stroke-linecap="round"><path d="${arrow.path}"/>${arrow.circles.map(circle => `<circle cx="${circle.cx}" cy="${circle.cy}" r="${circle.r}"/>`).join('')}</g><text x="${arrow.letter.x}" y="${arrow.letter.y}" fill="${label.color}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-weight="bold" font-size="${arrow.letter.size}">N</text></g>`);
       // setup.camera is already fitted to the export, so its width spans the export.
-      const bar = setup.design.scaleBar ? scaleBar((setup.camera.right - setup.camera.left) / setup.width * metresPerSceneUnit(setup.latitude) * setup.scale) : undefined;
+      const bar = setup.design.scaleBar ? scaleBar((setup.camera.right - setup.camera.left) / setup.width * metresPerSceneUnit(setup.centre.lat) * setup.scale) : undefined;
       if (bar) parts.push(`<g transform="${place(scaleBarCentre(setup.design, bar, area, setup.scale), bar)}" fill="${label.color}"><g stroke="${label.color}" stroke-width="${SCALE_BAR.stroke}" stroke-linecap="square">${bar.lines.map(line => `<line x1="${n(line.x1)}" y1="${n(line.y1)}" x2="${n(line.x2)}" y2="${n(line.y2)}"/>`).join('')}</g>${bar.texts.map(text => `<text x="${n(text.x)}" y="${n(text.y)}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="${SCALE_BAR.font}">${escape(text.text)}</text>`).join('')}</g>`);
       parts.push(`<rect x="${EXPORT_BORDER / 2}" y="${EXPORT_BORDER / 2}" width="${setup.width - EXPORT_BORDER}" height="${setup.height - EXPORT_BORDER}" fill="none" stroke="${setup.design.roadColor}" stroke-width="${EXPORT_BORDER}"/>`);
-      parts.push(`<text x="${n(label.x * setup.width)}" y="${n(label.y * setup.height)}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.labelSize}" fill="${label.color}" fill-opacity="${label.opacity}">${escape(label.text)}</text><a xlink:href="https://www.openstreetmap.org/copyright"><text x="${n(setup.width * 0.97)}" y="${n(setup.height * 0.97)}" text-anchor="end" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.licenseSize}" fill="#303030" stroke="#ffffff" stroke-width="${setup.licenseSize / 6}" paint-order="stroke fill">© OpenStreetMap contributors</text></a></svg>`);
+      parts.push(`<text x="${n(label.x * setup.width)}" y="${n(label.y * setup.height)}" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="${setup.labelSize}" fill="${label.color}" fill-opacity="${label.opacity}">${escape(label.text)}</text></svg>`);
       scope.postMessage({ blob: new Blob(parts, { type: 'image/svg+xml' }) });
     }
   } catch (error) { scope.postMessage({ error: error instanceof Error ? error.message : 'SVG export failed' }); }

@@ -5,9 +5,12 @@ import { EXPORT_BORDER, northCentre, scaleBarCentre } from './marks.ts';
 import type { Centre, Size } from './marks.ts';
 import { NORTH_ARROW } from './north-arrow.ts';
 import { fittedWidth, metresPerSceneUnit, scaleBar, SCALE_BAR } from './scale-bar.ts';
+import { gridDrawing } from './graticule.ts';
+import type { GridDrawing, GridOptions } from './graticule.ts';
+import { fitCamera } from './view.ts';
 export { download } from './download.ts';
 
-export interface ExportOptions { width: number; height: number; transparent: boolean }
+export interface ExportOptions { width: number; height: number; transparent: boolean; grid: GridOptions }
 function dimensions(options: ExportOptions) {
   if (!Number.isSafeInteger(options.width) || !Number.isSafeInteger(options.height) || options.width < 256 || options.height < 256 || options.width > 8192 || options.height > 8192 || options.width * options.height > 16_777_216) throw new Error('Export dimensions must be 256–8192 pixels and at most 16 megapixels.');
 }
@@ -23,7 +26,7 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
     });
     void result.catch(() => {});
     const scale = options.width / snapshot.width;
-    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, latitude: snapshot.view.lat, scale, labelSize: snapshot.design.label.size * scale, licenseSize: Math.max(10, 12 * scale), strokeWidth: scale / snapshot.pixelRatio });
+    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, centre: { lon: snapshot.view.lon, lat: snapshot.view.lat }, scale, labelSize: snapshot.design.label.size * scale, strokeWidth: scale / snapshot.pixelRatio });
     for (const buffer of snapshot.buffers) {
       signal?.throwIfAborted();
       // Bounded copies preserve screen/export geometry ownership and allow UI feedback.
@@ -36,6 +39,21 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
     worker.postMessage({ type: 'finish' });
     return await result;
   } finally { if (abort) signal?.removeEventListener('abort', abort); worker.terminate(); }
+}
+
+function drawGrid(context: CanvasRenderingContext2D, grid: GridDrawing, ink: string) {
+  context.save();
+  context.strokeStyle = context.fillStyle = ink; context.lineWidth = grid.lineWidth;
+  const stroke = (lines: GridDrawing['lines'], alpha: number) => {
+    if (!lines.length) return;
+    context.globalAlpha = alpha; context.beginPath();
+    for (const line of lines) { context.moveTo(line.x1, line.y1); context.lineTo(line.x2, line.y2); }
+    context.stroke();
+  };
+  stroke(grid.lines, grid.lineOpacity); stroke(grid.teeth, 1);
+  context.globalAlpha = 1; context.font = `${grid.font}px sans-serif`; context.textAlign = 'left'; context.textBaseline = 'middle';
+  for (const text of grid.texts) context.fillText(text.text, text.x, text.y);
+  context.restore();
 }
 
 export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions, format: 'png' | 'svg', signal?: AbortSignal): Promise<Blob> {
@@ -59,6 +77,9 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     if (!context) throw new Error('Canvas export is unavailable');
     context.drawImage(canvas, 0, 0);
     const label = snapshot.design.label, scale = options.width / snapshot.width;
+    // Coordinate grid above the roads, below the label and marks.
+    const grid = gridDrawing(fitCamera(snapshot.camera, options.width / options.height), snapshot.view, options.width, options.height, scale, options.grid, EXPORT_BORDER);
+    if (grid) drawGrid(context, grid, snapshot.design.roadColor);
     const c = color(label.color, label.opacity);
     context.fillStyle = `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`;
     context.font = `${label.size * scale}px sans-serif`;
@@ -93,11 +114,6 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
       context.font = `${SCALE_BAR.font}px sans-serif`;
       for (const text of bar.texts) context.fillText(text.text, text.x, text.y);
     });
-    context.font = `${Math.max(10, 12 * scale)}px sans-serif`; context.textAlign = 'right';
-    context.strokeStyle = '#ffffff'; context.lineWidth = Math.max(10, 12 * scale) / 6;
-    context.strokeText('© OpenStreetMap contributors', options.width * 0.97, options.height * 0.97);
-    context.fillStyle = '#303030';
-    context.fillText('© OpenStreetMap contributors', options.width * 0.97, options.height * 0.97);
     context.strokeStyle = snapshot.design.roadColor; context.lineWidth = EXPORT_BORDER;
     context.strokeRect(EXPORT_BORDER / 2, EXPORT_BORDER / 2, options.width - EXPORT_BORDER, options.height - EXPORT_BORDER);
     return await new Promise<Blob>((resolve, reject) => output.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG export failed')), 'image/png'));

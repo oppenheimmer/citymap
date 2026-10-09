@@ -16,6 +16,13 @@ export function viewFromCamera(camera: Camera, origin: Origin): GeoView {
   return { lon: wrapLongitude(origin[0] + (x - TX) / SCALE / RAD), lat: Math.max(-MAX_LATITUDE, Math.min(MAX_LATITUDE, lat)), width: camera.right - camera.left, height: camera.top - camera.bottom };
 }
 
+/** The frame an export of `aspect` shows: the same centre, widened so both spans fit. */
+export function fitCamera(camera: Camera, aspect: number): Camera {
+  const height = Math.max(camera.top - camera.bottom, (camera.right - camera.left) / aspect);
+  const cx = (camera.left + camera.right) / 2, cy = (camera.top + camera.bottom) / 2;
+  return { left: cx - height * aspect / 2, right: cx + height * aspect / 2, bottom: cy - height / 2, top: cy + height / 2 };
+}
+
 export function cameraFromView(view: GeoView, origin: Origin): Camera {
   const x = TX + wrapLongitude(view.lon - origin[0]) * RAD * SCALE;
   const y = (mercator(view.lat) - mercator(origin[1])) * SCALE - TY;
