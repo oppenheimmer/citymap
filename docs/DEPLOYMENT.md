@@ -1,18 +1,18 @@
 # Set up Citymap on Cloudflare R2 and Vercel
 
 This guide connects the R2 dataset bucket **`citymap`** to the Vercel project
-**`citymap`**. It uses the selected public Nominatim search service, backed by a
+**`citymaps`**. It uses the selected public Nominatim search service, backed by a
 second, private R2 bucket named **`citymap-search`**.
 
 | Resource | Purpose | Access |
 | --- | --- | --- |
 | R2 `citymap` | Versioned road chunks, manifests and discovery catalogs | Public reads through a delivery domain; publisher-only writes |
 | R2 `citymap-search` | Shared search results and application-wide rate limiter | Private; Vercel search function reads/writes |
-| Vercel `citymap` | Svelte frontend and `/api/search` | App users |
+| Vercel `citymaps` | Svelte frontend and `/api/search` | App users |
 
 Use your actual assigned app hostname throughout. A Vercel project named
-`citymap` does not guarantee that `citymap.vercel.app` is available. In the
-examples, `https://citymap.vercel.app` is an app-URL placeholder and
+`citymaps` does not guarantee that `citymaps.vercel.app` is available. In the
+examples, `https://citymaps.vercel.app` is an app-URL placeholder and
 `https://data.example.com` is a delivery-domain placeholder.
 
 ## 1. Create the R2 buckets
@@ -73,13 +73,15 @@ describes both options. Leave `citymap-search` private.
 An empty dataset bucket is valid during setup. Until a city has been published,
 the frontend can fall back to live Overpass roads.
 
-## 4. Import the Vercel project `citymap`
+## 4. Connect the Vercel project `citymaps`
 
-In Vercel, select **Add New → Project**, import this Git repository, and use:
+In the existing `citymaps` project, open **Settings → Git** and connect this
+GitHub repository (or, for a new project, select **Add New → Project** and import
+it). Then check **Settings → Build and Deployment** and **Settings → General**:
 
 | Project setting | Value |
 | --- | --- |
-| Project name | `citymap` |
+| Project name | `citymaps` |
 | Root directory | Repository root (`./`) |
 | Framework preset | **Vite** |
 | Install command | `npm ci` |
@@ -130,12 +132,12 @@ compiled into the app. See [Vercel environment variables](https://vercel.com/doc
 
 Once the app URL is known, open **R2 → citymap → Settings → CORS Policy → Add CORS
 policy → JSON**. Paste [r2-cors.example.json](../deployment/r2-cors.example.json),
-replacing `https://citymap.vercel.app` with the actual app origin:
+replacing `https://citymaps.vercel.app` with the actual app origin:
 
 ```json
 [
   {
-    "AllowedOrigins": ["https://citymap.vercel.app", "http://localhost:8080"],
+    "AllowedOrigins": ["https://citymaps.vercel.app", "http://localhost:8080"],
     "AllowedMethods": ["GET", "HEAD"],
     "AllowedHeaders": ["If-None-Match", "If-Modified-Since"],
     "ExposeHeaders": ["ETag", "Content-Encoding", "CF-Cache-Status"],
@@ -255,7 +257,7 @@ After deployment, test search with one request using the actual app URL:
 
 ```sh
 curl --get --data-urlencode 'q=Tokyo, Japan' \
-  'https://citymap.vercel.app/api/search'
+  'https://citymaps.vercel.app/api/search'
 ```
 
 Expect a JSON array. A 503 suggests missing/invalid private R2 credentials or a
@@ -272,7 +274,7 @@ also uses that shared limiter.
 Check a published road object without downloading the whole city:
 
 ```sh
-curl -I -H 'Origin: https://citymap.vercel.app' \
+curl -I -H 'Origin: https://citymaps.vercel.app' \
   'https://data.example.com/v2/cities/<city-key>/<revision>/full/00000.pbf'
 ```
 
@@ -285,9 +287,11 @@ fails delivery or validation fails visibly instead of mixing sources. Reopen a s
 confirm the deployed API, data and export paths.
 
 `api/search.ts` imports server modules with `.ts` extensions, which local Node 24
-and the type checks accept but no Vercel build has exercised yet. After linking the
-project, run `vercel pull` and `vercel build` once locally, or inspect the first
-preview's function logs, before relying on search.
+runs directly. Vercel compiles the function with the nearest tsconfig,
+[api/tsconfig.json](../api/tsconfig.json), whose `rewriteRelativeImportExtensions`
+turns those imports into `.js` in the deployed bundle; without it every search
+request fails with a missing-module error. `npm run deploy:check` checks the
+setting, and a local `vercel build` produces a function that loads and answers.
 
 Browser suites are optional downloads: use **GitHub Actions → Checks → Run
 workflow → browser_checks** when a full browser run is wanted. They are not

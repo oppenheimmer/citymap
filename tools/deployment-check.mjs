@@ -35,6 +35,8 @@ for (const key of BUNDLED_CITIES) check(await readFile(`dist/data/v2/cities/${ke
 const config = JSON.parse(await readFile('vercel.json', 'utf8'));
 check(config.outputDirectory === 'dist' && config.installCommand === 'npm ci', 'Vercel single-package build');
 check(config.functions?.['api/search.ts']?.maxDuration === 30, 'Bounded Vercel search function');
+// Vercel compiles the function with the nearest tsconfig; without rewriting, its `.ts` imports fail at runtime.
+check(JSON.parse(await readFile('api/tsconfig.json', 'utf8')).compilerOptions?.rewriteRelativeImportExtensions === true, 'Search function imports compile to .js');
 check(config.headers.some(rule => rule.source.endsWith('/latest.json')) && config.headers.some(rule => rule.source.startsWith('/data/') && rule.headers.some(header => header.value.includes('immutable'))), 'Bundled data cache headers');
 console.log(JSON.stringify({ mode: values.offline ? 'artifact-only' : 'deployment-environment', passed: checks, failures }, null, 2));
 if (failures.length) process.exitCode = 1;
