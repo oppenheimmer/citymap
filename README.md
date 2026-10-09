@@ -130,9 +130,10 @@ plan; actual uploads require real-city input and explicit `--execute`.
 [Input/format details](docs/CITY_DATA.md) and
 [credentials, publishing and deployment](docs/DEPLOYMENT.md) describe the workflow.
 
-Implementation, validation evidence and remaining remote-release work are
-recorded in [MODERNIZATION_PLAN.md](MODERNIZATION_PLAN.md). No account resources
-have been provisioned by the documentation. Historical source is retained in Git
+Local verification evidence is recorded in the
+[completion audit](docs/LOCAL_MIGRATION_AUDIT.md); remaining remote-release work
+is in [the deployment runbook](docs/DEPLOYMENT.md). No account resources have
+been provisioned by the documentation. Historical source is retained in Git
 rather than an extra framework checkout.
 
 ## License

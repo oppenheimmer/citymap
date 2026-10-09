@@ -6,7 +6,4 @@
 - Use the configured Git identity for commits; do not change it to an assistant identity.
 - Title commits `YYYYMMDD Short description`, using the date in Asia/Tokyo.
 - Keep commit descriptions concrete and focused on the resulting change and relevant validation.
-- Append major completed work, discovered errors, validation results, and proposals to the
-  `RUNNING CHANGES` section of `MODERNIZATION_PLAN.md`.
-- Date running-change entries in Asia/Tokyo and distinguish completed work from planned work.
 - Preserve unrelated edits and user file deletions during ongoing work.
