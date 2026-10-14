@@ -85,10 +85,9 @@ of the city centre; panning and zooming load neighbouring map regions within 50 
 of where the map started, up to four map regions per request, at most one request at a time. Dense regions split; rate limits and a
 busy service make loading wait, as long as the service's status page says, with a
 countdown; and regions far behind the view are evicted from memory and the GPU.
-The centre of the map loads first. Export becomes available once it has loaded and
-writes the map available, without waiting for the regions still loading around it.
-Already loaded road detail stays in PNG and SVG exports when zooming out limits
-further loading, so the export preserves the roads visible on screen.
+The centre of the map loads first. Export becomes available once it has loaded, or at
+once when the map is zoomed out too far for any roads to load, and writes exactly the
+roads drawn on screen, without waiting for regions still loading.
 Only explicitly published favourite cities live in R2.
 [How it works, limits, rollout and rollback](docs/LIVE_ROADS.md). The feature is off
 by default.

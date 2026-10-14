@@ -69,7 +69,6 @@
     const timer = setInterval(() => { waitClock = performance.now(); if (waitClock >= resumeAt) clearInterval(timer); }, 250);
     return () => clearInterval(timer);
   });
-  let exportProgress = $state('');
   let confirmation = $state<number | null>(null);
   let metrics = $state.raw<{ first: number; total: number; segments: number; preparation?: PreparationTimings } | null>(null);
   let exporting = $state(false), exportWidth = $state<number | null>(1280), exportHeight = $state<number | null>(960), transparent = $state(false);
@@ -258,29 +257,22 @@
   async function exportFile(format: 'png' | 'svg') {
     if (!controller || exporting || !(source?.complete || source?.viewport && live)) return;
     sizeExport(exportEdge, exportEdge === 'width' ? exportWidth : exportHeight, true);
-    const scene = controller, viewport = live, snapshot = scene.snapshot(), width = exportWidth!, height = exportHeight!;
-    exporting = true; exportError = ''; exported = ''; exportProgress = ''; exportAbort = new AbortController();
+    const scene = controller, width = exportWidth!, height = exportHeight!;
+    // A live map exports exactly the roads drawn in the export's frame now; nothing more loads.
+    const drawn = live?.exportRegions(fitCamera(scene.frame(), width / height), scene.rotation);
+    const snapshot = scene.snapshot(drawn?.regions), complete = drawn?.complete ?? true;
+    exporting = true; exportError = ''; exported = ''; exportAbort = new AbortController();
     try {
       await new Promise(requestAnimationFrame);
       const { exportMap, download, checkDimensions } = await import('./lib/exports.ts');
       const settings = { width, height, transparent, grid: { mode: gridMode, opacity: gridOpacity } };
       checkDimensions(settings);
-      let complete = true;
-      if (viewport) {
-        // The centre of the frame is loaded; the rest is exported as far as it has loaded.
-        const frame = fitCamera(snapshot.camera, width / height);
-        const prepared = await viewport.prepareExport(frame, snapshot.design.rotation || 0, exportAbort.signal, (done, total) => { exportProgress = `Loading the centre of the map: ${done} of ${total} regions…`; });
-        // Keep the roads visible when export began, even if loading evicts their regions.
-        snapshot.buffers = [...new Set([...snapshot.buffers, ...scene.snapshot(prepared.regions).buffers])];
-        complete = prepared.complete;
-        exportProgress = '';
-      }
       const blob = await exportMap(snapshot, settings, format, exportAbort.signal);
       exportAbort.signal.throwIfAborted();
       download(blob, `${snapshot.design.label.text || selected!.name}.${format}`);
       status = exported = complete ? `${format.toUpperCase()} exported.` : 'Exported available map.';
     } catch (e) { if (!exportAbort?.signal.aborted) exportError = e instanceof Error ? e.message : 'Export failed'; }
-    finally { exporting = false; exportProgress = ''; }
+    finally { exporting = false; }
   }
   async function share() {
     shareText = url();
@@ -397,7 +389,7 @@
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
-<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min={widthRange[0]} max={widthRange[1]} bind:value={() => exportWidth, value => sizeExport('width', value)} onchange={() => sizeExport('width', exportWidth, true)}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min={heightRange[0]} max={heightRange[1]} bind:value={() => exportHeight, value => sizeExport('height', value)} onchange={() => sizeExport('height', exportHeight, true)}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">{exportProgress || 'Preparing export…'}</p>{:else if exported}<p role="status">{exported}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
+<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min={widthRange[0]} max={widthRange[1]} bind:value={() => exportWidth, value => sizeExport('width', value)} onchange={() => sizeExport('width', exportWidth, true)}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min={heightRange[0]} max={heightRange[1]} bind:value={() => exportHeight, value => sizeExport('height', value)} onchange={() => sizeExport('height', exportHeight, true)}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{:else if exported}<p role="status">{exported}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
 
 <style>
 /* The map fills the layout; the settings open over it and never resize it. */

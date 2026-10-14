@@ -3,7 +3,7 @@
 Citymap can load live OpenStreetMap roads for the area on screen instead of one
 query for a whole administrative area. A search opens a bounded view of the place's
 centre; panning and zooming load the neighbouring area. The centre of the map loads
-first, and an export needs only that: it contains whatever else of its area has loaded. Nothing is stored on a server: only an explicit handful of
+first, and an export waits only for that: it contains exactly the roads drawn on screen. Nothing is stored on a server: only an explicit handful of
 favourite cities are published to R2, as before.
 
 The feature is off by default. Set `VITE_LIVE_VIEWPORT=1` at build time to enable
@@ -40,23 +40,21 @@ Road detail is cumulative and per rank. Switching from Streets to All requests
 only the new classes; switching back requests nothing. Recolouring never
 refetches. A view needing more than 36 cells of a rank, such as streets across a
 whole metropolis, stops requesting that rank and asks the user to zoom in. Roads
-already loaded stay visible. Nothing requests hundreds of cells.
+already loaded stay visible, and exports include them. Nothing requests hundreds of cells.
 
 **Export** stays unavailable until every cell in the centre of the map has
 loaded: the cells touching the middle half of the map's width and height, for
-every road class shown (`LIVE_LIMITS.core`). The options open over the map
-without resizing it, so roads load for the whole map, including the part they
-cover. The map's status says so while it waits.
-An export then computes its exact rotated frame and writes whatever of it has
-loaded, at once, without waiting for the regions still loading around the
-centre. The dialog says **Exported available map.** when any region was
-missing. Only an export shaped unlike the view can need more of its centre;
-that part loads first (up to 120 cells, with progress and Cancel). If it fails,
-or lies beyond the 50 km radius, nothing is exported and the dialog says why.
-Exports preserve every loaded road visible when export starts, including detail
-loaded during earlier pans or closer views. Loading limits apply only to additional
-fetching; already loaded roads still appear in PNG and SVG. Exports never restart
-loading or skip a cooldown.
+every road class shown that loads at this zoom (`LIVE_LIMITS.core`). The options
+open over the map without resizing it, so roads load for the whole map, including
+the part they cover. The map's status says so while it waits. Zoomed out too far
+for any road class shown to load, the map has no centre to wait for: Export is
+available at once, unless the centre of the map lies beyond the 50 km radius.
+An export has the map's shape and contains exactly the roads drawn on screen when
+the download starts, in its exact rotated frame: every road class shown, including
+detail loaded during earlier pans or closer views and classes too dense to load at
+this zoom. Roads not loaded by then, such as regions waiting on a busy road service,
+are left out, and the dialog says **Exported available map.** Exports never request
+roads, restart loading or skip a cooldown.
 
 Favourite cities keep the existing path. The roads worker first tries the
 bundled or R2 dataset. Only when none applies does it hand over to viewport

@@ -26,8 +26,11 @@ export const LIVE_LIMITS = {
    * It loads first, and must be fully loaded before the map can be exported.
    */
   core: 0.5,
-  /** Cells an export may load for its centre. */
-  exportCells: 120,
+  /**
+   * Cells per road rank an export lists in its frame; a wider frame exports every loaded
+   * region of that rank. Listing requests nothing.
+   */
+  exportCells: 480,
   /** Cells one request may combine; fewer after a combined request runs out of time or memory. */
   batch: 4,
   /** The view is padded by this factor, so edges are ready when panning a little. */
@@ -86,7 +89,10 @@ export interface LiveCoverage {
   limited: RoadRank[];
   /** Every visible region at the chosen detail has loaded. */
   complete: boolean;
-  /** Every region in the centre of the map has loaded, so the map can be exported. */
+  /**
+   * Every region in the centre of the map has loaded, or none can load at this zoom, so the
+   * map can be exported.
+   */
   exportable: boolean;
   /** How much of the view lies beyond the loading radius, where roads never load. */
   beyond: 'none' | 'partly' | 'entirely';
@@ -104,22 +110,22 @@ export interface LiveCoverage {
 }
 
 interface CellResult { positions: Float32Array; segments: number; bytes: number; fetchMs: number; fetchedAt: number; snapshotAt?: string }
-interface Region { rank: RoadRank; bytes: number; segments: number; buffers: Float32Array[]; lastSeen: number; fetchedAt: number; cached: boolean; snapshotAt?: string }
+/** `drawing` counts uploads queued or under way; the region is drawn once none is left. */
+interface Region { rank: RoadRank; bytes: number; segments: number; buffers: Float32Array[]; lastSeen: number; fetchedAt: number; cached: boolean; drawing: number; snapshotAt?: string }
 
 const jobKey = (rank: RoadRank, tile: Tile) => `${rank}:${tileKey(tile)}`;
 
 /**
  * Live roads for the scene's current view. Cells intersecting the (rotated) view load in
  * priority order, the centre of the view first; regions that leave the view stay drawn
- * until the memory budget evicts the least recently seen. Exports need their centre loaded
- * and contain whatever else of their frame has loaded.
+ * until the memory budget evicts the least recently seen. The map can be exported once the
+ * centre of the view has loaded; exports contain exactly the roads drawn.
  */
 export class LiveViewport {
   private readonly scheduler: CellScheduler<CellResult>;
   private readonly worker: Worker;
   private readonly pending = new Map<number, { count: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
   private readonly regions = new Map<string, Region>();
-  private readonly waiters = new Set<() => boolean>();
   private readonly scene: SceneController;
   private readonly origin: Origin;
   private readonly settings: LiveSettings;
@@ -127,12 +133,13 @@ export class LiveViewport {
   private detail: RoadDetail;
   private visible: JobSpec[] = [];
   private required: string[] = [];
-  private retained: string[] = [];
-  /** Regions in the centre of the view; empty when none can load. */
-  private centre: string[] = [];
+  /**
+   * Regions in the centre of the view, which load before the map can be exported: none when
+   * no road class shown can load at this zoom, and undefined when the centre never loads.
+   */
+  private centre?: string[];
   private limited: RoadRank[] = [];
   private beyond: LiveCoverage['beyond'] = 'none';
-  private pinned: JobSpec[] = [];
   private uploads = Promise.resolve();
   private nextId = 0;
   private timer?: ReturnType<typeof setTimeout>;
@@ -157,7 +164,7 @@ export class LiveViewport {
         return { positions: hit.positions, segments: hit.positions.length / 4, bytes: 0, fetchMs: 0, fetchedAt: hit.fetchedAt, snapshotAt: hit.snapshotAt };
       } : undefined,
       loaded: this.loaded,
-      changed: () => { for (const check of this.waiters) if (check()) this.waiters.delete(check); this.emit(); },
+      changed: () => this.emit(),
       failed: (task, failure, outcome) => {
         this.stats.failures[failure.code] = (this.stats.failures[failure.code] || 0) + 1;
         if (outcome === 'split') this.stats.splits++;
@@ -203,7 +210,7 @@ export class LiveViewport {
     return {
       required: this.required.length, ready, loading, failed, limited: [...this.limited],
       complete: !this.limited.length && ready === this.required.length,
-      exportable: this.centre.length > 0 && this.centre.every(key => this.scheduler.status(key) === 'ready'),
+      exportable: !!this.centre?.every(key => this.scheduler.status(key) === 'ready'),
       beyond: this.beyond, radius: LIVE_LIMITS.radiusMetres,
       paused: this.scheduler.paused, pauseReason: this.scheduler.pauseReason, exhausted: this.scheduler.exhausted,
       cooldown: Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now()), waiting: this.scheduler.cooldownReason,
@@ -212,65 +219,22 @@ export class LiveViewport {
   }
 
   /**
-   * Prepares an export of `frame` turned by `rotation`. Its centre must be fully loaded: any
-   * of it still missing (an export shaped unlike the view) loads first. The rest of the frame
-   * is exported as available, without waiting, once loaded regions are drawn. Resolves with
-   * the frame's regions and whether every one has loaded; rejects when the centre cannot load.
-   * Already loaded roads are kept at every selected detail level, even when this zoom
-   * limits further loading of that level.
+   * The regions an export of `frame` turned by `rotation` draws, read when it starts: the
+   * frame's regions at every road class shown, including classes too dense to load at this
+   * zoom, so it holds exactly the roads drawn on screen. Exports have the map's shape, so
+   * their centre is the view's, which Export waits for; nothing is requested. `complete`
+   * says whether every region of the frame has loaded and is drawn.
    */
-  async prepareExport(frame: Camera, rotation: number, signal: AbortSignal, progress: (ready: number, total: number) => void): Promise<{ regions: Set<string>; complete: boolean }> {
-    if (this.timer) this.update();
-    const exact = frameCorners(frame, rotation), centre = frameCorners(frame, rotation, LIVE_LIMITS.core);
-    const specs: JobSpec[] = [], regions = new Set<string>();
-    const tooLarge = () => new Error('This export frame needs too many map regions at this road detail. Zoom in, or choose less road detail.');
+  exportRegions(frame: Camera, rotation: number): { regions: Set<string>; complete: boolean } {
+    const exact = frameCorners(frame, rotation), regions = new Set<string>();
     let complete = true;
     for (const rank of this.ranks()) {
-      const z = cellLevel(rank, this.origin[1]);
-      // Selecting geometry requests nothing: loading limits must not hide roads already drawn.
-      const all = coverTiles(exact, this.origin, z, LIVE_LIMITS.exportCells * 4);
-      if (all) for (const tile of all) regions.add(jobKey(rank, tile));
+      const tiles = coverTiles(exact, this.origin, cellLevel(rank, this.origin[1]), LIVE_LIMITS.exportCells);
+      if (tiles) for (const tile of tiles) regions.add(jobKey(rank, tile));
+      // A frame too wide to list takes every loaded region of the class.
       else { complete = false; for (const [key, region] of this.regions) if (region.rank === rank) regions.add(key); }
-      if (this.limited.includes(rank)) continue;
-      const tiles = coverTiles(centre, this.origin, z, LIVE_LIMITS.exportCells);
-      if (!tiles) throw tooLarge();
-      // Roads beyond the loading radius never load, so the centre must lie within it.
-      if (!tiles.every(this.near)) throw new Error(`The centre of this export is more than ${LIVE_LIMITS.radiusMetres / 1000} km from where the map started, where roads do not load. Zoom in, or move back towards the starting point.`);
-      tiles.forEach((tile, index) => specs.push({ key: jobKey(rank, tile), tile, rank, priority: -1e6 + rank * 1e4 + index }));
     }
-    if (specs.length > LIVE_LIMITS.exportCells) throw tooLarge();
-    const settled = () => {
-      let ready = 0, failed = 0;
-      for (const spec of specs) { const status = this.scheduler.status(spec.key); if (status === 'ready') ready++; else if (status === 'failed') failed++; }
-      return { ready, failed };
-    };
-    if (settled().ready < specs.length) {
-      this.pinned = specs;
-      this.want();
-      try {
-        await new Promise<void>((resolve, reject) => {
-          const check = () => {
-            if (this.disposed || signal.aborted) { reject(signal.reason || new DOMException('Export cancelled', 'AbortError')); return true; }
-            const { ready, failed } = settled();
-            progress(ready, specs.length);
-            if (ready === specs.length) { resolve(); return true; }
-            if (failed) { reject(new Error('The centre of the map could not be loaded, so nothing was exported. Retry loading roads, then export again.')); return true; }
-            if (this.scheduler.paused || this.scheduler.exhausted) { reject(new Error('The road service is busy, so the centre of the map could not be loaded. Nothing was exported; retry loading roads later.')); return true; }
-            return false;
-          };
-          if (check()) return;
-          this.waiters.add(check);
-          signal.addEventListener('abort', () => { if (check()) this.waiters.delete(check); }, { once: true });
-        });
-      } finally {
-        this.pinned = [];
-        if (!this.disposed) { this.want(); this.evict(); }
-      }
-    }
-    // Every loaded region is drawn before the scene is read.
-    await this.uploads;
-    signal.throwIfAborted();
-    for (const key of regions) if (this.scheduler.status(key) !== 'ready') complete = false;
+    for (const key of regions) if (this.scheduler.status(key) !== 'ready' || this.regions.get(key)?.drawing) complete = false;
     return { regions, complete };
   }
 
@@ -280,8 +244,6 @@ export class LiveViewport {
     clearTimeout(this.timer); clearTimeout(this.emitTimer);
     this.scheduler.dispose();
     this.rejectAll(new CellFailure('cancelled'));
-    for (const check of this.waiters) check();
-    this.waiters.clear();
     this.settings.cache?.close();
     // Let abort messages reach the worker's fetches before it stops.
     const worker = this.worker;
@@ -295,7 +257,7 @@ export class LiveViewport {
   private update() {
     clearTimeout(this.timer); this.timer = undefined; this.firstChange = undefined;
     if (this.disposed) return;
-    // Roads load for the composed map, not for the dimmed canvas around it beside opened settings.
+    // Roads load for the composed map, which fills the canvas.
     const camera = this.scene.frame(), rotation = this.scene.rotation;
     if (![camera.left, camera.right, camera.bottom, camera.top].every(Number.isFinite) || camera.right <= camera.left || camera.top <= camera.bottom) return;
     const visible = frameCorners(camera, rotation, LIVE_LIMITS.padding), exact = frameCorners(camera, rotation), retain = frameCorners(camera, rotation, LIVE_LIMITS.retain);
@@ -329,17 +291,16 @@ export class LiveViewport {
     const view = viewFromCamera(camera, this.origin), reach = Math.hypot(view.width, view.height) / 2 * metresPerSceneUnit(view.lat);
     const distance = groundDistance(this.origin, [view.lon, view.lat]), radius = LIVE_LIMITS.radiusMetres;
     this.beyond = distance - reach > radius ? 'entirely' : distance + reach > radius ? 'partly' : 'none';
-    this.visible = specs; this.required = required; this.retained = retained; this.limited = limited; this.centre = reachable ? centre : [];
+    // With every road class shown too dense to load here, no centre needs to load: the map
+    // exports as drawn, unless its centre lies beyond the radius.
+    const dense = limited.length === this.ranks().length;
+    this.visible = specs; this.required = required; this.limited = limited;
+    this.centre = reachable && !(dense && distance > radius) ? centre : undefined;
     const now = performance.now();
     for (const spec of specs) { const region = this.regions.get(spec.key); if (region) region.lastSeen = now; }
-    this.want();
+    this.scheduler.want(specs, retained);
     this.evict();
     this.emit();
-  }
-
-  private want() {
-    const pinned = new Set(this.pinned.map(spec => spec.key));
-    this.scheduler.want([...this.pinned, ...this.visible.filter(spec => !pinned.has(spec.key))], this.retained);
   }
 
   private execute = (tasks: LeafTask[], signal: AbortSignal) => new Promise<CellResult[]>((resolve, reject) => {
@@ -386,18 +347,23 @@ export class LiveViewport {
 
   private loaded = (task: LeafTask, result: CellResult, cached: boolean) => {
     let region = this.regions.get(task.job);
-    if (!region) this.regions.set(task.job, region = { rank: task.rank, bytes: 0, segments: 0, buffers: [], lastSeen: performance.now(), fetchedAt: result.fetchedAt, cached, snapshotAt: result.snapshotAt });
+    if (!region) this.regions.set(task.job, region = { rank: task.rank, bytes: 0, segments: 0, buffers: [], lastSeen: performance.now(), fetchedAt: result.fetchedAt, cached, drawing: 0, snapshotAt: result.snapshotAt });
     region.bytes += result.positions.byteLength; region.segments += result.segments; region.buffers.push(result.positions);
     region.fetchedAt = Math.min(region.fetchedAt, result.fetchedAt);
     if (result.snapshotAt && (!region.snapshotAt || result.snapshotAt > region.snapshotAt)) region.snapshotAt = result.snapshotAt;
     if (result.snapshotAt && (!this.stats.snapshotAt || result.snapshotAt > this.stats.snapshotAt)) this.stats.snapshotAt = result.snapshotAt;
     if (cached) this.stats.cached++;
     const current = region;
-    if (result.positions.length) this.enqueue(async () => {
-      if (this.regions.get(task.job) !== current) return;
-      const drawn = await this.scene.appendGeometry(result.positions, task.rank, undefined, task.job);
-      if (drawn !== undefined) this.stats.firstRoadMs ??= drawn - this.started;
-    });
+    if (result.positions.length) {
+      current.drawing++;
+      this.enqueue(async () => {
+        try {
+          if (this.regions.get(task.job) !== current) return;
+          const drawn = await this.scene.appendGeometry(result.positions, task.rank, undefined, task.job);
+          if (drawn !== undefined) this.stats.firstRoadMs ??= drawn - this.started;
+        } finally { current.drawing--; }
+      });
+    }
     // A complete region fetched from the road service is cached for later sessions.
     if (!cached && !region.cached && this.settings.cache && this.scheduler.status(task.job) === 'ready') {
       const cache = this.settings.cache, key = this.cacheKey(task.job), buffers = [...region.buffers], meta = { fetchedAt: region.fetchedAt, snapshotAt: region.snapshotAt };
@@ -414,12 +380,12 @@ export class LiveViewport {
     });
   }
 
-  /** Removes the least recently seen regions outside the view and any export until within budget. */
+  /** Removes the least recently seen regions outside the view until within budget. */
   private evict() {
     let total = 0;
     for (const region of this.regions.values()) total += region.bytes;
     if (total <= this.settings.budgetBytes) return;
-    const kept = new Set([...this.visible, ...this.pinned].map(spec => spec.key));
+    const kept = new Set(this.visible.map(spec => spec.key));
     const candidates = [...this.regions].filter(([key]) => !kept.has(key)).sort((a, b) => a[1].lastSeen - b[1].lastSeen);
     for (const [key, region] of candidates) {
       if (total <= this.settings.budgetBytes) break;

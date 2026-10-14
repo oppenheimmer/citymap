@@ -9,12 +9,14 @@ import { liveStart, START_METRES } from '../src/lib/live/start.ts';
 import { translate } from '../src/lib/live/cell-cache.ts';
 import { projector } from '../src/lib/geometry.ts';
 import { metresPerSceneUnit } from '../src/lib/scale-bar.ts';
-import { viewFromCamera } from '../src/lib/view.ts';
+import { cameraFromView, viewFromCamera } from '../src/lib/view.ts';
 import { loadCity } from '../src/lib/load-city.ts';
 import type { Camera, Origin } from '../src/lib/domain.ts';
 
 const origin: Origin = [85.8245, 20.2961];
 const tile = { z: 13, x: 6049, y: 3600 };
+/** The cell at zoom `z` holding the origin. */
+const originTile = (z: number) => { const n = 2 ** z; return { z, x: Math.floor((origin[0] + 180) / 360 * n), y: Math.floor((1 - Math.log(Math.tan(Math.PI / 4 + origin[1] * Math.PI / 360)) / Math.PI) / 2 * n) }; };
 
 async function cellsWorker(t: TestContext, route: (body: string, signal: AbortSignal) => Promise<Response>) {
   const replies: CellReply[] = [];
@@ -170,8 +172,7 @@ test('load-city hands viewport loads to the live loader and never caches them as
 
 test('the centre of the view loads first, makes the map exportable, and exports the rest as available', async () => {
   // A view centred in one major-road cell, wide enough to reach its neighbours east and west.
-  const z = cellLevel(0, origin[1]), n = 2 ** z;
-  const x = Math.floor((origin[0] + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(Math.PI / 4 + origin[1] * Math.PI / 360)) / Math.PI) / 2 * n);
+  const { z, x, y } = originTile(cellLevel(0, origin[1]));
   const cell = tileRect({ z, x, y }, origin), cx = (cell.left + cell.right) / 2, cy = (cell.bottom + cell.top) / 2;
   const unit = metresPerSceneUnit(origin[1]), halfWidth = 9_000 / unit, halfHeight = 6_000 / unit;
   const camera: Camera = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
@@ -202,21 +203,19 @@ test('the centre of the view loads first, makes the map exportable, and exports 
     await new Promise(resolve => setImmediate(resolve));
     const coverage = viewport.coverage();
     assert.equal(coverage.exportable, true); assert.equal(coverage.complete, false);
-    // The centre is ready, so an export proceeds at once with the regions available.
-    const progress: number[] = [];
-    const partial = await viewport.prepareExport(camera, 0, new AbortController().signal, ready => progress.push(ready));
-    assert.equal(partial.complete, false); assert.deepEqual(progress, []);
+    // The centre is ready, so an export proceeds at once with the regions available, requesting nothing.
+    const asked = requests.length, partial = viewport.exportRegions(camera, 0);
+    assert.equal(partial.complete, false); assert.equal(requests.length, asked);
     const key = (cell: Cell) => `${cell.rank}:${cell.tile.z}/${cell.tile.x}/${cell.tile.y}`;
     assert.ok(fetches.slice(0, first).every(cell => partial.regions.has(key(cell))) && partial.regions.size > first, 'The export holds the centre and the frame around it');
     for (const request of outer) reply(request);
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal((await viewport.prepareExport(camera, 0, new AbortController().signal, () => {})).complete, true);
+    assert.equal(viewport.exportRegions(camera, 0).complete, true);
   } finally { viewport.dispose(); }
 });
 
 test('exports preserve loaded roads after zooming out beyond their loading limits, at the selected detail', async () => {
-  const z = cellLevel(2, origin[1]), n = 2 ** z;
-  const x = Math.floor((origin[0] + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(Math.PI / 4 + origin[1] * Math.PI / 360)) / Math.PI) / 2 * n);
+  const { z, x, y } = originTile(cellLevel(2, origin[1]));
   const small = tileRect({ z, x, y }, origin), cx = (small.left + small.right) / 2, cy = (small.bottom + small.top) / 2;
   let camera: Camera = { left: cx - (small.right - small.left) / 5, right: cx + (small.right - small.left) / 5, bottom: cy - (small.top - small.bottom) / 5, top: cy + (small.top - small.bottom) / 5 };
   const requests: CellRequest[] = [], drawn = new Set<string>();
@@ -241,16 +240,60 @@ test('exports preserve loaded roads after zooming out beyond their loading limit
     const halfWidth = (street.right - street.left) * 4, halfHeight = (street.top - street.bottom) * 4;
     camera = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
     viewport.viewChanged();
-    const exporting = viewport.prepareExport(camera, 0, new AbortController().signal, () => {});
+    await new Promise(resolve => setTimeout(resolve, LIVE_LIMITS.debounceMs + 50));
     assert.deepEqual(viewport.coverage().limited, [1, 2]);
     for (const request of requests.slice(loadedRequests)) reply(request);
-    const exported = await exporting;
+    await new Promise(resolve => setImmediate(resolve));
+    const exported = viewport.exportRegions(camera, 0);
     assert.ok(loadedDetail.every(key => drawn.has(key)), 'The screen retains the loaded streets and finer roads');
     assert.ok(loadedDetail.every(key => exported.regions.has(key)), 'Export includes every loaded detail owner visible in the frame');
     assert.equal(exported.complete, false, 'Keeping loaded detail does not claim the wide frame is fully loaded');
     assert.ok(requests.slice(loadedRequests).flatMap(request => request.cells).every(cell => cell.rank === 0), 'Neither zooming out nor exporting fetches a limited detail rank');
     viewport.setDetail('major');
-    const major = await viewport.prepareExport(camera, 0, new AbortController().signal, () => {});
+    const major = viewport.exportRegions(camera, 0);
     assert.ok(loadedDetail.every(key => !major.regions.has(key)), 'Loaded detail hidden by the selected road setting stays out of export');
+  } finally { viewport.dispose(); }
+});
+
+test('a map zoomed out too far for any road class to load is exportable at once, unless its centre is beyond the radius', () => {
+  // About 150 km across needs far more than 36 major-road cells, so nothing loads.
+  const width = 150_000 / metresPerSceneUnit(origin[1]);
+  const at = (km: number): Camera => cameraFromView({ lon: origin[0] + km * 1000 / (111_320 * Math.cos(origin[1] * Math.PI / 180)), lat: origin[1], width, height: width * 0.75 }, origin);
+  const requests: CellRequest[] = [];
+  const worker = { onmessage: undefined, onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  const open = (camera: Camera) => new LiveViewport({ frame: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController, origin, 'major', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
+  const near = open(at(0));
+  try {
+    const coverage = near.coverage();
+    assert.deepEqual(coverage.limited, [0]); assert.equal(coverage.exportable, true); assert.equal(requests.length, 0);
+    assert.equal(near.exportRegions(at(0), 0).complete, false, 'The roads drawn are not the whole frame');
+  } finally { near.dispose(); }
+  // With its centre 80 km from the start, beyond the 50 km radius, the map cannot be exported.
+  const far = open(at(80));
+  try {
+    const coverage = far.coverage();
+    assert.deepEqual(coverage.limited, [0]); assert.equal(coverage.exportable, false);
+  } finally { far.dispose(); }
+});
+
+test('an export is complete only once every loaded region of its frame is drawn', async () => {
+  // A small view in the middle of one major-road cell.
+  const cell = tileRect(originTile(cellLevel(0, origin[1])), origin), cx = (cell.left + cell.right) / 2, cy = (cell.bottom + cell.top) / 2;
+  const halfWidth = (cell.right - cell.left) / 10, halfHeight = (cell.top - cell.bottom) / 10;
+  const camera: Camera = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
+  const requests: CellRequest[] = [];
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  let draw = () => {};
+  const drawing = new Promise<void>(resolve => { draw = resolve; });
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: async () => { await drawing; return undefined; }, removeOwner: () => 0 } as unknown as SceneController;
+  const viewport = new LiveViewport(scene, origin, 'major', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
+  try {
+    for (const request of requests) worker.onmessage!({ data: { type: 'cells', id: request.id, cells: request.cells.map(() => ({ positions: new Float32Array([cx, cy, cx + 1, cy]).buffer, segments: 1 })), bytes: 16, fetchMs: 1, decodeMs: 0 } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(viewport.coverage().complete, true);
+    assert.equal(viewport.exportRegions(camera, 0).complete, false, 'A loaded region still being drawn is missing from the export');
+    draw();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(viewport.exportRegions(camera, 0).complete, true);
   } finally { viewport.dispose(); }
 });

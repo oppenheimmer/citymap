@@ -172,7 +172,7 @@ test('zoomed-out exports preserve loaded streets and footpaths without fetching 
   const every = await svg(page, 'Exported available map.');
   const segments = (xml: string) => [...xml.matchAll(/M([-\d.]+),([-\d.]+)L([-\d.]+),([-\d.]+)/g)].map(match => match.slice(1).join(','));
   const allSegments = segments(every.xml);
-  expect(new Set(allSegments).size, 'Snapshot and prepared geometry are merged without drawing roads twice').toBe(allSegments.length);
+  expect(new Set(allSegments).size, 'No road is exported twice').toBe(allSegments.length);
   // The settings cover the canvas but do not resize it; capture the same composed frame.
   await page.getByRole('button', { name: 'Hide options', exact: true }).click();
   const screen = await page.locator('canvas').screenshot();
@@ -269,6 +269,22 @@ test('Export waits only for the centre of the map, then exports the map availabl
   await expect(exportButton).toBeEnabled();
   const { xml } = await svg(page, 'Exported available map.');
   expect(xml.match(/<path d="M/g)!.length).toBeGreaterThan(0);
+});
+
+test('a map zoomed out too far for any roads to load exports the roads drawn, unless its centre is beyond 50 km', async ({ page, request }) => {
+  const exportButton = page.getByRole('button', { name: 'Export', exact: true });
+  await liveCity(page, 'Wide city', '&detail=major'); await idle(request);
+  // Even major roads would need more than 36 cells here, so nothing loads and no centre waits.
+  for (let i = 0; i < 10; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
+  await expect(status(page)).toContainText('Zoom in to load roads here'); await idle(request);
+  await expect(exportButton).toBeEnabled(); await expect(page.locator('.live-status')).not.toContainText(centreHint);
+  const before = await cellQueries(request);
+  const { xml } = await svg(page, 'Exported available map.');
+  expect(xml.match(/<path d="M/g)!.length, 'The major roads drawn are exported').toBeGreaterThan(0);
+  expect(await cellQueries(request), 'Exporting requests no road cells').toEqual(before);
+  // With the centre of the map beyond 50 km of the start, it cannot be exported.
+  await drag(page, -0.9);
+  await expect(exportButton).toBeDisabled(); await expect(page.locator('.live-status')).toContainText(centreHint);
 });
 
 test('a rate limit waits as long as the road service status page says, with a countdown', async ({ page, request }) => {
