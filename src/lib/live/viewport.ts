@@ -288,14 +288,15 @@ export class LiveViewport {
   private update() {
     clearTimeout(this.timer); this.timer = undefined; this.firstChange = undefined;
     if (this.disposed) return;
-    const camera = this.scene.camera(), rotation = this.scene.rotation;
+    // Roads load for the composed map, not for the dimmed canvas around it beside opened settings.
+    const camera = this.scene.frame(), rotation = this.scene.rotation;
     if (![camera.left, camera.right, camera.bottom, camera.top].every(Number.isFinite) || camera.right <= camera.left || camera.top <= camera.bottom) return;
     const visible = frameCorners(camera, rotation, LIVE_LIMITS.padding), exact = frameCorners(camera, rotation), retain = frameCorners(camera, rotation, LIVE_LIMITS.retain);
     const core = frameCorners(camera, rotation, LIVE_LIMITS.core);
     const specs: JobSpec[] = [], outer: { spec: JobSpec; gap: number }[] = [], required: string[] = [], retained: string[] = [], limited: RoadRank[] = [];
     const centre: string[] = [];
     let reachable = true;
-    // Scene distance from the view's centre to the nearest point of a cell.
+    // Scene distance from the map's centre to the nearest point of a cell.
     const cx = (camera.left + camera.right) / 2, cy = (camera.bottom + camera.top) / 2;
     const gap = (tile: Tile) => { const box = tileRect(tile, this.origin); return Math.hypot(Math.max(box.left - cx, 0, cx - box.right), Math.max(box.bottom - cy, 0, cy - box.top)); };
     for (const rank of this.ranks()) {

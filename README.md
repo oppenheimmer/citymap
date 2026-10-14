@@ -65,7 +65,10 @@ would cover grid teeth or labels move inward just enough to clear them; a scale 
 that follows the compass moves with it. Exported images
 carry no visible OpenStreetMap credit (SVG keeps it in its metadata; the app shows
 it in the sidebar footer), so credit OpenStreetMap wherever you share them.
-On desktop the options sidebar collapses to a menu button.
+On desktop the options sidebar collapses to a menu button. The map you compose is
+the map area with the options (or the phone's sheet) collapsed: opening them shows
+that whole map, smaller and centred, with the canvas around it dimmed, and links and
+exports keep it, by default at its full size.
 Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 

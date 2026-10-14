@@ -23,6 +23,13 @@ export function fitCamera(camera: Camera, aspect: number): Camera {
   return { left: cx - height * aspect / 2, right: cx + height * aspect / 2, bottom: cy - height / 2, top: cy + height / 2 };
 }
 
+/** The largest frame of `aspect` centred in `camera`: the frame that fitCamera widens to it. */
+export function inscribedCamera(camera: Camera, aspect: number): Camera {
+  const width = Math.min(camera.right - camera.left, (camera.top - camera.bottom) * aspect), height = width / aspect;
+  const cx = (camera.left + camera.right) / 2, cy = (camera.top + camera.bottom) / 2;
+  return { left: cx - width / 2, right: cx + width / 2, bottom: cy - height / 2, top: cy + height / 2 };
+}
+
 /**
  * Scene-space corners of `camera` shown at a clockwise `rotation` in degrees, with its
  * extents scaled by `scale`. Clockwise from the top left of the screen, as exports draw it.

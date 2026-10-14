@@ -3,18 +3,28 @@ import type { Scene } from 'w-gl';
 import { OwnedWireCollection } from './OwnedWireCollection.ts';
 import { detailRank } from './domain.ts';
 import type { Camera, Design, GeoView, Geometry, RoadRank } from './domain.ts';
-import { cameraFromView, viewFromCamera } from './view.ts';
+import type { Size } from './marks.ts';
+import { cameraFromView, fitCamera, inscribedCamera, viewFromCamera } from './view.ts';
 
 export function color(hex: string, alpha = 1) {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) throw new Error('Invalid color');
   return { r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255, a: alpha };
 }
 export function copyDesign(settings: Design): Design { return { ...settings, label: { ...settings.label }, northAt: { ...settings.northAt }, scaleBarAt: settings.scaleBarAt ? { ...settings.scaleBarAt } : undefined, view: settings.view ? { ...settings.view } : undefined }; }
-/** `view` gives the latitude exports need to measure their scale bar. */
+/**
+ * The composed map: `camera` is its frame and `width` × `height` its size in CSS pixels;
+ * `view` gives the latitude exports need to measure their scale bar.
+ */
 export interface SceneSnapshot { buffers: Float32Array[]; bounds: Camera; camera: Camera; view: GeoView; design: Design; width: number; height: number; pixelRatio: number }
 export interface SceneOptions {
-  /** Called with the data-independent view after camera and size changes. */
+  /** Called with the data-independent view of the composed frame after camera and size changes. */
   onView?: (view: GeoView) => void;
+  /**
+   * CSS pixel size of the composed map: the map area with the settings collapsed. Its frame
+   * is what the map shows, shares and exports; a smaller canvas shows the whole frame, smaller.
+   * Defaults to the canvas.
+   */
+  area?: Size;
   /** Fixed-size offscreen rendering, such as PNG export. */
   fixedSize?: { width: number; height: number };
   lineWidth?: number;
@@ -40,12 +50,22 @@ export class SceneController {
   private lineWidth: number;
   private frameWaits = new Set<() => void>();
   private fitTo: 'roads' | 'bounds';
+  private area: Size;
+  /**
+   * What the map is composed around, set by a link, Fit map or a design and moved by
+   * gestures. The frame is this in the area's shape, so resizing there and back restores it.
+   */
+  private intent!: Camera;
+  /** Set while the scene moves its own camera, so only user gestures move the frame. */
+  private showing = false;
 
-  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera, fit = 'roads' }: SceneOptions = {}) {
+  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera, fit = 'roads', area }: SceneOptions = {}) {
     this.canvas = canvas;
     this.settings = copyDesign(settings);
     this.lineWidth = lineWidth;
     this.fitTo = fit;
+    const rect = canvas.getBoundingClientRect();
+    this.area = area?.width && area.height ? { ...area } : fixedSize ? { ...fixedSize } : { width: rect.width || 1, height: rect.height || 1 };
     this.geometry = { ...geometry, buffers: [], ranks: [] };
     if (!canvas.getContext('webgl', { alpha: true, antialias: true })) throw new Error('WebGL unavailable. Try a browser with hardware acceleration enabled.');
     this.renderer = createScene(canvas, { devicePixelRatio: fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, 2), allowRotation: false, allowPinchRotation: false, size: fixedSize });
@@ -53,15 +73,25 @@ export class SceneController {
     geometry.buffers.forEach((buffer, index) => this.append(buffer, geometry.ranks[index] ?? 0));
     this.applyColors(settings);
     this.setCamera(camera || (settings.view ? cameraFromView(settings.view, geometry.origin) : geometry.bounds));
-    this.onTransform = onView ? () => onView(this.view()) : undefined;
-    if (this.onTransform) this.renderer.on('transform', this.onTransform);
+    // Panning and zooming move and scale the frame with the view; the canvas may show more around it.
+    this.onTransform = () => {
+      if (!this.showing) {
+        const before = this.composed, after = inscribedCamera(this.camera(), this.area.width / this.area.height);
+        const scale = (after.right - after.left) / (before.right - before.left), cx = (after.left + after.right) / 2, cy = (after.bottom + after.top) / 2;
+        const halfWidth = (this.intent.right - this.intent.left) * scale / 2, halfHeight = (this.intent.top - this.intent.bottom) * scale / 2;
+        this.intent = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
+      }
+      onView?.(this.view());
+    };
+    this.renderer.on('transform', this.onTransform);
     // Leave browser zoom shortcuts available while the canvas has focus.
     canvas.addEventListener('wheel', this.browserWheel, { capture: true });
     canvas.addEventListener('keydown', this.browserKeys, { capture: true });
     this.observer = new ResizeObserver(() => {
       if (this.disposed || fixedSize) return;
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      this.renderer.renderFrame();
+      // A resized canvas, such as one beside opened settings, still shows the whole frame.
+      this.show();
       onView?.(this.view());
     });
     if (!fixedSize) this.observer.observe(canvas);
@@ -149,10 +179,10 @@ export class SceneController {
   setSettings(settings: Design) {
     const changed = settings.roadColor !== this.settings.roadColor || settings.roadOpacity !== this.settings.roadOpacity || settings.backgroundColor !== this.settings.backgroundColor || settings.backgroundOpacity !== this.settings.backgroundOpacity;
     const detailChanged = settings.detail !== this.settings.detail;
-    // Rotating keeps the view's centre and zoom, like turning the paper.
-    const rotated = (settings.rotation || 0) !== (this.settings.rotation || 0) ? this.camera() : undefined;
+    // Rotating keeps the frame's centre and zoom, like turning the paper.
+    const rotated = (settings.rotation || 0) !== (this.settings.rotation || 0);
     this.settings = copyDesign(settings);
-    if (rotated) this.setCamera(rotated);
+    if (rotated) this.show();
     if (changed) this.applyColors(settings);
     if (detailChanged) {
       for (const collection of this.collections) collection.hidden = this.hidden(collection.rank);
@@ -168,22 +198,44 @@ export class SceneController {
   }
 
   /**
-   * Shows `camera` (a centre with extents along the screen's axes) at the design's
-   * rotation. w-gl's setViewBox resets the camera to north-up, so rotation follows it.
+   * Composes the map around `camera` (a centre with extents along the screen's axes): the
+   * frame takes the area's shape, widened so all of `camera` stays in it.
    */
   setCamera(camera: Camera) {
-    const { width, height } = this.renderer.getDrawContext();
+    this.intent = { ...camera };
+    this.show();
+  }
+
+  /** The composed map's size changed: the frame takes its new shape around the same map. */
+  setArea(area: Size) {
+    if (!(area.width > 0 && area.height > 0) || area.width === this.area.width && area.height === this.area.height) return;
+    this.area = { ...area };
+    this.show();
+  }
+
+  /** The composed frame: what the map was composed around, in the area's shape. */
+  private get composed(): Camera { return fitCamera(this.intent, this.area.width / this.area.height); }
+
+  /**
+   * Shows the whole frame in the canvas, centred, at the design's rotation. w-gl's setViewBox
+   * resets the camera to north-up, so rotation follows it.
+   */
+  private show() {
+    const { width, height } = this.renderer.getDrawContext(), camera = this.composed;
     const verticalSpan = Math.max(camera.top - camera.bottom, (camera.right - camera.left) / (width / height));
     const cx = (camera.left + camera.right) / 2, cy = (camera.top + camera.bottom) / 2;
     // w-gl's fit function multiplies its world bounds by DPR. Compensate once here.
     const half = verticalSpan / (2 * this.renderer.getPixelRatio());
-    this.renderer.setViewBox({ left: cx, right: cx, top: cy + half, bottom: cy - half });
-    const rotation = (this.settings.rotation || 0) * Math.PI / 180;
-    if (rotation) {
-      // Increasing w-gl's phi turns the map clockwise on screen.
-      const controls = this.renderer.getCameraController();
-      controls.rotateByAngle(rotation, 0); controls.redraw();
-    }
+    this.showing = true;
+    try {
+      this.renderer.setViewBox({ left: cx, right: cx, top: cy + half, bottom: cy - half });
+      const rotation = (this.settings.rotation || 0) * Math.PI / 180;
+      if (rotation) {
+        // Increasing w-gl's phi turns the map clockwise on screen.
+        const controls = this.renderer.getCameraController();
+        controls.rotateByAngle(rotation, 0); controls.redraw();
+      }
+    } finally { this.showing = false; }
     this.renderer.renderFrame();
   }
   /** Fits the roads (or bounds); when rotated, fits their actual extent along the rotated screen axes. */
@@ -210,6 +262,8 @@ export class SceneController {
     camera.zoomCenterByScaleFactor(1 - 1 / factor, 0, 0);
     camera.redraw();
   }
+  /** The composed frame, which the canvas shows whole and exports draw. */
+  frame(): Camera { return this.composed; }
   /** The visible centre with its extents along the (possibly rotated) screen axes. */
   camera(): Camera {
     const rect = this.canvas.getBoundingClientRect();
@@ -219,14 +273,16 @@ export class SceneController {
     const width = Math.hypot(right[0] - left[0], right[1] - left[1]), height = Math.hypot(top[0] - bottom[0], top[1] - bottom[1]);
     return { left: centre[0] - width / 2, right: centre[0] + width / 2, bottom: centre[1] - height / 2, top: centre[1] + height / 2 };
   }
-  /** The current camera as a geographic view that survives different data extents. */
-  view(): GeoView { return viewFromCamera(this.camera(), this.geometry.origin); }
-  /** `regions` limits live map regions to those an export frame needs; other roads are kept. */
+  /** The composed frame as a geographic view that survives different data extents. */
+  view(): GeoView { return viewFromCamera(this.composed, this.geometry.origin); }
+  /**
+   * The composed map, whether or not the canvas currently shows more around it. `regions`
+   * limits live map regions to those an export frame needs; other roads are kept.
+   */
   snapshot(regions?: ReadonlySet<string>): SceneSnapshot {
-    const rect = this.canvas.getBoundingClientRect();
     // Exports contain only the road classes currently shown.
     const buffers = this.collections.filter(collection => !this.hidden(collection.rank) && (!regions || !collection.owner || regions.has(collection.owner))).map(collection => collection.positions);
-    return { buffers, bounds: { ...this.geometry.bounds }, camera: this.camera(), view: this.view(), design: copyDesign(this.settings), width: rect.width, height: rect.height, pixelRatio: this.renderer.getPixelRatio() };
+    return { buffers, bounds: { ...this.geometry.bounds }, camera: this.frame(), view: this.view(), design: copyDesign(this.settings), width: this.area.width, height: this.area.height, pixelRatio: this.renderer.getPixelRatio() };
   }
   render() { this.renderer.renderFrame(true); }
 

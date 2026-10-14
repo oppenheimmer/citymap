@@ -90,8 +90,9 @@ test('the north arrow shows by default, appears in PNG and SVG exports and can b
 test('the north arrow and scale bar move by drag and arrow keys, and links restore their positions', async ({ page }) => {
   await page.goto('/'); await sample(page);
   const compass = page.getByRole('button', { name: /^North arrow/ }), bar = page.getByRole('button', { name: /^Scale bar/ });
-  const centre = async (element: typeof compass) => { const b = (await element.boundingBox())!, m = (await page.locator('.map').boundingBox())!; return [(b.x + b.width / 2 - m.x) / m.width, (b.y + b.height / 2 - m.y) / m.height]; };
-  const map = (await page.locator('.map').boundingBox())!, box = (await compass.boundingBox())!;
+  // Positions are fractions of the composed map, which the opened options show whole and smaller.
+  const centre = async (element: typeof compass) => { const b = (await element.boundingBox())!, m = (await page.locator('.map .frame').boundingBox())!; return [(b.x + b.width / 2 - m.x) / m.width, (b.y + b.height / 2 - m.y) / m.height]; };
+  const map = (await page.locator('.map .frame').boundingBox())!, box = (await compass.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(map.x + map.width * 0.3, map.y + map.height * 0.4, { steps: 6 }); await page.mouse.up();
   let link = await share(page);
   expect(Number(link.searchParams.get('northX'))).toBeCloseTo(0.3, 2); expect(Number(link.searchParams.get('northY'))).toBeCloseTo(0.4, 2);
@@ -139,6 +140,49 @@ test('the options sidebar collapses to a hamburger button and the map takes the 
   await show.click(); await expect(page.getByLabel('Find a city')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Hide options', exact: true })).toBeFocused();
   await expect.poll(async () => (await canvas.boundingBox())!.width).toBeCloseTo(before, 0);
+});
+
+test('opening the options shows the whole composed map, dims around it, and links and exports keep it', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const canvas = page.locator('canvas'), frame = page.locator('.map .frame');
+  const box = async (locator: typeof canvas) => (await locator.boundingBox())!;
+  const urlView = () => new URL(page.url()).searchParams.get('view');
+  // With the options hidden, the composed map fills the canvas.
+  await page.getByRole('button', { name: 'Hide options', exact: true }).click();
+  await expect.poll(async () => (await box(canvas)).width).toBe(1000);
+  expect(await box(frame)).toEqual(await box(canvas)); await expect(frame).toHaveCSS('box-shadow', 'none');
+  const map = await box(canvas);
+  await page.mouse.move(map.x + 500, 375); await page.mouse.down(); await page.mouse.move(map.x + 560, 415, { steps: 8 }); await page.mouse.up();
+  // The link in the address bar settles a moment after the drag.
+  let last: string | null | undefined;
+  await expect.poll(() => { const value = urlView(), same = value !== null && value === last; last = value; return same; }, { intervals: [500] }).toBe(true);
+  const composed = urlView()!.split(',').map(Number), pixels = await canvas.evaluate(element => [(element as HTMLCanvasElement).width, (element as HTMLCanvasElement).height]);
+  // Beside the options the canvas narrows: the whole map stays in view, as wide as the canvas
+  // and centred, with the canvas around it dimmed.
+  await page.getByRole('button', { name: 'Show options', exact: true }).click();
+  await expect.poll(async () => (await box(canvas)).width).toBeLessThan(700);
+  const open = await box(canvas), shown = await box(frame);
+  expect(shown.width).toBeCloseTo(open.width, 0); expect(shown.height).toBeCloseTo(open.width * 0.75, 0);
+  expect(shown.y - open.y).toBeCloseTo(open.y + open.height - shown.y - shown.height, 0);
+  await expect(frame).not.toHaveCSS('box-shadow', 'none');
+  const label = (await box(page.getByRole('button', { name: 'Move map label with arrow keys or drag' })));
+  expect(label.y + label.height / 2).toBeCloseTo(shown.y + 0.83 * shown.height, 0);
+  // Links and exports keep the composed map, at its own size.
+  const shared = (await share(page)).searchParams.get('view')!.split(',').map(Number);
+  shared.forEach((value, index) => expect(value).toBeCloseTo(composed[index], index < 2 ? 5 : 1));
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  await expect(page.getByLabel('Width in pixels')).toHaveValue(String(pixels[0])); await expect(page.getByLabel('Height in pixels')).toHaveValue(String(pixels[1]));
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  // Hiding the options again fills the canvas with the same map.
+  await page.getByRole('button', { name: 'Hide options', exact: true }).click();
+  await expect.poll(async () => (await box(canvas)).width).toBe(1000);
+  expect(await box(frame)).toEqual(await box(canvas));
+  await page.getByRole('button', { name: 'Show options', exact: true }).click();
+  (await share(page)).searchParams.get('view')!.split(',').map(Number).forEach((value, index) => expect(value).toBeCloseTo(composed[index], index < 2 ? 5 : 1));
+  // A window resized to another shape, here the phone layout, and back restores the same map.
+  await page.setViewportSize({ width: 600, height: 900 }); await expect.poll(async () => (await box(canvas)).width).toBe(600);
+  await page.setViewportSize({ width: 1000, height: 750 }); await expect.poll(async () => (await box(canvas)).width).toBe(680);
+  (await share(page)).searchParams.get('view')!.split(',').map(Number).forEach((value, index) => expect(value).toBeCloseTo(composed[index], index < 2 ? 5 : 1));
 });
 
 test('map rotation turns the map and compass, keeps the view, survives links and exports, and resets for a new city', async ({ page }) => {

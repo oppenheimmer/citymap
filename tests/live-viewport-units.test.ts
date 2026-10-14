@@ -150,7 +150,7 @@ test('the centre of the view loads first, makes the map exportable, and exports 
   const fetches: CellRequest[] = [];
   const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') fetches.push(command); }, terminate() {} };
   const reply = (id: number) => worker.onmessage!({ data: { type: 'cell', id, positions: new ArrayBuffer(0), segments: 0, bytes: 0, fetchMs: 1, decodeMs: 0 } });
-  const scene = { camera: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController;
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController;
   // Unlimited concurrency issues every wanted request at once, in priority order.
   const viewport = new LiveViewport(scene, origin, 'streets', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
   try {

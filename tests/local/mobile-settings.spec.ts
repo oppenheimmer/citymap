@@ -32,6 +32,25 @@ test.describe('mobile sheet', () => {
     await page.setViewportSize({width:390,height:844}); await page.getByRole('button',{name:'Show controls',exact:true}).tap();
     await expect(page.getByLabel('Find a city')).toBeVisible(); expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
   });
+  test('the open sheet shows the whole composed map, and links and exports keep it', async ({ page }) => {
+    await page.goto('/'); await sample(page);
+    const canvas = page.locator('canvas'), frame = page.locator('.map .frame');
+    const view = async () => (await share(page)).searchParams.get('view')!.split(',').map(Number);
+    const before = await view();
+    // The composed map is the map area with the sheet collapsed, shown whole and smaller above the open sheet.
+    const open = (await canvas.boundingBox())!, shown = (await frame.boundingBox())!;
+    expect(shown.height).toBeCloseTo(open.height, 0); expect(shown.width / shown.height).toBeCloseTo(390 / (844 - 96), 2);
+    expect(shown.x - open.x).toBeCloseTo(open.x + open.width - shown.x - shown.width, 0);
+    await expect(frame).not.toHaveCSS('box-shadow', 'none');
+    await page.getByRole('button',{name:'Export',exact:true}).click();
+    await expect(page.getByLabel('Width in pixels')).toHaveValue('780'); await expect(page.getByLabel('Height in pixels')).toHaveValue(String(2 * (844 - 96)));
+    await page.getByRole('button',{name:'Close',exact:true}).click();
+    await page.getByRole('button',{name:'Hide controls',exact:true}).tap();
+    await expect.poll(async () => (await canvas.boundingBox())!.height).toBe(844 - 96);
+    expect(await frame.boundingBox()).toEqual(await canvas.boundingBox()); await expect(frame).toHaveCSS('box-shadow', 'none');
+    await page.getByRole('button',{name:'Show controls',exact:true}).tap();
+    (await view()).forEach((value, index) => expect(value).toBeCloseTo(before[index], index < 2 ? 5 : 1));
+  });
   test('a collapsed sheet keeps cancellation available and error recovery opens the controls', async ({ page, request }) => {
     await control(request,{roads:{hold:true}}); await page.goto('/?q=Held&areaId=3600000101&cache=0');
     await page.getByRole('button',{name:'Load roads',exact:true}).click(); await expect.poll(async () => (await stats(request)).roads.length).toBe(1);

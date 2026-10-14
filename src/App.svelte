@@ -78,6 +78,12 @@
   let providers: Providers;
   let overpassConcurrency = 1;
   let mobile = $state(false), controlsOpen = $state(true);
+  // Height of the collapsed settings sheet on phones; the map takes the rest.
+  const SHEET_COLLAPSED = 96;
+  let layoutWidth = $state(0), layoutHeight = $state(0);
+  // The composed map is the map area with the settings collapsed. Opening them shows it whole
+  // and smaller, and exports keep it; 0 until the layout is measured.
+  const area = $derived({ width: layoutWidth, height: mobile ? Math.max(0, layoutHeight - SHEET_COLLAPSED) : layoutHeight });
   // Desktop sidebar; phones use the collapsible sheet instead.
   let sidebarOpen = $state(true);
   let showOptions = $state<HTMLButtonElement>(), hideOptions = $state<HTMLButtonElement>();
@@ -216,7 +222,9 @@
   }
   function openExport() {
     if (!controller) return;
-    exportWidth = Math.max(256, controller.canvas.width); exportHeight = Math.max(256, controller.canvas.height);
+    // The composed map at the screen's pixel density, whether or not the settings are open.
+    const { width, height, pixelRatio } = controller.snapshot();
+    exportWidth = Math.max(256, Math.round(width * pixelRatio)); exportHeight = Math.max(256, Math.round(height * pixelRatio));
     exportError = ''; exported = ''; exportDialog.showModal();
   }
   async function exportFile(format: 'png' | 'svg') {
@@ -295,7 +303,7 @@
 
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && loading) cancel(); }} />
 {#snippet hamburger()}<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>{/snippet}
-<main class="layout" class:sidebar-closed={!mobile && !sidebarOpen}>
+<main class="layout" class:sidebar-closed={!mobile && !sidebarOpen} bind:clientWidth={layoutWidth} bind:clientHeight={layoutHeight} style:--sheet-collapsed={`${SHEET_COLLAPSED}px`}>
   <aside id="options" class:collapsed={mobile && !controlsOpen} hidden={!mobile && !sidebarOpen} aria-label="Map settings">
     <div class="sheet-toolbar">
       <span class="sheet-title">{selected?.name.split(',')[0] || 'Citymap'}</span>
@@ -354,7 +362,7 @@
   </aside>
   <section class="map-panel" aria-label="Map preview">
     {#if !mobile && !sidebarOpen}<button class="menu-toggle show-options" bind:this={showOptions} aria-label="Show options" aria-expanded="false" aria-controls="options" onclick={() => toggleSidebar(true)}>{@render hamburger()}</button>{/if}
-    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} live={liveSettings} oncoverage={covered} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
+    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} {area} live={liveSettings} oncoverage={covered} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
@@ -403,7 +411,7 @@ details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
   .layout { display: flex; flex-direction: column-reverse; height: 100dvh; overflow: hidden; }
   .map-panel { flex: 1; min-height: 120px; }
   aside { flex: none; height: 45dvh; min-height: 80px; border-top: 1px solid var(--ui-border); border-right: 0; padding: 0 16px 16px; overflow-y: auto; }
-  aside.collapsed { height: 96px; overflow: hidden; }
+  aside.collapsed { height: var(--sheet-collapsed); overflow: hidden; }
   header { margin-bottom: 16px; }
   .sheet-toolbar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; padding: 12px 0; background: var(--ui-surface); z-index: 1; }
   button { min-height: 44px; }
