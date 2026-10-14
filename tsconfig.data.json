@@ -11,7 +11,12 @@
     "skipLibCheck": true,
     "types": [
       "node"
-    ]
+    ],
+    "paths": {
+      "w-gl": [
+        "./src/types/wgl.d.ts"
+      ]
+    }
   },
   "include": [
     "src/lib/data/**/*.ts",

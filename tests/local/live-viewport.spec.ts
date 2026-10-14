@@ -29,14 +29,20 @@ async function idle(request: APIRequestContext) {
   let last = -1;
   await expect.poll(async () => { const count = (await cellQueries(request)).length, same = count === last; last = count; return same; }, { intervals: [700], timeout: 15_000 }).toBe(true);
 }
-async function svg(page: Page, width = 800, height = 600) {
+/**
+ * Downloads an SVG at the export dialog's default size, which has the map's own shape;
+ * `message` is what the dialog then says.
+ */
+async function svg(page: Page, message = 'SVG exported.') {
   await page.getByRole('button', { name: 'Export', exact: true }).click();
-  await page.getByLabel('Width in pixels').fill(String(width)); await page.getByLabel('Height in pixels').fill(String(height));
+  const width = Number(await page.getByLabel('Width in pixels').inputValue()), height = Number(await page.getByLabel('Height in pixels').inputValue());
   const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
   const xml = (await readFile((await (await pending).path())!)).toString('utf8');
+  await expect(page.getByRole('dialog').getByRole('status')).toHaveText(message);
   await page.getByRole('button', { name: 'Close', exact: true }).click();
-  return xml;
+  return { xml, width, height };
 }
+const centreHint = 'Export is available once the centre of the map has loaded';
 
 test('a searched city loads a bounded set of viewport cells, never one whole-area query', async ({ page, request }) => {
   await liveCity(page);
@@ -105,7 +111,7 @@ test('road detail upgrades fetch only the newly shown classes and downgrades fet
   await page.getByLabel('Roads shown').selectOption('major'); await page.getByLabel('Roads shown').selectOption('streets');
   await settle(page); expect(await cellQueries(request)).toHaveLength(total);
   // Exports hold exactly the shown classes, from roads already loaded.
-  const segments = async () => ((await svg(page)).match(/M[-0-9.]+,/g) || []).length;
+  const segments = async () => ((await svg(page)).xml.match(/M[-0-9.]+,/g) || []).length;
   const shown = await segments();
   await page.getByLabel('Roads shown').selectOption('all'); const every = await segments();
   await page.getByLabel('Roads shown').selectOption('streets'); expect(await segments()).toBe(shown);
@@ -113,13 +119,10 @@ test('road detail upgrades fetch only the newly shown classes and downgrades fet
   expect((await share(page)).searchParams.get('detail')).toBe('streets');
 });
 
-test('exports load their exact frame first, and roads cross cell seams once without gaps', async ({ page, request }) => {
-  await liveCity(page, 'Export city');
-  const before = (await cellQueries(request)).length;
-  // A wide export frame extends beyond the screen view, so more cells load before drawing.
-  const width = 1600, height = 600;
-  const xml = await svg(page, width, height);
-  expect((await cellQueries(request)).length).toBeGreaterThan(before);
+test('a fully loaded view exports every road, and roads cross cell seams once without gaps', async ({ page, request }) => {
+  await liveCity(page, 'Export city'); await idle(request);
+  // The export has the view's shape, so every region of its frame has loaded.
+  const { xml, width, height } = await svg(page);
   const pieces = [...xml.matchAll(/M([-\d.]+),([-\d.]+)L([-\d.]+),([-\d.]+)/g)].map(match => match.slice(1).map(Number));
   expect(pieces.length).toBeGreaterThan(500);
   expect(new Set(pieces.map(piece => piece.join(','))).size, 'No segment is drawn twice').toBe(pieces.length);
@@ -170,21 +173,40 @@ test('a dense cell is split into quarters only where needed, and rate limits wai
   expect(after.every(query => span(query) > (query.includes('motorway') ? 0.1 : 0.04))).toBe(true);
 });
 
-test('failed regions leave loaded roads visible, block exports with a clear reason, and retry recovers', async ({ page, request }) => {
+test('failed regions in the centre leave loaded roads visible and keep Export unavailable until retry recovers', async ({ page, request }) => {
+  // Major roads fail; their cells cover the centre of the view.
   await control(request, { roads: { status: 400, match: 'motorway' } });
   await choose(page, 'Failing city');
   await expect(status(page)).toContainText('Some roads in view could not be loaded');
   await expect(page.locator('.live-status')).toContainText('failed');
+  await expect(page.locator('.live-status')).toContainText(centreHint);
   await expect(page.locator('canvas')).toBeVisible();
-  const files: string[] = []; page.on('download', file => files.push(file.suggestedFilename()));
-  await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
-  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('could not be loaded, so nothing was exported');
-  expect(files).toEqual([]);
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeDisabled();
   await control(request, { roads: {} });
   await page.getByRole('button', { name: 'Retry loading roads', exact: true }).click();
   await expect(status(page)).toContainText('Failing city, Japan ready');
-  expect((await svg(page)).match(/<path d="M/g)!.length).toBeGreaterThan(0); expect(files).toHaveLength(1);
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+  expect((await svg(page)).xml.match(/<path d="M/g)!.length).toBeGreaterThan(0);
+});
+
+test('Export waits only for the centre of the map, then exports the map available around it', async ({ page, request }) => {
+  const exportButton = page.getByRole('button', { name: 'Export', exact: true });
+  // Slow responses show Export unavailable until the centre has loaded.
+  await control(request, { roads: { delay: 300 } });
+  await choose(page, 'Centre city');
+  await expect(exportButton).toBeDisabled(); await expect(page.locator('.live-status')).toContainText(centreHint);
+  await expect(exportButton).toBeEnabled({ timeout: 15_000 });
+  await control(request, { roads: {} });
+  await expect(status(page)).toContainText('Centre city, Japan ready'); await idle(request);
+  // Zooming out keeps the centre within the loaded area; the new regions around it never answer.
+  await control(request, { roads: { hold: true } });
+  const before = (await cellQueries(request)).length;
+  for (let i = 0; i < 2; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
+  await expect.poll(async () => (await cellQueries(request)).length).toBeGreaterThan(before);
+  await expect(status(page)).toContainText('Loading roads in view');
+  await expect(exportButton).toBeEnabled();
+  const { xml } = await svg(page, 'Exported available map.');
+  expect(xml.match(/<path d="M/g)!.length).toBeGreaterThan(0);
 });
 
 test('regions far behind the view are evicted with their GPU buffers and reload when revisited', async ({ page, request }) => {
@@ -285,15 +307,13 @@ test('live roads load only within about 50 km of where the map started', async (
   // Further away, nothing more is requested.
   await drag(page, -0.9); await settle(page);
   expect(await cellQueries(request)).toHaveLength(queries.length);
-  // An export there would have no roads, so it is refused.
-  const files: string[] = []; page.on('download', file => files.push(file.suggestedFilename()));
-  await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
-  await expect(page.getByRole('dialog').getByRole('alert')).toContainText('more than 50 km from where the map started');
-  expect(files).toEqual([]);
-  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  // The centre there can never load, so the map cannot be exported.
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeDisabled();
+  await expect(page.locator('.live-status')).toContainText(centreHint);
   // Back at the start, roads are still there.
   await page.getByRole('button', { name: 'Fit map', exact: true }).click();
   await expect(status(page)).toContainText('Radius city, Japan ready');
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
 });
 
 test('switching cities aborts live requests and never draws a previous city\'s cells', async ({ page, request }) => {

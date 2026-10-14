@@ -19,7 +19,7 @@
   import type { FailureCode } from './lib/live/overpass.ts';
   import { isPublicOverpass } from './lib/live/overpass.ts';
   import { clearCellCache } from './lib/live/cell-cache.ts';
-  import { fitCamera, frameCorners } from './lib/view.ts';
+  import { fitCamera } from './lib/view.ts';
 
   // Synthetic sample maps exist only in test builds, for deterministic browser tests.
   const SAMPLES = import.meta.env.VITE_TEST_FIXTURES === '1';
@@ -66,6 +66,8 @@
   let exporting = $state(false), exportWidth = $state(1280), exportHeight = $state(960), transparent = $state(false);
   let gridMode = $state<GridMode>('none'), gridOpacity = $state(0.3);
   let exportError = $state('');
+  // What the last export wrote, shown in the export dialog.
+  let exported = $state('');
   let shareText = $state(''), bboxText = $state('');
   let controller: SceneController | null = null;
   let exportDialog: HTMLDialogElement;
@@ -215,28 +217,30 @@
   function openExport() {
     if (!controller) return;
     exportWidth = Math.max(256, controller.canvas.width); exportHeight = Math.max(256, controller.canvas.height);
-    exportError = ''; exportDialog.showModal();
+    exportError = ''; exported = ''; exportDialog.showModal();
   }
   async function exportFile(format: 'png' | 'svg') {
     if (!controller || exporting || !(source?.complete || source?.viewport && live)) return;
     const scene = controller, viewport = live, snapshot = scene.snapshot();
-    exporting = true; exportError = ''; exportProgress = ''; exportAbort = new AbortController();
+    exporting = true; exportError = ''; exported = ''; exportProgress = ''; exportAbort = new AbortController();
     try {
       await new Promise(requestAnimationFrame);
       const { exportMap, download, checkDimensions } = await import('./lib/exports.ts');
       const settings = { width: exportWidth, height: exportHeight, transparent, grid: { mode: gridMode, opacity: gridOpacity } };
       checkDimensions(settings);
+      let complete = true;
       if (viewport) {
-        // Every region of the exported frame loads first, so a file never has missing roads.
-        const frame = frameCorners(fitCamera(snapshot.camera, exportWidth / exportHeight), snapshot.design.rotation || 0);
-        const regions = await viewport.prepareExport(frame, exportAbort.signal, (done, total) => { exportProgress = `Loading map regions for the export: ${done} of ${total}…`; });
-        snapshot.buffers = scene.snapshot(regions).buffers;
+        // The centre of the frame is loaded; the rest is exported as far as it has loaded.
+        const frame = fitCamera(snapshot.camera, exportWidth / exportHeight);
+        const prepared = await viewport.prepareExport(frame, snapshot.design.rotation || 0, exportAbort.signal, (done, total) => { exportProgress = `Loading the centre of the map: ${done} of ${total} regions…`; });
+        snapshot.buffers = scene.snapshot(prepared.regions).buffers;
+        complete = prepared.complete;
         exportProgress = '';
       }
       const blob = await exportMap(snapshot, settings, format, exportAbort.signal);
       exportAbort.signal.throwIfAborted();
       download(blob, `${snapshot.design.label.text || selected!.name}.${format}`);
-      status = `${format.toUpperCase()} exported.`;
+      status = exported = complete ? `${format.toUpperCase()} exported.` : 'Exported available map.';
     } catch (e) { if (!exportAbort?.signal.aborted) exportError = e instanceof Error ? e.message : 'Export failed'; }
     finally { exporting = false; exportProgress = ''; }
   }
@@ -321,13 +325,14 @@
         {#if liveCoverage.loading}<progress aria-label="Roads in view" max={liveCoverage.required} value={liveCoverage.ready}></progress>{/if}
         <p class="hint">{liveCoverage.ready} of {liveCoverage.required} map regions in view loaded{liveCoverage.failed ? ` · ${liveCoverage.failed} failed` : ''}{liveCoverage.limited.length ? ' · zoom in for more road detail' : ''}</p>
         {#if liveCoverage.beyond !== 'none'}<p class="hint">Roads load only within {liveCoverage.radius / 1000} km of where this map started.</p>{/if}
+        {#if !liveCoverage.exportable}<p class="hint">Export is available once the centre of the map has loaded.</p>{/if}
         {#if liveCoverage.failed || liveCoverage.paused || liveCoverage.exhausted}<button onclick={() => live?.retry()}>Retry loading roads</button>{/if}
       </div>
     {/if}
     {#if error}<div role="alert" class="error">{error}{#if selected}<button onclick={() => choose(selected!, true, true, copy())}>Retry map</button>{/if}</div>{/if}
     {#if confirmation !== null}<div class="notice">{confirmation ? `This map needs about ${formatBytes(confirmation)} of cached data.` : 'Live downloads can be large. Load this map when you are ready.'}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button></div>{:else if selected && !mounted && !loading}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button>{/if}
     {#if selected}
-      <fieldset disabled={!ready}><legend>Map controls</legend><div class="buttons"><button onclick={() => controller?.zoom(1.25)} aria-label="Zoom in">+</button><button onclick={() => controller?.zoom(0.8)} aria-label="Zoom out">−</button><button onclick={() => controller?.fit()}>Fit map</button><button onclick={openExport}>Export</button></div><div class="slider-label"><label for="rotation">Map rotation</label><output for="rotation">{Math.abs(design.rotation || 0)}°</output></div><div class="choices" role="radiogroup" aria-label="Rotation direction"><label class="checkbox"><input type="radio" name="turn" checked={!turnLeft} onchange={() => rotate(Math.abs(design.rotation || 0), false)}> Right</label><label class="checkbox"><input type="radio" name="turn" checked={turnLeft} onchange={() => rotate(Math.abs(design.rotation || 0), true)}> Left</label></div><input id="rotation" type="range" min="0" max="180" step="1" value={Math.abs(design.rotation || 0)} oninput={event => rotate(Number(event.currentTarget.value))} aria-valuetext={turn(design.rotation || 0)}><p class="hint">Right turns the map clockwise, Left counter-clockwise. Turn it to fill the frame, then use Fit map.</p></fieldset>
+      <fieldset disabled={!ready}><legend>Map controls</legend><div class="buttons"><button onclick={() => controller?.zoom(1.25)} aria-label="Zoom in">+</button><button onclick={() => controller?.zoom(0.8)} aria-label="Zoom out">−</button><button onclick={() => controller?.fit()}>Fit map</button><button onclick={openExport} disabled={source?.viewport && !liveCoverage?.exportable}>Export</button></div><div class="slider-label"><label for="rotation">Map rotation</label><output for="rotation">{Math.abs(design.rotation || 0)}°</output></div><div class="choices" role="radiogroup" aria-label="Rotation direction"><label class="checkbox"><input type="radio" name="turn" checked={!turnLeft} onchange={() => rotate(Math.abs(design.rotation || 0), false)}> Right</label><label class="checkbox"><input type="radio" name="turn" checked={turnLeft} onchange={() => rotate(Math.abs(design.rotation || 0), true)}> Left</label></div><input id="rotation" type="range" min="0" max="180" step="1" value={Math.abs(design.rotation || 0)} oninput={event => rotate(Number(event.currentTarget.value))} aria-valuetext={turn(design.rotation || 0)}><p class="hint">Right turns the map clockwise, Left counter-clockwise. Turn it to fill the frame, then use Fit map.</p></fieldset>
       <details open><summary>Customize</summary>
         <fieldset><legend>Road detail</legend><label for="detail">Roads shown</label><select id="detail" value={design.detail} onchange={event => setDetail(event.currentTarget.value as RoadDetail)}><option value="major">Major roads</option><option value="streets">Streets</option><option value="all">All ways, including footpaths and service roads</option></select><p class="hint">Footpaths, sidewalks and service ways can make dense cities solid black.</p></fieldset>
         <fieldset><legend>Presets</legend><div class="buttons">{#each presets as preset (preset.name)}<button onclick={() => applyPreset(preset)}>{preset.name}</button>{/each}</div></fieldset>
@@ -353,7 +358,7 @@
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
-<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">{exportProgress || 'Preparing export…'}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
+<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">{exportProgress || 'Preparing export…'}</p>{:else if exported}<p role="status">{exported}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
 
 <style>
 .layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100dvh; }

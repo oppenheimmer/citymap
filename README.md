@@ -77,8 +77,9 @@ unable to complete for large cities at street detail. A search opens a bounded v
 of the city centre; panning and zooming load neighbouring map regions within 50 km
 of where the map started, one road class at a time, at most one request at a time. Dense regions split, rate limits
 pause loading, and regions far behind the view are evicted from memory and the GPU.
-Exports first load every region of their exact frame and refuse to save a map
-with missing roads. Only explicitly published favourite cities live in R2.
+The centre of the map loads first. Export becomes available once it has loaded and
+writes the map available, without waiting for the regions still loading around it.
+Only explicitly published favourite cities live in R2.
 [How it works, limits, rollout and rollback](docs/LIVE_ROADS.md). The feature is off
 by default.
 

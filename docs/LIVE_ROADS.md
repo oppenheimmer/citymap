@@ -2,8 +2,8 @@
 
 Citymap can load live OpenStreetMap roads for the area on screen instead of one
 query for a whole administrative area. A search opens a bounded view of the place's
-centre; panning and zooming load the neighbouring area; exports load exactly the
-area they show. Nothing is stored on a server: only an explicit handful of
+centre; panning and zooming load the neighbouring area. The centre of the map loads
+first, and an export needs only that: it contains whatever else of its area has loaded. Nothing is stored on a server: only an explicit handful of
 favourite cities are published to R2, as before.
 
 The feature is off by default. Set `VITE_LIVE_VIEWPORT=1` at build time to enable
@@ -25,7 +25,7 @@ loading bounds both.
 | Cell grid | `src/lib/live/grid.ts` | Web Mercator tiles as query units. Each road rank has its own level: about 20 km for major roads, 5 km for streets, 2.4 km for every way, coarser towards the poles so ground size stays similar. Tile columns end at ±180°, so no cell crosses the antimeridian. |
 | Queries | `src/lib/live/overpass.ts` | One rank per cell: `way[filter](s,w,n,e);out geom qt;` with `[timeout:30][maxsize:64 MiB]`. The filters match `roadRank()` exactly, so ranks never overlap. Responses are capped at 32 MiB. Every failure is typed, including timeouts reported as a `remark` inside HTTP 200. |
 | Geometry | `src/lib/live/cell-roads.ts`, `src/workers/cells.worker.ts` | A worker decodes, projects with the session's fixed origin and clips each road to its cell. Clipping is half-open: a road on a shared edge is drawn by exactly one cell, and roads crossing edges meet exactly. Cells without roads are valid. |
-| Scheduler | `src/lib/live/scheduler.ts` | Wanted cells load in priority order, major roads first, then outwards from the centre. Queued work for cells that left the view is dropped; requests more than a view away are aborted. Timeouts and oversized responses split only that cell, at most twice. A 429 pauses every request (Retry-After, or a jittered 5 s backoff when the header is unreadable) and never splits. Unavailable providers get one retry. Five consecutive provider failures, or 600 requests in a session, pause loading until the user retries. |
+| Scheduler | `src/lib/live/scheduler.ts` | Wanted cells load in priority order: first the centre of the view (cells touching the middle half of its width and height), major roads before streets; then the rest by distance from the centre, whatever their class. Queued work for cells that left the view is dropped; requests more than a view away are aborted. Timeouts and oversized responses split only that cell, at most twice. A 429 pauses every request (Retry-After, or a jittered 5 s backoff when the header is unreadable) and never splits. Unavailable providers get one retry. Five consecutive provider failures, or 600 requests in a session, pause loading until the user retries; a retry still waits out a rate-limit cooldown that is running. |
 | Viewport | `src/lib/live/viewport.ts` | Turns the rotated, padded camera frame into wanted cells (debounced 250 ms, at most once a second while panning). Each loaded cell owns its GPU collections; regions not seen recently are evicted beyond 160 MiB (64 MiB on small devices). Eviction deletes their buffers but keeps the shared shader program (see `tools/renderer-compat.ts`). |
 | Browser cache | `src/lib/live/cell-cache.ts` | Optional IndexedDB copies of complete cells: 96 MiB, 72 hours, least recently used first. Keys include the grid version, query schema, provider URL and cell. Stored geometry is translated to the session origin. *Use cached city data* turns it off; *Refresh city data* bypasses it and *Clear city cache* empties it. |
 | Start | `src/lib/live/start.ts` | Starts at the search result's centre: 5 km wide for Streets, 2.5 km for All, 30 km for Major, or less for a small place. *Fit map* frames the searched bounds and still loads by view. A drawn bounding box is shown whole. |
@@ -42,10 +42,17 @@ refetches. A view needing more than 36 cells of a rank, such as streets across a
 whole metropolis, keeps the coarser ranks and asks the user to zoom in. Nothing
 requests hundreds of cells.
 
-Exports compute their exact rotated frame, load every cell in it (up to 120,
-with progress and Cancel), wait until those cells are drawn, then export only
-those cells. If any cell fails, or the frame reaches beyond the 50 km radius,
-the export stops with the reason. It never writes a file with missing regions.
+**Export** stays unavailable until every cell in the centre of the view has
+loaded: the cells touching the middle half of its width and height, for every
+road class shown (`LIVE_LIMITS.core`). The map's status says so while it waits.
+An export then computes its exact rotated frame and writes whatever of it has
+loaded, at once, without waiting for the regions still loading around the
+centre. The dialog says **Exported available map.** when any region was
+missing. Only an export shaped unlike the view can need more of its centre;
+that part loads first (up to 120 cells, with progress and Cancel). If it fails,
+or lies beyond the 50 km radius, nothing is exported and the dialog says why.
+Road classes too dense to load at the current zoom are left out of the export
+rather than drawn in patches. Exports never restart loading or skip a cooldown.
 
 Favourite cities keep the existing path. The roads worker first tries the
 bundled or R2 dataset. Only when none applies does it hand over to viewport
@@ -127,8 +134,6 @@ unaffected. Keep the whole-area path for at least one release after enabling.
 - No measured Bhubaneswar baseline: the automated suite never calls public
   Overpass. Record request counts and times during the rollout smoke test above.
 - Limits are untuned initial values.
-- There is no explicit *Export visible partial map* option; incomplete exports
-  are refused.
 - One-ring prefetch is not implemented. Enable it only for a private provider,
   after measurement.
 - Cells of different ranks are separate requests. A combined major-and-street

@@ -104,12 +104,15 @@ export class CellScheduler<T> {
     this.hooks.changed(); this.pump();
   }
 
-  /** Requeues failed leaves and resumes a paused or exhausted session. */
+  /**
+   * Requeues failed leaves and resumes a paused or exhausted session. A rate-limit cooldown
+   * still running is kept, so retrying never asks a busy provider again early.
+   */
   retry() {
     for (const job of this.jobs.values()) for (const leaf of job.leaves.values()) {
       if (leaf.state === 'failed') Object.assign(leaf, { state: 'queued', attempts: 0, notBefore: 0, code: undefined });
     }
-    this.paused = this.exhausted = false; this.failures = this.requests = this.cooldownUntil = 0; this.pauseReason = undefined;
+    this.paused = this.exhausted = false; this.failures = this.requests = 0; this.pauseReason = undefined;
     this.hooks.changed(); this.pump();
   }
 

@@ -130,6 +130,18 @@ test('repeated provider failures pause the session until an explicit retry', asy
   assert.deepEqual([blocked.scheduler.paused, blocked.scheduler.pauseReason], [true, 'unreachable']);
 });
 
+test('an explicit retry resumes a paused session but waits out an active rate-limit cooldown', async () => {
+  const h = harness({ concurrency: 1, pauseAfter: 2, retries: 0 });
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  h.calls[0].reject(fail('provider_unavailable')); await flush();
+  h.calls[1].reject(fail('rate_limited', 30_000)); await flush();
+  assert.equal(h.scheduler.paused, true);
+  h.scheduler.retry();
+  assert.equal(h.scheduler.paused, false); assert.equal(h.calls.length, 2);
+  await h.clock.advance(29_999); assert.equal(h.calls.length, 2);
+  await h.clock.advance(1); assert.deepEqual(h.active().map(call => call.task.job), ['a']);
+});
+
 test('a transiently unavailable provider is retried once with backoff, then the cell fails', async () => {
   const h = harness({ concurrency: 1, retries: 1 });
   h.scheduler.want([job('a', 1)]);

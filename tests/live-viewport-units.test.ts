@@ -1,15 +1,17 @@
 import { test } from 'node:test';
 import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import type { CellCommand, CellReply, WorkerLoad, WorkerResult } from '../src/lib/worker-protocol.ts';
-import { tileBBox, tileRect } from '../src/lib/live/grid.ts';
+import type { CellCommand, CellReply, CellRequest, WorkerLoad, WorkerResult } from '../src/lib/worker-protocol.ts';
+import { cellLevel, tileBBox, tileRect } from '../src/lib/live/grid.ts';
+import { LIVE_LIMITS, LiveViewport } from '../src/lib/live/viewport.ts';
+import type { SceneController } from '../src/lib/SceneController.ts';
 import { liveStart, START_METRES } from '../src/lib/live/start.ts';
 import { translate } from '../src/lib/live/cell-cache.ts';
 import { projector } from '../src/lib/geometry.ts';
 import { metresPerSceneUnit } from '../src/lib/scale-bar.ts';
 import { viewFromCamera } from '../src/lib/view.ts';
 import { loadCity } from '../src/lib/load-city.ts';
-import type { Origin } from '../src/lib/domain.ts';
+import type { Camera, Origin } from '../src/lib/domain.ts';
 
 const origin: Origin = [85.8245, 20.2961];
 const tile = { z: 13, x: 6049, y: 3600 };
@@ -136,4 +138,44 @@ test('load-city hands viewport loads to the live loader and never caches them as
   workers[1].emit({ type: 'viewport' });
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(events, ['viewport', 'error:Live map loading is unavailable']);
+});
+
+test('the centre of the view loads first, makes the map exportable, and exports the rest as available', async () => {
+  // A view centred in one major-road cell, wide enough to reach its neighbours east and west.
+  const z = cellLevel(0, origin[1]), n = 2 ** z;
+  const x = Math.floor((origin[0] + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(Math.PI / 4 + origin[1] * Math.PI / 360)) / Math.PI) / 2 * n);
+  const cell = tileRect({ z, x, y }, origin), cx = (cell.left + cell.right) / 2, cy = (cell.bottom + cell.top) / 2;
+  const unit = metresPerSceneUnit(origin[1]), halfWidth = 9_000 / unit, halfHeight = 6_000 / unit;
+  const camera: Camera = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
+  const fetches: CellRequest[] = [];
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') fetches.push(command); }, terminate() {} };
+  const reply = (id: number) => worker.onmessage!({ data: { type: 'cell', id, positions: new ArrayBuffer(0), segments: 0, bytes: 0, fetchMs: 1, decodeMs: 0 } });
+  const scene = { camera: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController;
+  // Unlimited concurrency issues every wanted request at once, in priority order.
+  const viewport = new LiveViewport(scene, origin, 'streets', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
+  try {
+    const core = { left: cx - halfWidth * LIVE_LIMITS.core, right: cx + halfWidth * LIVE_LIMITS.core, bottom: cy - halfHeight * LIVE_LIMITS.core, top: cy + halfHeight * LIVE_LIMITS.core };
+    const central = (request: CellRequest) => { const box = tileRect(request.tile, origin); return box.left < core.right && box.right > core.left && box.bottom < core.top && box.top > core.bottom; };
+    const first = fetches.findIndex(request => !central(request));
+    assert.ok(first > 0, 'Both central and outer cells are requested');
+    assert.ok(fetches.slice(first).every(request => !central(request)), 'Every central cell is requested before any other');
+    assert.deepEqual(fetches.slice(0, first).map(request => request.rank), [...fetches.slice(0, first).map(request => request.rank)].sort(), 'Central major roads come before central streets');
+    // Outside the centre, nearby streets come before major roads further out.
+    assert.ok(fetches.slice(first).some(request => request.rank === 0), 'Major roads reach beyond the centre');
+    assert.equal(fetches[first].rank, 1);
+    assert.equal(viewport.coverage().exportable, false);
+    for (const request of fetches.slice(0, first)) reply(request.id);
+    await new Promise(resolve => setImmediate(resolve));
+    const coverage = viewport.coverage();
+    assert.equal(coverage.exportable, true); assert.equal(coverage.complete, false);
+    // The centre is ready, so an export proceeds at once with the regions available.
+    const progress: number[] = [];
+    const partial = await viewport.prepareExport(camera, 0, new AbortController().signal, ready => progress.push(ready));
+    assert.equal(partial.complete, false); assert.deepEqual(progress, []);
+    const key = (request: CellRequest) => `${request.rank}:${request.tile.z}/${request.tile.x}/${request.tile.y}`;
+    assert.ok(fetches.slice(0, first).every(request => partial.regions.has(key(request))) && partial.regions.size > first, 'The export holds the centre and the frame around it');
+    for (const request of fetches.slice(first)) reply(request.id);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((await viewport.prepareExport(camera, 0, new AbortController().signal, () => {})).complete, true);
+  } finally { viewport.dispose(); }
 });
