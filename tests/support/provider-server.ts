@@ -3,9 +3,9 @@ import { readFile } from 'node:fs/promises';
 import { providerProxy } from './provider-proxy.ts';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { buildDataset } from '../../tools/city-data/build.ts';
-import { parseCellQuery, syntheticCell } from './live-roads.ts';
+import { parseCellQueries, syntheticCells } from './live-roads.ts';
 // `trickle` streams a Content-Length body in four parts, this many milliseconds apart.
-// `dense`: live cell queries wider than this many degrees of longitude time out, as dense areas can.
+// `dense`: live queries with a cell wider than this many degrees of longitude time out, as dense areas can.
 // `match`: the scenario applies only to road queries containing this text; others succeed.
 // `blocked`: refuse without CORS headers, so browsers see a network failure, as with a blocked connection.
 // `slotWait`: the Overpass-style status page (/status) says a slot frees in this many seconds; otherwise slots are free.
@@ -54,7 +54,7 @@ const server = createServer(async (req, res) => {
     const query = kind === 'roads' ? new URLSearchParams(input).get('data') || '' : '';
     if (kind === 'roads') roads.push(query);
     // Live viewport cells get synthetic roads for their own box; other road queries the small grid.
-    const cell = parseCellQuery(query);
+    const cells = parseCellQueries(query);
     const applies = !scenarios[kind].match || query.includes(scenarios[kind].match!);
     const scenario = applies ? { ...scenarios[kind] } : {};
     if (applies && scenarios[kind].failures) scenarios[kind].failures = scenarios[kind].failures! - 1;
@@ -68,9 +68,10 @@ const server = createServer(async (req, res) => {
     if (scenario.blocked) { res.removeHeader('Access-Control-Allow-Origin'); res.statusCode = 403; res.end('{}'); return; }
     res.statusCode = scenario.failures ? scenario.status || 503 : scenario.status && scenario.failures === undefined ? scenario.status : 200;
     if (scenario.retryAfter) res.setHeader('Retry-After', scenario.retryAfter);
-    const normal = kind === 'search' ? [{ osm_type: 'relation', osm_id: '101', display_name: `${url.searchParams.get('q')}, Japan`, type: 'city', boundingbox: ['35', '35.1', '139', '139.1'] }] : cell ? syntheticCell(cell) : JSON.parse(await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8'));
-    if (kind === 'roads' && !cell) normal.osm3s = { timestamp_osm_base: '2026-10-07T00:00:00.000Z' };
-    const dense = cell && scenario.dense && cell.box[3] - cell.box[1] > scenario.dense ? { remark: 'runtime error: Query timed out in "query" at line 1 after 30 seconds.' } : undefined;
+    const normal = kind === 'search' ? [{ osm_type: 'relation', osm_id: '101', display_name: `${url.searchParams.get('q')}, Japan`, type: 'city', boundingbox: ['35', '35.1', '139', '139.1'] }] : cells.length ? syntheticCells(cells) : JSON.parse(await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8'));
+    if (kind === 'roads' && !cells.length) normal.osm3s = { timestamp_osm_base: '2026-10-07T00:00:00.000Z' };
+    // A query with any cell wider than `dense` times out as a whole, as Overpass would.
+    const dense = scenario.dense && cells.some(cell => cell.box[3] - cell.box[1] > scenario.dense!) ? { remark: 'runtime error: Query timed out in "query" at line 1 after 30 seconds.' } : undefined;
     const text = typeof scenario.body === 'string' ? scenario.body : JSON.stringify(scenario.body ?? dense ?? normal);
     if (scenario.trickle) {
       const bytes = Buffer.from(text), size = Math.ceil(bytes.length / 4);

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { roadRank } from '../src/lib/domain.ts';
-import { CellFailure, cellQuery, classifyRemark, fetchCell, isPublicOverpass, rankFilter, retryAfter, sanitizeRemark, slotWait, statusUrl } from '../src/lib/live/overpass.ts';
+import { CellFailure, cellQuery, cellsQuery, classifyRemark, fetchCell, queryTimeout, isPublicOverpass, rankFilter, retryAfter, sanitizeRemark, slotWait, statusUrl } from '../src/lib/live/overpass.ts';
 import { tileBBox } from '../src/lib/live/grid.ts';
 
 const HIGHWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link',
@@ -33,6 +33,16 @@ test('cell queries are bounded bbox queries with outward-rounded edges and inlin
   // Columns end at the antimeridian, so edge cells stay within valid longitudes.
   const edge = cellQuery({ z: 13, x: 8191, y: 4500 }, 0).match(/\(([-\d.,]+)\);/)![1].split(',').map(Number);
   assert.equal(edge[3], 180); assert.ok(edge[1] < edge[3]);
+});
+
+test('combined queries union each cell\'s own statement and allow 10 s more per added cell', () => {
+  const street = { tile: { z: 13, x: 6049, y: 3600 }, rank: 1 as const }, major = { tile: { z: 11, x: 1512, y: 900 }, rank: 0 as const };
+  assert.equal(cellsQuery([street]), cellQuery(street.tile, street.rank));
+  const combined = cellsQuery([street, major]);
+  assert.match(combined, /^\[out:json\]\[timeout:40\]\[maxsize:67108864\];\(way\[[^;]*\]\([-\d.,]+\);way\[[^;]*\]\([-\d.,]+\);\);out geom qt;$/);
+  for (const cell of [street, major]) assert.ok(combined.includes(cellQuery(cell.tile, cell.rank).match(/;(way[^;]*)/)![1]));
+  assert.deepEqual([queryTimeout(1), queryTimeout(4)], [30, 60]);
+  assert.throws(() => cellsQuery([]));
 });
 
 const query = 'q';

@@ -23,13 +23,31 @@ export const CELL_LIMITS = { timeout: 30, maxsize: 64 * 1024 * 1024 };
 // Outward rounding keeps ways on a cell edge in both neighbours' results.
 const down = (value: number) => Math.floor(value * 1e7) / 1e7, up = (value: number) => Math.ceil(value * 1e7) / 1e7;
 
-/** One road rank's ways intersecting a cell, each with its full geometry. */
-export function cellQuery(tile: Tile, rank: RoadRank, limits = CELL_LIMITS): string {
+/** One road rank of one cell: a query unit. */
+export interface CellSpec { tile: Tile; rank: RoadRank }
+
+/** Seconds a query of `count` cells may run: each combined cell adds 10 s. */
+export const queryTimeout = (count: number, limits = CELL_LIMITS) => limits.timeout + 10 * (Math.max(1, count) - 1);
+
+function statement({ tile, rank }: CellSpec): string {
   const [s, w, n, e] = tileBBox(tile);
   const box = [Math.max(-90, down(s)), Math.max(-180, down(w)), Math.min(90, up(n)), Math.min(180, up(e))];
   if (!(box[0] < box[2] && box[1] < box[3])) throw new Error('Invalid cell bounds');
-  return `[out:json][timeout:${limits.timeout}][maxsize:${limits.maxsize}];way${rankFilter(rank)}(${box.join(',')});out geom qt;`;
+  return `way${rankFilter(rank)}(${box.join(',')})`;
 }
+
+/**
+ * Each cell's road rank, with full geometry, in one query. Overpass returns a way that
+ * several of the cells share once; the worker clips every way to each cell of its rank.
+ */
+export function cellsQuery(cells: CellSpec[], limits = CELL_LIMITS): string {
+  if (!cells.length) throw new Error('No cells to query');
+  const selection = cells.length === 1 ? statement(cells[0]) : `(${cells.map(statement).join(';')};)`;
+  return `[out:json][timeout:${queryTimeout(cells.length, limits)}][maxsize:${limits.maxsize}];${selection};out geom qt;`;
+}
+
+/** One road rank's ways intersecting a cell, each with its full geometry. */
+export const cellQuery = (tile: Tile, rank: RoadRank, limits = CELL_LIMITS) => cellsQuery([{ tile, rank }], limits);
 
 /**
  * Why a cell could not load. Resource limits and oversized responses split the cell; rate

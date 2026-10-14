@@ -41,15 +41,41 @@ test('the cells worker fetches one rank of one cell and returns clipped, project
     ] }));
   });
   const reply = worker.next();
-  worker.send({ type: 'fetch', id: 7, tile, rank: 1, origin, overpass: 'http://localhost/roads' });
+  worker.send({ type: 'fetch', id: 7, cells: [{ tile, rank: 1 }], origin, overpass: 'http://localhost/roads' });
   const message = await reply;
-  assert.equal(message.type, 'cell');
-  if (message.type !== 'cell') return;
+  assert.equal(message.type, 'cells');
+  if (message.type !== 'cells') return;
   assert.match(queries[0], /residential/); assert.doesNotMatch(queries[0], /area|primary/);
-  const positions = new Float32Array(message.positions), rect = tileRect(tile, origin);
-  assert.deepEqual([message.id, message.segments, positions.length, message.snapshotAt], [7, 1, 4, '2026-10-01T00:00:00Z']);
+  const positions = new Float32Array(message.cells[0].positions), rect = tileRect(tile, origin);
+  assert.deepEqual([message.id, message.cells.length, message.cells[0].segments, positions.length, message.snapshotAt], [7, 1, 1, 4, '2026-10-01T00:00:00Z']);
   assert.ok(Math.abs(positions[0] - rect.left) < 0.01 && Math.abs(positions[2] - rect.right) < 0.01, 'The street is clipped to the cell edges');
   assert.ok(message.bytes > 0 && message.fetchMs >= 0 && message.decodeMs >= 0);
+});
+
+test('one request fetches several cells, and each keeps only its own rank, clipped to it', async t => {
+  const east = { ...tile, x: tile.x + 1 }, major = { z: 11, x: tile.x >> 2, y: tile.y >> 2 };
+  const [south, west, north] = tileBBox(tile), far = tileBBox(east)[3];
+  const queries: string[] = [];
+  const worker = await cellsWorker(t, async body => {
+    queries.push(body);
+    // One street across both street cells, and a major road through the major cell.
+    return new Response(JSON.stringify({ elements: [
+      { type: 'way', id: 1, tags: { highway: 'residential' }, geometry: [{ lat: (south + north) / 2, lon: west - 0.01 }, { lat: (south + north) / 2, lon: far + 0.01 }] },
+      { type: 'way', id: 2, tags: { highway: 'primary' }, geometry: [{ lat: (south + north) / 2, lon: west - 1 }, { lat: (south + north) / 2, lon: far + 1 }] },
+    ] }));
+  });
+  const reply = worker.next();
+  worker.send({ type: 'fetch', id: 8, cells: [{ tile, rank: 1 }, { tile: east, rank: 1 }, { tile: major, rank: 0 }], origin, overpass: 'http://localhost/roads' });
+  const message = await reply;
+  assert.equal(message.type, 'cells');
+  if (message.type !== 'cells') return;
+  assert.equal(queries.length, 1); assert.match(queries[0], /\[timeout:50\].*;\(way.*;way.*;way.*;\);out geom qt;$/);
+  const [first, second, roads] = message.cells.map(cell => new Float32Array(cell.positions));
+  const rect = tileRect(tile, origin), next = tileRect(east, origin), wide = tileRect(major, origin);
+  // The street meets exactly at the shared edge; the major road is only in the major cell.
+  assert.deepEqual([first.length, second.length, roads.length], [4, 4, 4]);
+  assert.ok(Math.abs(first[0] - rect.left) < 0.01 && first[2] === second[0] && Math.abs(second[2] - next.right) < 0.01);
+  assert.ok(Math.abs(roads[0] - wide.left) < 0.01 && Math.abs(roads[2] - wide.right) < 0.01);
 });
 
 test('the cells worker reports typed failures, rejects invalid requests and stays silent after an abort', async t => {
@@ -59,15 +85,17 @@ test('the cells worker reports typed failures, rejects invalid requests and stay
     return new Promise<Response>((_resolve, reject) => signal.addEventListener('abort', () => { aborted = true; reject(signal.reason); }));
   });
   let reply = worker.next();
-  worker.send({ type: 'fetch', id: 1, tile, rank: 1, origin, overpass: 'http://localhost/roads' });
+  worker.send({ type: 'fetch', id: 1, cells: [{ tile, rank: 1 }], origin, overpass: 'http://localhost/roads' });
   let message = await reply;
   assert.deepEqual([message.type, message.type === 'failure' && message.code, message.type === 'failure' && message.remark], ['failure', 'timeout_or_resource_limit', 'runtime error: Query timed out']);
-  reply = worker.next();
-  worker.send({ type: 'fetch', id: 2, tile: { z: 13, x: 9000, y: -1 }, rank: 1, origin, overpass: 'http://localhost/roads' });
-  message = await reply;
-  assert.deepEqual([message.type, message.type === 'failure' && message.code], ['failure', 'invalid_request']);
+  for (const cells of [[{ tile: { z: 13, x: 9000, y: -1 }, rank: 1 as const }], [], Array.from({ length: 9 }, () => ({ tile, rank: 1 as const }))]) {
+    reply = worker.next();
+    worker.send({ type: 'fetch', id: 2, cells, origin, overpass: 'http://localhost/roads' });
+    message = await reply;
+    assert.deepEqual([message.type, message.type === 'failure' && message.code], ['failure', 'invalid_request']);
+  }
   assert.equal(requests, 1, 'Invalid requests never reach the road service');
-  worker.send({ type: 'fetch', id: 3, tile, rank: 1, origin, overpass: 'http://localhost/roads' });
+  worker.send({ type: 'fetch', id: 3, cells: [{ tile, rank: 1 }], origin, overpass: 'http://localhost/roads' });
   await new Promise(resolve => setImmediate(resolve));
   worker.send({ type: 'abort', id: 3 });
   await new Promise(resolve => setTimeout(resolve, 20));
@@ -147,24 +175,30 @@ test('the centre of the view loads first, makes the map exportable, and exports 
   const cell = tileRect({ z, x, y }, origin), cx = (cell.left + cell.right) / 2, cy = (cell.bottom + cell.top) / 2;
   const unit = metresPerSceneUnit(origin[1]), halfWidth = 9_000 / unit, halfHeight = 6_000 / unit;
   const camera: Camera = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
-  const fetches: CellRequest[] = [];
-  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') fetches.push(command); }, terminate() {} };
-  const reply = (id: number) => worker.onmessage!({ data: { type: 'cell', id, positions: new ArrayBuffer(0), segments: 0, bytes: 0, fetchMs: 1, decodeMs: 0 } });
+  const requests: CellRequest[] = [];
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  const reply = (request: CellRequest) => worker.onmessage!({ data: { type: 'cells', id: request.id, cells: request.cells.map(() => ({ positions: new ArrayBuffer(0), segments: 0 })), bytes: 0, fetchMs: 1, decodeMs: 0 } });
   const scene = { frame: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController;
   // Unlimited concurrency issues every wanted request at once, in priority order.
   const viewport = new LiveViewport(scene, origin, 'streets', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
   try {
     const core = { left: cx - halfWidth * LIVE_LIMITS.core, right: cx + halfWidth * LIVE_LIMITS.core, bottom: cy - halfHeight * LIVE_LIMITS.core, top: cy + halfHeight * LIVE_LIMITS.core };
-    const central = (request: CellRequest) => { const box = tileRect(request.tile, origin); return box.left < core.right && box.right > core.left && box.bottom < core.top && box.top > core.bottom; };
-    const first = fetches.findIndex(request => !central(request));
+    type Cell = CellRequest['cells'][number];
+    const central = (cell: Cell) => { const box = tileRect(cell.tile, origin); return box.left < core.right && box.right > core.left && box.bottom < core.top && box.top > core.bottom; };
+    // Requests combine the next cells in loading order.
+    const fetches = requests.flatMap(request => request.cells);
+    assert.ok(requests.length < fetches.length && requests.every(request => request.cells.length <= LIVE_LIMITS.batch));
+    const first = fetches.findIndex(cell => !central(cell));
     assert.ok(first > 0, 'Both central and outer cells are requested');
-    assert.ok(fetches.slice(first).every(request => !central(request)), 'Every central cell is requested before any other');
-    assert.deepEqual(fetches.slice(0, first).map(request => request.rank), [...fetches.slice(0, first).map(request => request.rank)].sort(), 'Central major roads come before central streets');
+    assert.ok(fetches.slice(first).every(cell => !central(cell)), 'Every central cell is requested before any other');
+    assert.deepEqual(fetches.slice(0, first).map(cell => cell.rank), [...fetches.slice(0, first).map(cell => cell.rank)].sort(), 'Central major roads come before central streets');
     // Outside the centre, nearby streets come before major roads further out.
-    assert.ok(fetches.slice(first).some(request => request.rank === 0), 'Major roads reach beyond the centre');
+    assert.ok(fetches.slice(first).some(cell => cell.rank === 0), 'Major roads reach beyond the centre');
     assert.equal(fetches[first].rank, 1);
     assert.equal(viewport.coverage().exportable, false);
-    for (const request of fetches.slice(0, first)) reply(request.id);
+    const centred = requests.filter(request => request.cells.some(central)), outer = requests.filter(request => !centred.includes(request));
+    assert.ok(outer.length > 0);
+    for (const request of centred) reply(request);
     await new Promise(resolve => setImmediate(resolve));
     const coverage = viewport.coverage();
     assert.equal(coverage.exportable, true); assert.equal(coverage.complete, false);
@@ -172,9 +206,9 @@ test('the centre of the view loads first, makes the map exportable, and exports 
     const progress: number[] = [];
     const partial = await viewport.prepareExport(camera, 0, new AbortController().signal, ready => progress.push(ready));
     assert.equal(partial.complete, false); assert.deepEqual(progress, []);
-    const key = (request: CellRequest) => `${request.rank}:${request.tile.z}/${request.tile.x}/${request.tile.y}`;
-    assert.ok(fetches.slice(0, first).every(request => partial.regions.has(key(request))) && partial.regions.size > first, 'The export holds the centre and the frame around it');
-    for (const request of fetches.slice(first)) reply(request.id);
+    const key = (cell: Cell) => `${cell.rank}:${cell.tile.z}/${cell.tile.x}/${cell.tile.y}`;
+    assert.ok(fetches.slice(0, first).every(cell => partial.regions.has(key(cell))) && partial.regions.size > first, 'The export holds the centre and the frame around it');
+    for (const request of outer) reply(request);
     await new Promise(resolve => setImmediate(resolve));
     assert.equal((await viewport.prepareExport(camera, 0, new AbortController().signal, () => {})).complete, true);
   } finally { viewport.dispose(); }

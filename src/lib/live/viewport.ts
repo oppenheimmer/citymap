@@ -28,6 +28,8 @@ export const LIVE_LIMITS = {
   core: 0.5,
   /** Cells an export may load for its centre. */
   exportCells: 120,
+  /** Cells one request may combine; fewer after a combined request runs out of time or memory. */
+  batch: 4,
   /** The view is padded by this factor, so edges are ready when panning a little. */
   padding: 1.15,
   /** Requests for cells beyond this multiple of the view are aborted. */
@@ -115,7 +117,7 @@ const jobKey = (rank: RoadRank, tile: Tile) => `${rank}:${tileKey(tile)}`;
 export class LiveViewport {
   private readonly scheduler: CellScheduler<CellResult>;
   private readonly worker: Worker;
-  private readonly pending = new Map<number, { resolve(result: CellResult): void; reject(error: unknown): void }>();
+  private readonly pending = new Map<number, { count: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
   private readonly regions = new Map<string, Region>();
   private readonly waiters = new Set<() => boolean>();
   private readonly scene: SceneController;
@@ -147,7 +149,7 @@ export class LiveViewport {
     this.worker.onmessage = this.reply;
     this.worker.onerror = () => this.rejectAll(new CellFailure('provider_unavailable', { message: 'Background road processing failed' }));
     const cache = settings.cache;
-    this.scheduler = new CellScheduler<CellResult>({ concurrency: settings.concurrency, maxDepth: LIVE_LIMITS.maxDepth, retries: LIVE_LIMITS.retries, maxRequests: LIVE_LIMITS.maxRequests, pauseAfter: LIVE_LIMITS.pauseAfter, clock: settings.clock }, {
+    this.scheduler = new CellScheduler<CellResult>({ concurrency: settings.concurrency, maxDepth: LIVE_LIMITS.maxDepth, retries: LIVE_LIMITS.retries, maxRequests: LIVE_LIMITS.maxRequests, pauseAfter: LIVE_LIMITS.pauseAfter, batch: LIVE_LIMITS.batch, clock: settings.clock }, {
       execute: this.execute,
       lookup: cache && !settings.forceNetwork ? async (task, signal) => {
         const hit = await cache.get(this.cacheKey(task.job), this.origin);
@@ -337,16 +339,16 @@ export class LiveViewport {
     this.scheduler.want([...this.pinned, ...this.visible.filter(spec => !pinned.has(spec.key))], this.retained);
   }
 
-  private execute = (task: LeafTask, signal: AbortSignal) => new Promise<CellResult>((resolve, reject) => {
+  private execute = (tasks: LeafTask[], signal: AbortSignal) => new Promise<CellResult[]>((resolve, reject) => {
     if (signal.aborted) { reject(new CellFailure('cancelled')); return; }
     const id = ++this.nextId;
-    this.pending.set(id, { resolve, reject });
+    this.pending.set(id, { count: tasks.length, resolve, reject });
     signal.addEventListener('abort', () => {
       if (!this.pending.delete(id)) return;
       this.post({ type: 'abort', id });
       reject(new CellFailure('cancelled'));
     }, { once: true });
-    this.post({ type: 'fetch', id, tile: task.tile, rank: task.rank, origin: this.origin, overpass: this.settings.overpass });
+    this.post({ type: 'fetch', id, cells: tasks.map(task => ({ tile: task.tile, rank: task.rank })), origin: this.origin, overpass: this.settings.overpass });
   });
 
   private post(command: CellCommand) {
@@ -358,12 +360,18 @@ export class LiveViewport {
     const message = event.data, entry = this.pending.get(message.id);
     if (!entry) return;
     this.pending.delete(message.id);
-    if (message.type === 'cell') {
-      const positions = new Float32Array(message.positions);
-      if (positions.length % 4 || positions.length / 4 !== message.segments) { entry.reject(new CellFailure('decode_failure', { message: 'Invalid prepared geometry' })); return; }
+    if (message.type === 'cells') {
+      const invalid = () => entry.reject(new CellFailure('decode_failure', { message: 'Invalid prepared geometry' }));
+      if (!Array.isArray(message.cells) || message.cells.length !== entry.count) { invalid(); return; }
+      const fetchedAt = Date.now(), results: CellResult[] = [];
+      for (const cell of message.cells) {
+        const positions = new Float32Array(cell.positions);
+        if (positions.length % 4 || positions.length / 4 !== cell.segments) { invalid(); return; }
+        results.push({ positions, segments: cell.segments, bytes: message.bytes, fetchMs: message.fetchMs, fetchedAt, snapshotAt: message.snapshotAt });
+      }
       this.fetchTimes.push(message.fetchMs); if (this.fetchTimes.length > 200) this.fetchTimes.shift();
       this.stats.bytes += message.bytes;
-      entry.resolve({ positions, segments: message.segments, bytes: message.bytes, fetchMs: message.fetchMs, fetchedAt: Date.now(), snapshotAt: message.snapshotAt });
+      entry.resolve(results);
     } else entry.reject(new CellFailure(message.code, { status: message.status, retryAfter: message.retryAfter, remark: message.remark, message: message.message }));
   };
 

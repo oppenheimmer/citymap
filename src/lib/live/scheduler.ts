@@ -24,36 +24,51 @@ export interface SchedulerOptions {
   maxRequests: number;
   /** Consecutive provider failures (busy, unavailable or overloaded) that pause the session. */
   pauseAfter: number;
+  /** Leaves one request may combine; 1, the default, requests each alone. */
+  batch?: number;
   clock?: Clock;
 }
 
+/** What a failed request led to, for diagnostics; `alone` retries a combined request's cells one by one. */
+export type FailureOutcome = 'split' | 'retry' | 'cooldown' | 'failed' | 'alone';
+
 export interface SchedulerHooks<T> {
-  /** Fetches one leaf. Rejections are CellFailures; anything else counts as a decode failure. */
-  execute(task: LeafTask, signal: AbortSignal): Promise<T>;
+  /**
+   * Fetches leaves in one request, resolving with one result per task, in order. Rejections
+   * are CellFailures; anything else counts as a decode failure.
+   */
+  execute(tasks: LeafTask[], signal: AbortSignal): Promise<T[]>;
   /** Optional fast path, such as a browser cache, tried once per new job before any request. */
   lookup?(task: LeafTask, signal: AbortSignal): Promise<T | undefined>;
   /** A leaf loaded; its job is ready once every leaf has. */
   loaded(task: LeafTask, result: T, cached: boolean): void;
   /** Job, leaf or session state changed. */
   changed(): void;
-  /** A request failed, for diagnostics. */
-  failed?(task: LeafTask, failure: CellFailure, outcome: 'split' | 'retry' | 'cooldown' | 'failed'): void;
+  /** A request failed, for diagnostics; `task` is its first leaf. */
+  failed?(task: LeafTask, failure: CellFailure, outcome: FailureOutcome): void;
 }
 
 type LeafState = 'lookup' | 'queued' | 'active' | 'ready' | 'failed';
-interface Leaf { key: string; tile: Tile; depth: number; state: LeafState; attempts: number; notBefore: number; code?: FailureCode; controller?: AbortController }
+/** `controller` cancels a cache lookup; `request` is the request the leaf waits for; `alone` keeps it out of combined requests. */
+interface Leaf { key: string; tile: Tile; depth: number; state: LeafState; attempts: number; notBefore: number; code?: FailureCode; controller?: AbortController; request?: Request; alone?: boolean }
 interface Job { spec: JobSpec; leaves: Map<string, Leaf> }
+/** A request in flight, with the leaves still waiting for it. */
+interface Request { controller: AbortController; leaves: Set<Leaf> }
+interface Entry { job: Job; leaf: Leaf }
+/** Failures of a combined request that say nothing about its cells, which then load one by one. */
+const ALONE: ReadonlySet<FailureCode> = new Set(['timeout_or_resource_limit', 'response_too_large', 'provider_unavailable', 'invalid_request', 'decode_failure']);
 
 const RATE_LIMIT_BACKOFF = 5_000, BUSY_BACKOFF = 10_000, RETRY_BACKOFF = 2_000, MAX_BACKOFF = 60_000;
 /** Shorter waits are lengthened; a provider asking for longer pauses the session instead. */
 export const MIN_COOLDOWN = 1_000, MAX_COOLDOWN = 300_000;
 
 /**
- * Loads wanted cells in priority order with bounded concurrency. Work for cells that are no
- * longer wanted is dropped, and in-flight requests are aborted unless their cell is retained.
- * Resource failures split only that cell, to a bounded depth; rate limits and a busy provider
- * pause every request without splitting; repeated provider failures pause the session until
- * `retry()`.
+ * Loads wanted cells in priority order with bounded concurrency, combining up to `batch`
+ * cells per request. Work for cells that are no longer wanted is dropped, and in-flight
+ * requests are aborted once none of their cells is wanted or retained. A combined request
+ * that fails for its size or content retries its cells one by one. Resource failures split
+ * only that cell, to a bounded depth; rate limits and a busy provider pause every request
+ * without splitting; repeated provider failures pause the session until `retry()`.
  */
 export class CellScheduler<T> {
   private readonly jobs = new Map<string, Job>();
@@ -75,9 +90,12 @@ export class CellScheduler<T> {
   pauseReason?: FailureCode;
   private readonly options: SchedulerOptions;
   private readonly hooks: SchedulerHooks<T>;
+  /** Leaves per request now: halved after a combined request runs out of time or memory. */
+  private batch: number;
 
   constructor(options: SchedulerOptions, hooks: SchedulerHooks<T>) {
     this.options = options; this.hooks = hooks; this.clock = options.clock || systemClock;
+    this.batch = Math.max(1, Math.floor(options.batch ?? 1));
   }
 
   /** Replaces the wanted jobs. Active requests of jobs outside `wanted` and `retain` are aborted. */
@@ -163,11 +181,18 @@ export class CellScheduler<T> {
 
   private abort(leaf: Leaf) {
     const controller = leaf.controller;
-    if (!controller) return;
-    leaf.controller = undefined;
-    if (leaf.state === 'active') this.active--;
-    if (leaf.state === 'active' || leaf.state === 'lookup') leaf.state = 'queued';
-    controller.abort();
+    if (controller) {
+      leaf.controller = undefined;
+      if (leaf.state === 'lookup') leaf.state = 'queued';
+      controller.abort();
+    }
+    const request = leaf.request;
+    if (!request) return;
+    leaf.request = undefined;
+    if (leaf.state === 'active') leaf.state = 'queued';
+    request.leaves.delete(leaf);
+    // A request still needed by other cells runs on; public Overpass keeps an aborted query's slot busy anyway.
+    if (!request.leaves.size) { this.active--; request.controller.abort(); }
   }
 
   private wake(ms: number) {
@@ -182,63 +207,96 @@ export class CellScheduler<T> {
     if (now < this.cooldownUntil) { this.wake(this.cooldownUntil - now); return; }
     let wake = Infinity;
     next: while (this.active < this.options.concurrency) {
+      // The next queued leaves in priority order, combined up to the batch size.
+      const batch: Entry[] = [];
       for (const spec of this.wanted) {
         const job = this.jobs.get(spec.key);
         if (!job) continue;
         for (const leaf of job.leaves.values()) {
           if (leaf.state !== 'queued') continue;
           if (leaf.notBefore > now) { wake = Math.min(wake, leaf.notBefore); continue; }
-          if (this.requests >= this.options.maxRequests) { this.exhausted = true; this.hooks.changed(); return; }
-          this.start(job, leaf);
-          continue next;
+          // Quarters of a split cell, and cells a combined request failed, load alone.
+          const alone = leaf.depth > 0 || !!leaf.alone;
+          if (batch.length && alone) continue;
+          if (!batch.length && this.requests >= this.options.maxRequests) { this.exhausted = true; this.hooks.changed(); return; }
+          batch.push({ job, leaf });
+          if (alone || batch.length >= this.batch) { this.start(batch); continue next; }
         }
       }
-      break;
+      if (!batch.length) break;
+      this.start(batch);
     }
     if (this.active < this.options.concurrency && wake < Infinity) this.wake(wake - now);
   }
 
-  private start(job: Job, leaf: Leaf) {
-    leaf.state = 'active'; this.active++; this.requests++;
-    const controller = leaf.controller = new AbortController(), task = this.task(job, leaf);
-    this.hooks.execute(task, controller.signal).then(result => {
-      if (leaf.controller !== controller || this.disposed) return;
-      leaf.controller = undefined; this.active--; leaf.state = 'ready'; this.failures = 0;
-      this.hooks.loaded(task, result, false);
+  private start(batch: Entry[]) {
+    const controller = new AbortController(), request: Request = { controller, leaves: new Set(batch.map(entry => entry.leaf)) };
+    const tasks = batch.map(({ job, leaf }) => this.task(job, leaf));
+    for (const { leaf } of batch) { leaf.state = 'active'; leaf.request = request; }
+    this.active++; this.requests++;
+    // Leaves that stopped being wanted were detached; their results are dropped.
+    const attached = () => batch.flatMap((entry, index) => entry.leaf.request === request ? [{ ...entry, task: tasks[index], index }] : []);
+    this.hooks.execute(tasks, controller.signal).then(results => {
+      if (controller.signal.aborted || this.disposed) return;
+      this.active--; this.failures = 0;
+      for (const { leaf, task, index } of attached()) {
+        leaf.request = undefined; leaf.state = 'ready';
+        this.hooks.loaded(task, results[index], false);
+      }
       this.hooks.changed(); this.pump();
     }, (error: unknown) => {
-      if (leaf.controller !== controller || this.disposed) return;
-      leaf.controller = undefined; this.active--;
-      this.fail(job, leaf, task, error instanceof CellFailure ? error : new CellFailure('decode_failure', { message: error instanceof Error ? error.message : undefined }));
+      if (controller.signal.aborted || this.disposed) return;
+      this.active--;
+      const entries = attached();
+      for (const { leaf } of entries) leaf.request = undefined;
+      this.failRequest(entries, error instanceof CellFailure ? error : new CellFailure('decode_failure', { message: error instanceof Error ? error.message : undefined }));
       this.hooks.changed(); this.pump();
     });
+  }
+
+  /** A request failed: its cells share the outcome, counted once for the session. */
+  private failRequest(entries: (Entry & { task: LeafTask })[], failure: CellFailure) {
+    if (!entries.length) return;
+    if (entries.length > 1 && ALONE.has(failure.code)) {
+      // No verdict on any one cell: each loads alone, and after running out of time or memory
+      // later requests combine fewer cells.
+      if (failure.code === 'timeout_or_resource_limit' || failure.code === 'response_too_large') this.batch = Math.max(1, Math.floor(this.batch / 2));
+      for (const { leaf } of entries) { leaf.state = 'queued'; leaf.alone = true; }
+      this.hooks.failed?.(entries[0].task, failure, 'alone');
+      return;
+    }
+    entries.forEach(({ job, leaf, task }, index) => this.fail(job, leaf, task, failure, index > 0));
   }
 
   private backoff(attempt: number, base: number) {
     return Math.min(MAX_BACKOFF, base * 2 ** (attempt - 1)) * (0.75 + 0.5 * this.clock.random());
   }
 
-  private fail(job: Job, leaf: Leaf, task: LeafTask, failure: CellFailure) {
+  /** `shared`: another cell of the same request already counted this failure for the session. */
+  private fail(job: Job, leaf: Leaf, task: LeafTask, failure: CellFailure, shared = false) {
     const now = this.clock.now();
-    let outcome: 'split' | 'retry' | 'cooldown' | 'failed' = 'failed';
+    let outcome: FailureOutcome = 'failed';
     const failed = () => { leaf.state = 'failed'; leaf.code = failure.code; };
+    // Provider failures count towards pausing the session, once per request.
+    const count = () => { if (!shared) this.failures++; };
     switch (failure.code) {
       case 'cancelled': leaf.state = 'queued'; return;
       case 'rate_limited': case 'provider_busy': {
         // Never split or retry around a rate limit or a busy provider: every request waits.
-        this.failures++; leaf.state = 'queued'; outcome = 'cooldown';
+        count(); leaf.state = 'queued'; outcome = 'cooldown';
+        if (shared) break;
         const wait = failure.retryAfter ?? this.backoff(this.failures, failure.code === 'rate_limited' ? RATE_LIMIT_BACKOFF : BUSY_BACKOFF);
         if (wait > MAX_COOLDOWN) { this.paused = true; this.pauseReason = failure.code; }
         else { this.cooldownUntil = now + Math.max(MIN_COOLDOWN, wait); this.cooldownReason = failure.code; }
         break;
       }
       case 'provider_unavailable': case 'unreachable':
-        this.failures++; leaf.attempts++;
+        count(); leaf.attempts++;
         if (leaf.attempts > this.options.retries) failed();
         else { leaf.state = 'queued'; leaf.notBefore = now + this.backoff(leaf.attempts, RETRY_BACKOFF); outcome = 'retry'; }
         break;
       case 'timeout_or_resource_limit': case 'response_too_large':
-        this.failures++;
+        count();
         if (leaf.depth >= this.options.maxDepth) { failed(); break; }
         job.leaves.delete(leaf.key);
         for (const tile of children(leaf.tile)) job.leaves.set(tileKey(tile), { key: tileKey(tile), tile, depth: leaf.depth + 1, state: 'queued', attempts: 0, notBefore: 0 });
@@ -246,6 +304,7 @@ export class CellScheduler<T> {
         break;
       default: failed();
     }
+    if (shared) return;
     if (this.failures >= this.options.pauseAfter && !this.paused) { this.paused = true; this.pauseReason = failure.code; }
     this.hooks.failed?.(task, failure, outcome);
   }

@@ -27,12 +27,13 @@ function fakeClock() {
 }
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
-interface Call { task: LeafTask; signal: AbortSignal; settled: boolean; resolve(value: string): void; reject(error: unknown): void }
+/** One request: `task` is its first leaf; `resolve` takes one result, or one per leaf. */
+interface Call { task: LeafTask; tasks: LeafTask[]; signal: AbortSignal; settled: boolean; resolve(value: string | string[]): void; reject(error: unknown): void }
 function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTask) => string | undefined) {
   const clock = fakeClock(), calls: Call[] = [], loaded: { leaf: string; job: string; result: string; cached: boolean }[] = [], outcomes: string[] = [];
   const scheduler = new CellScheduler<string>({ concurrency: 1, maxDepth: 2, retries: 1, maxRequests: 100, pauseAfter: 4, clock, ...options }, {
-    execute: (task, signal) => new Promise((resolve, reject) => {
-      const call: Call = { task, signal, settled: false, resolve: value => { call.settled = true; resolve(value); }, reject: error => { call.settled = true; reject(error); } };
+    execute: (tasks, signal) => new Promise((resolve, reject) => {
+      const call: Call = { task: tasks[0], tasks, signal, settled: false, resolve: value => { call.settled = true; resolve(Array.isArray(value) ? value : [value]); }, reject: error => { call.settled = true; reject(error); } };
       calls.push(call);
     }),
     lookup: lookup && (async task => lookup(task)),
@@ -186,6 +187,65 @@ test('a session request budget stops runaway loading until retried', async () =>
   h.calls[0].resolve('A'); await flush(); h.calls[1].resolve('B'); await flush();
   assert.equal(h.calls.length, 2); assert.equal(h.scheduler.exhausted, true);
   h.scheduler.retry(); assert.equal(h.calls.length, 3);
+});
+
+test('requests combine the next cells in priority order, and each cell gets its own result', async () => {
+  const h = harness({ concurrency: 1, batch: 3 });
+  h.scheduler.want([job('d', 4), job('b', 2), job('a', 1), job('c', 3)]);
+  assert.deepEqual(h.calls.map(call => call.tasks.map(task => task.job)), [['a', 'b', 'c']]);
+  assert.equal(h.scheduler.inFlight, 1); assert.equal(h.scheduler.status('c'), 'loading'); assert.equal(h.scheduler.status('d'), 'pending');
+  h.calls[0].resolve(['A', 'B', 'C']); await flush();
+  assert.deepEqual(h.loaded.map(entry => `${entry.job}=${entry.result}`), ['a=A', 'b=B', 'c=C']);
+  assert.deepEqual(h.calls[1].tasks.map(task => task.job), ['d']);
+  assert.equal(h.scheduler.requests, 2);
+});
+
+test('a combined request that runs out of time retries its cells alone, then splits; later requests combine fewer', async () => {
+  const h = harness({ concurrency: 1, batch: 4 });
+  h.scheduler.want([job('a', 1), job('b', 2), job('c', 3), job('d', 4), job('e', 5), job('f', 6)]);
+  h.calls[0].reject(fail('timeout_or_resource_limit')); await flush();
+  assert.deepEqual(h.outcomes, ['13/1/10:timeout_or_resource_limit:alone']);
+  // The failed cells now load one per request, before the cells after them.
+  assert.deepEqual(h.calls[1].tasks.map(task => task.job), ['a']);
+  h.calls[1].reject(fail('timeout_or_resource_limit')); await flush();
+  assert.deepEqual(h.calls[2].tasks.map(task => task.leaf), ['14/2/20']);
+  for (let i = 2; i < 6; i++) { h.calls[i].resolve('quarter'); await flush(); }
+  assert.equal(h.scheduler.status('a'), 'ready');
+  for (const name of ['b', 'c', 'd']) { assert.deepEqual(h.calls.at(-1)!.tasks.map(task => task.job), [name]); h.calls.at(-1)!.resolve(name); await flush(); }
+  // The cells never tried together combine again, but only two at a time now.
+  assert.deepEqual(h.calls.at(-1)!.tasks.map(task => task.job), ['e', 'f']);
+  // Invalid requests and bad data are no verdict on a combined request's cells either.
+  const other = harness({ concurrency: 1, batch: 2 });
+  other.scheduler.want([job('a', 1), job('b', 2)]);
+  other.calls[0].reject(fail('invalid_request')); await flush();
+  other.calls[1].reject(fail('invalid_request')); await flush();
+  assert.equal(other.scheduler.status('a'), 'failed'); assert.deepEqual(other.calls[2].tasks.map(task => task.job), ['b']);
+});
+
+test('a rate limit on a combined request counts once and repeats the same request after the wait', async () => {
+  const h = harness({ concurrency: 1, batch: 2, pauseAfter: 2 });
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  h.calls[0].reject(fail('rate_limited', 5000)); await flush();
+  assert.equal(h.scheduler.paused, false); assert.deepEqual(h.outcomes, ['13/1/10:rate_limited:cooldown']);
+  await h.clock.advance(5000);
+  assert.deepEqual(h.calls[1].tasks.map(task => task.job), ['a', 'b']);
+});
+
+test('a combined request runs on while any of its cells is wanted or retained, and is aborted when none is', async () => {
+  const h = harness({ concurrency: 1, batch: 2 });
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  const shared = h.calls[0];
+  h.scheduler.want([job('b', 2)]);
+  assert.equal(shared.signal.aborted, false); assert.equal(h.scheduler.status('a'), undefined);
+  shared.resolve(['A', 'B']); await flush();
+  // The result of the cell no longer wanted is dropped.
+  assert.deepEqual(h.loaded.map(entry => entry.job), ['b']);
+  h.scheduler.want([job('c', 3), job('d', 4)]);
+  h.scheduler.want([job('e', 5)], ['d']);
+  assert.equal(h.calls[1].signal.aborted, false);
+  h.scheduler.want([job('e', 5)]);
+  assert.equal(h.calls[1].signal.aborted, true); assert.equal(h.scheduler.inFlight, 1);
+  assert.deepEqual(h.calls[2].tasks.map(task => task.job), ['e']);
 });
 
 test('a cache lookup serves whole jobs without requests and misses fall through to the provider', async () => {

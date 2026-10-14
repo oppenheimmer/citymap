@@ -1,11 +1,15 @@
 import { readFile } from 'node:fs/promises';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { test, expect, status, search, sample, detail, share, stats, control } from '../support/local.ts';
+import { cellName, parseCellQueries } from '../support/live-roads.ts';
+import type { CellQuery } from '../support/live-roads.ts';
 
 // Viewport tests opt in per page; the default suite keeps whole-area live loading covered.
 const LIVE = 'liveMode=viewport';
 const cellQueries = async (request: APIRequestContext) => (await stats(request)).roads.filter(query => query.includes('out geom'));
-const span = (query: string) => { const [, west, , east] = query.match(/\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\);out geom/)!.slice(1).map(Number); return east - west; };
+/** Requests combine several cells; these are every requested cell, in order. */
+const requestedCells = async (request: APIRequestContext) => (await cellQueries(request)).flatMap(parseCellQueries);
+const span = ({ box: [, west, , east] }: CellQuery) => east - west;
 async function choose(page: Page, name: string, query = '') {
   await page.goto(`/?${LIVE}${query}`);
   await search(page, name);
@@ -48,10 +52,13 @@ test('a searched city loads a bounded set of viewport cells, never one whole-are
   await liveCity(page);
   const queries = (await stats(request)).roads;
   expect(queries.length).toBeGreaterThan(1); expect(queries.length).toBeLessThanOrEqual(16);
-  for (const query of queries) { expect(query).toContain('out geom'); expect(query).not.toContain('area'); expect(query).toMatch(/\[timeout:30\]/); }
-  expect(new Set(queries).size).toBe(queries.length);
+  for (const query of queries) { expect(query).toContain('out geom'); expect(query).not.toContain('area'); expect(query).toMatch(/\[timeout:(30|40|50|60)\]/); }
+  // Requests combine up to four cells, and no cell is requested twice.
+  const cells = await requestedCells(request);
+  expect(cells.length).toBeGreaterThan(queries.length); expect(queries.every(query => parseCellQueries(query).length <= 4)).toBe(true);
+  expect(new Set(cells.map(cellName)).size).toBe(cells.length);
   // Major roads load first, then streets; footpaths are not requested at street detail.
-  expect(queries[0]).toContain('motorway'); expect(queries.some(query => query.includes('residential'))).toBe(true); expect(queries.some(query => query.includes('!~'))).toBe(false);
+  expect(cells[0].rank).toBe(0); expect(cells.some(cell => cell.rank === 1)).toBe(true); expect(cells.some(cell => cell.rank === 2)).toBe(false);
   await detail(page, 'Data and source'); await expect(page.locator('aside')).toContainText('loaded by map view');
   await expect(page.locator('aside')).toContainText(/Source date: .*2026/);
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText(`${queries.length} road requests`);
@@ -64,8 +71,8 @@ test('panning loads only new neighbouring cells; panning back, zoom oscillation 
   await drag(page, -0.9);
   await expect.poll(async () => (await cellQueries(request)).length).toBeGreaterThan(initial);
   await expect(status(page)).toContainText('ready'); await idle(request);
-  const panned = await cellQueries(request);
-  expect(new Set(panned).size, 'No cell is requested twice').toBe(panned.length);
+  const panned = await cellQueries(request), cells = (await requestedCells(request)).map(cellName);
+  expect(new Set(cells).size, 'No cell is requested twice').toBe(cells.length);
   await drag(page, 0.9); await settle(page);
   await expect(status(page)).toContainText('ready'); expect(await cellQueries(request)).toHaveLength(panned.length);
   for (const zoom of ['Zoom in', 'Zoom out', 'Zoom in', 'Zoom out']) await page.getByRole('button', { name: zoom, exact: true }).click();
@@ -157,10 +164,11 @@ test('a dense cell is split into quarters only where needed, and rate limits wai
   // Major-road cells (about 0.18° wide) time out; their quarters load. Street cells are unaffected.
   await control(request, { roads: { dense: 0.1 } });
   await liveCity(page, 'Dense city'); await idle(request);
-  const queries = await cellQueries(request);
-  const coarse = queries.filter(query => span(query) > 0.1), quarters = queries.filter(query => query.includes('motorway') && span(query) < 0.1);
-  expect(coarse.length).toBeGreaterThan(0); expect(quarters).toHaveLength(coarse.length * 4);
-  expect(queries.filter(query => query.includes('residential')).every(query => span(query) > 0.04)).toBe(true);
+  const queries = await cellQueries(request), cells = await requestedCells(request);
+  // A combined request with a major-road cell times out, so its cells load alone; only those time out again and split.
+  const coarse = new Set(cells.filter(cell => span(cell) > 0.1).map(cellName)), quarters = cells.filter(cell => cell.rank === 0 && span(cell) < 0.1);
+  expect(coarse.size).toBeGreaterThan(0); expect(quarters).toHaveLength(coarse.size * 4);
+  expect(cells.filter(cell => cell.rank === 1).every(cell => span(cell) > 0.04)).toBe(true);
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText('dense regions split');
   await control(request, { roads: { status: 429, failures: 1, retryAfter: '1' } });
   await drag(page, -0.9);
@@ -171,7 +179,7 @@ test('a dense cell is split into quarters only where needed, and rate limits wai
   const after = (await cellQueries(request)).slice(queries.length);
   // The rate-limited request is repeated as it was; nothing is split.
   expect(after[1]).toBe(after[0]);
-  expect(after.every(query => span(query) > (query.includes('motorway') ? 0.1 : 0.04))).toBe(true);
+  expect(after.flatMap(parseCellQueries).every(cell => span(cell) > (cell.rank === 0 ? 0.1 : 0.04))).toBe(true);
 });
 
 test('failed regions in the centre leave loaded roads visible and keep Export unavailable until retry recovers', async ({ page, request }) => {
@@ -243,7 +251,7 @@ test('regions far behind the view are evicted with their GPU buffers and reload 
   const buffers = () => page.evaluate(() => (window as unknown as { bufferProbe: { created: number; deleted: number } }).bufferProbe);
   // Without the browser cell cache, evicted regions must come back from the road service.
   await liveCity(page, 'Evicting city', '&liveBudget=250000&cache=0'); await idle(request);
-  const first = await cellQueries(request);
+  const first = (await requestedCells(request)).map(cellName);
   const peaks: number[] = [];
   for (const [index, dx] of [-0.9, -0.9, -0.9, -0.9, -0.9, 0.9, 0.9, 0.9, 0.9, 0.9].entries()) {
     const count = (await cellQueries(request)).length;
@@ -258,8 +266,8 @@ test('regions far behind the view are evicted with their GPU buffers and reload 
   // Live buffers plateau instead of growing with every pan.
   expect(Math.max(...peaks.slice(5))).toBeLessThanOrEqual(Math.max(...peaks.slice(0, 5)) + 4);
   // The starting cells were evicted far away and fetched again on return.
-  const queries = await cellQueries(request);
-  expect(first.some(query => queries.filter(entry => entry === query).length > 1)).toBe(true);
+  const cells = (await requestedCells(request)).map(cellName);
+  expect(first.some(cell => cells.filter(entry => entry === cell).length > 1)).toBe(true);
   await expect(page.locator('canvas')).toBeVisible();
 });
 
@@ -284,14 +292,15 @@ test('revisits use the browser cell cache; refresh fetches again and clearing re
     open.onerror = () => reject(open.error);
   }));
   await liveCity(page, 'Cached city'); await idle(request);
-  const requested = (await cellQueries(request)).length;
+  // The cache holds cells, which requests combine.
+  const requests = (await cellQueries(request)).length, requested = (await requestedCells(request)).length;
   await expect.poll(cached).toBe(requested);
   const link = await share(page);
   await page.goto(`${link.href}&${LIVE}`); await expect(status(page)).toContainText('Cached city, Japan ready');
-  expect(await cellQueries(request)).toHaveLength(requested);
+  expect(await cellQueries(request)).toHaveLength(requests);
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText(`${requested} from the browser cache`);
   await detail(page, 'Data and source'); await page.getByRole('button', { name: 'Refresh city data' }).click();
-  await expect.poll(async () => (await cellQueries(request)).length).toBe(2 * requested);
+  await expect.poll(async () => (await requestedCells(request)).length).toBe(2 * requested);
   await expect(status(page)).toContainText('ready');
   await page.getByRole('button', { name: 'Clear city cache' }).click();
   await expect.poll(cached).toBe(0);
@@ -316,7 +325,7 @@ test('live roads load only within about 50 km of where the map started', async (
   const start = [139.05, 35.05], radians = Math.PI / 180;
   const distance = ([lon, lat]: number[]) => { const h = Math.sin((lat - start[1]) * radians / 2) ** 2 + Math.cos(start[1] * radians) * Math.cos(lat * radians) * Math.sin((lon - start[0]) * radians / 2) ** 2; return 2 * 6_371_008.8 * Math.asin(Math.sqrt(h)); };
   // Nearest point of each requested cell's box to the start.
-  const nearest = (query: string) => { const [s, w, n, e] = query.match(/\(([-\d.]+),([-\d.]+),([-\d.]+),([-\d.]+)\);out geom/)!.slice(1).map(Number); return distance([Math.min(e, Math.max(w, start[0])), Math.min(n, Math.max(s, start[1]))]); };
+  const nearest = ({ box: [s, w, n, e] }: CellQuery) => distance([Math.min(e, Math.max(w, start[0])), Math.min(n, Math.max(s, start[1]))]);
   await liveCity(page, 'Radius city', '&detail=major');
   for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
   await idle(request);
@@ -326,7 +335,7 @@ test('live roads load only within about 50 km of where the map started', async (
   await expect(page.locator('.live-status')).toContainText('Roads load only within 50 km of where this map started');
   const queries = await cellQueries(request);
   expect(queries.length).toBeGreaterThan(3);
-  for (const query of queries) expect(nearest(query), 'Every requested cell starts within the radius').toBeLessThanOrEqual(50_000);
+  for (const cell of queries.flatMap(parseCellQueries)) expect(nearest(cell), 'Every requested cell starts within the radius').toBeLessThanOrEqual(50_000);
   // Further away, nothing more is requested.
   await drag(page, -0.9); await settle(page);
   expect(await cellQueries(request)).toHaveLength(queries.length);
