@@ -28,7 +28,7 @@ test('label pointer dragging, fine/coarse arrows and edge clamps affect normaliz
 
 test('a label too long for the map stays inside it, shrunk to fit, on screen and in exports', async ({ page }) => {
   await page.goto('/'); await sample(page);
-  const frame = page.locator('.map .frame');
+  const frame = page.locator('.map');
   const inside = async () => { const b = (await label(page).boundingBox())!, f = (await frame.boundingBox())!; return b.x >= f.x && b.x + b.width <= f.x + f.width && b.y >= f.y && b.y + b.height <= f.y + f.height; };
   // A short label pushed to the right edge moves in to stay whole.
   await label(page).focus(); for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+ArrowRight');
@@ -59,7 +59,8 @@ test('zoom, pan, fit and resize keep view links finite and restore the view', as
   const map = (await page.locator('canvas').boundingBox())!; await page.mouse.move(map.x + map.width / 2, 250); await page.mouse.down(); await page.mouse.move(map.x + map.width / 2 + 60, 290, { steps: 8 }); await page.mouse.up();
   expect((await view(page)).join(',')).not.toBe(zoomed.join(','));
   await page.getByRole('button', { name: 'Fit map', exact: true }).click(); expect((await view(page))[2]).toBeCloseTo(initial[2], 1);
-  await page.setViewportSize({ width: 1200, height: 800 }); await expect(page.locator('canvas')).toHaveJSProperty('width', 880);
+  // The map fills the window; the options open over it.
+  await page.setViewportSize({ width: 1200, height: 800 }); await expect(page.locator('canvas')).toHaveJSProperty('width', 1200);
   const link = await share(page), expected = link.searchParams.get('view')!.split(',').map(Number);
   expect(expected.every(Number.isFinite)).toBe(true); await page.goto(link.href); await expect(status(page)).toContainText('ready');
   const restored = await view(page);
@@ -113,9 +114,8 @@ test('the north arrow shows by default, appears in PNG and SVG exports and can b
 test('the north arrow and scale bar move by drag and arrow keys, and links restore their positions', async ({ page }) => {
   await page.goto('/'); await sample(page);
   const compass = page.getByRole('button', { name: /^North arrow/ }), bar = page.getByRole('button', { name: /^Scale bar/ });
-  // Positions are fractions of the composed map, which the opened options show whole and smaller.
-  const centre = async (element: typeof compass) => { const b = (await element.boundingBox())!, m = (await page.locator('.map .frame').boundingBox())!; return [(b.x + b.width / 2 - m.x) / m.width, (b.y + b.height / 2 - m.y) / m.height]; };
-  const map = (await page.locator('.map .frame').boundingBox())!, box = (await compass.boundingBox())!;
+  const centre = async (element: typeof compass) => { const b = (await element.boundingBox())!, m = (await page.locator('.map').boundingBox())!; return [(b.x + b.width / 2 - m.x) / m.width, (b.y + b.height / 2 - m.y) / m.height]; };
+  const map = (await page.locator('.map').boundingBox())!, box = (await compass.boundingBox())!;
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(map.x + map.width * 0.3, map.y + map.height * 0.4, { steps: 6 }); await page.mouse.up();
   let link = await share(page);
   expect(Number(link.searchParams.get('northX'))).toBeCloseTo(0.3, 2); expect(Number(link.searchParams.get('northY'))).toBeCloseTo(0.4, 2);
@@ -151,60 +151,52 @@ test('the railway scale bar shows kilometre and mile teeth, follows zoom, export
   expect((await share(page)).searchParams.get('scaleBar')).toBe('0');
 });
 
-test('the options sidebar collapses to a hamburger button and the map takes the full width', async ({ page }) => {
+test('the options sidebar opens over the full-width map and collapses to a hamburger button', async ({ page }) => {
   await page.goto('/'); await sample(page);
   const canvas = page.locator('canvas'), before = (await canvas.boundingBox())!.width;
+  expect(before).toBe(1000);
   await page.getByRole('button', { name: 'Hide options', exact: true }).click();
   await expect(page.getByRole('complementary', { name: 'Map settings' })).toBeHidden();
   const show = page.getByRole('button', { name: 'Show options', exact: true });
   await expect(show).toBeFocused(); await expect(show).toHaveAttribute('aria-expanded', 'false');
-  await expect.poll(async () => (await canvas.boundingBox())!.width).toBeGreaterThan(before + 300);
+  expect((await canvas.boundingBox())!.width).toBe(before);
   await expect(page.getByRole('button', { name: /^Scale bar/ })).toBeVisible();
   await show.click(); await expect(page.getByLabel('Find a city')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Hide options', exact: true })).toBeFocused();
-  await expect.poll(async () => (await canvas.boundingBox())!.width).toBeCloseTo(before, 0);
+  expect((await canvas.boundingBox())!.width).toBe(before);
 });
 
-test('opening the options shows the whole composed map, dims around it, and links and exports keep it', async ({ page }) => {
+test('the options open over the map without resizing or moving it, and links and exports keep the map shown', async ({ page }) => {
   await page.goto('/'); await sample(page);
-  const canvas = page.locator('canvas'), frame = page.locator('.map .frame');
-  const box = async (locator: typeof canvas) => (await locator.boundingBox())!;
+  const canvas = page.locator('canvas'), box = async (locator: typeof canvas) => (await locator.boundingBox())!;
   const urlView = () => new URL(page.url()).searchParams.get('view');
-  // With the options hidden, the composed map fills the canvas.
+  const labelBox = () => box(page.getByRole('button', { name: 'Move map label with arrow keys or drag' }));
   await page.getByRole('button', { name: 'Hide options', exact: true }).click();
-  await expect.poll(async () => (await box(canvas)).width).toBe(1000);
-  expect(await box(frame)).toEqual(await box(canvas)); await expect(frame).toHaveCSS('box-shadow', 'none');
   const map = await box(canvas);
-  await page.mouse.move(map.x + 500, 375); await page.mouse.down(); await page.mouse.move(map.x + 560, 415, { steps: 8 }); await page.mouse.up();
-  // The link in the address bar settles a moment after the drag.
+  expect([map.x, map.y, map.width, map.height]).toEqual([0, 0, 1000, 750]);
+  const start = urlView();
+  await page.mouse.move(500, 375); await page.mouse.down(); await page.mouse.move(560, 415, { steps: 8 });
+  // Holding still lets the renderer's tracked velocity decay, so release adds no kinetic glide.
+  await page.evaluate(() => new Promise<void>(resolve => { let frames = 12; const next = () => --frames ? requestAnimationFrame(next) : resolve(); requestAnimationFrame(next); }));
+  await page.mouse.up();
+  // The link in the address bar follows the moved map a moment later.
   let last: string | null | undefined;
-  await expect.poll(() => { const value = urlView(), same = value !== null && value === last; last = value; return same; }, { intervals: [500] }).toBe(true);
+  await expect.poll(() => { const value = urlView(), same = value !== start && value === last; last = value; return same; }, { intervals: [500] }).toBe(true);
   const composed = urlView()!.split(',').map(Number), pixels = await canvas.evaluate(element => [(element as HTMLCanvasElement).width, (element as HTMLCanvasElement).height]);
-  // Beside the options the canvas narrows: the whole map stays in view, as wide as the canvas
-  // and centred, with the canvas around it dimmed.
+  const placed = await labelBox();
+  // The options cover the map's left side; the map, its label and its view do not change.
   await page.getByRole('button', { name: 'Show options', exact: true }).click();
-  await expect.poll(async () => (await box(canvas)).width).toBeLessThan(700);
-  const open = await box(canvas), shown = await box(frame);
-  expect(shown.width).toBeCloseTo(open.width, 0); expect(shown.height).toBeCloseTo(open.width * 0.75, 0);
-  expect(shown.y - open.y).toBeCloseTo(open.y + open.height - shown.y - shown.height, 0);
-  await expect(frame).not.toHaveCSS('box-shadow', 'none');
-  const label = (await box(page.getByRole('button', { name: 'Move map label with arrow keys or drag' })));
-  expect(label.y + label.height / 2).toBeCloseTo(shown.y + 0.83 * shown.height, 0);
-  // Links and exports keep the composed map, at its own size.
+  await expect(page.getByLabel('Find a city')).toBeVisible();
+  expect(await box(canvas)).toEqual(map); expect(await labelBox()).toEqual(placed);
   const shared = (await share(page)).searchParams.get('view')!.split(',').map(Number);
   shared.forEach((value, index) => expect(value).toBeCloseTo(composed[index], index < 2 ? 5 : 1));
+  // Exports are the map as shown, at its size.
   await page.getByRole('button', { name: 'Export', exact: true }).click();
   await expect(page.getByLabel('Width in pixels')).toHaveValue(String(pixels[0])); await expect(page.getByLabel('Height in pixels')).toHaveValue(String(pixels[1]));
   await page.getByRole('button', { name: 'Close', exact: true }).click();
-  // Hiding the options again fills the canvas with the same map.
-  await page.getByRole('button', { name: 'Hide options', exact: true }).click();
-  await expect.poll(async () => (await box(canvas)).width).toBe(1000);
-  expect(await box(frame)).toEqual(await box(canvas));
-  await page.getByRole('button', { name: 'Show options', exact: true }).click();
-  (await share(page)).searchParams.get('view')!.split(',').map(Number).forEach((value, index) => expect(value).toBeCloseTo(composed[index], index < 2 ? 5 : 1));
   // A window resized to another shape, here the phone layout, and back restores the same map.
-  await page.setViewportSize({ width: 600, height: 900 }); await expect.poll(async () => (await box(canvas)).width).toBe(600);
-  await page.setViewportSize({ width: 1000, height: 750 }); await expect.poll(async () => (await box(canvas)).width).toBe(680);
+  await page.setViewportSize({ width: 600, height: 900 }); await expect.poll(async () => (await box(canvas)).height).toBe(900 - 96);
+  await page.setViewportSize({ width: 1000, height: 750 }); await expect.poll(async () => (await box(canvas)).width).toBe(1000);
   (await share(page)).searchParams.get('view')!.split(',').map(Number).forEach((value, index) => expect(value).toBeCloseTo(composed[index], index < 2 ? 5 : 1));
 });
 

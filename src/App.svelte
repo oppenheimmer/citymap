@@ -86,12 +86,9 @@
   let providers: Providers;
   let overpassConcurrency = 1;
   let mobile = $state(false), controlsOpen = $state(true);
-  // Height of the collapsed settings sheet on phones; the map takes the rest.
+  // Height of the collapsed settings sheet on phones; the map takes the rest. The settings open
+  // over the map, never resizing it, so the map always shows exactly what exports draw.
   const SHEET_COLLAPSED = 96;
-  let layoutWidth = $state(0), layoutHeight = $state(0);
-  // The composed map is the map area with the settings collapsed. Opening them shows it whole
-  // and smaller, and exports keep it; 0 until the layout is measured.
-  const area = $derived({ width: layoutWidth, height: mobile ? Math.max(0, layoutHeight - SHEET_COLLAPSED) : layoutHeight });
   // Desktop sidebar; phones use the collapsible sheet instead.
   let sidebarOpen = $state(true);
   let showOptions = $state<HTMLButtonElement>(), hideOptions = $state<HTMLButtonElement>();
@@ -232,7 +229,7 @@
   }
   function openExport() {
     if (!controller) return;
-    // The composed map at the screen's pixel density, whether or not the settings are open.
+    // The map as shown, at the screen's pixel density.
     const { width, height, pixelRatio } = controller.snapshot();
     exportWidth = Math.max(256, Math.round(width * pixelRatio)); exportHeight = Math.max(256, Math.round(height * pixelRatio));
     exportError = ''; exported = ''; exportDialog.showModal();
@@ -313,7 +310,7 @@
 
 <svelte:window onkeydown={event => { if (event.key === 'Escape' && loading) cancel(); }} />
 {#snippet hamburger()}<svg viewBox="0 0 20 20" width="20" height="20" aria-hidden="true"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>{/snippet}
-<main class="layout" class:sidebar-closed={!mobile && !sidebarOpen} bind:clientWidth={layoutWidth} bind:clientHeight={layoutHeight} style:--sheet-collapsed={`${SHEET_COLLAPSED}px`}>
+<main class="layout" style:--sheet-collapsed={`${SHEET_COLLAPSED}px`}>
   <aside id="options" class:collapsed={mobile && !controlsOpen} hidden={!mobile && !sidebarOpen} aria-label="Map settings">
     <div class="sheet-toolbar">
       <span class="sheet-title">{selected?.name.split(',')[0] || 'Citymap'}</span>
@@ -373,15 +370,16 @@
   </aside>
   <section class="map-panel" aria-label="Map preview">
     {#if !mobile && !sidebarOpen}<button class="menu-toggle show-options" bind:this={showOptions} aria-label="Show options" aria-expanded="false" aria-controls="options" onclick={() => toggleSidebar(true)}>{@render hamburger()}</button>{/if}
-    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} {area} live={liveSettings} oncoverage={covered} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
+    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} live={liveSettings} oncoverage={covered} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
 <dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">{exportProgress || 'Preparing export…'}</p>{:else if exported}<p role="status">{exported}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
 
 <style>
-.layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100dvh; }
-aside { background: var(--ui-surface); border-right: 1px solid var(--ui-border); overflow-y: auto; padding: 28px 22px; }
+/* The map fills the layout; the settings open over it and never resize it. */
+.layout { position: relative; height: 100dvh; overflow: hidden; }
+aside { position: absolute; top: 0; bottom: 0; left: 0; width: 320px; z-index: 3; background: var(--ui-surface); border-right: 1px solid var(--ui-border); box-shadow: 2px 0 12px #0002; overflow-y: auto; padding: 28px 22px; }
 h1 { font-size: 30px; letter-spacing: -1px; margin: 8px 0; }
 header p, .hint, footer { color: #626d60; font-size: 13px; line-height: 1.5; }
 .eyebrow { letter-spacing: .15em; font-size: 12px; font-weight: 700; }
@@ -405,8 +403,7 @@ fieldset { border: 0; border-top: 1px solid var(--ui-border); margin: 20px 0 0; 
 legend { padding-right: 10px; font-size: 13px; font-weight: 700; }
 .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .error { color: #8e2525; font-size: 14px; line-height: 1.5; }.error button { display: block; margin-top: 8px; }
-.map-panel { position: relative; min-width: 0; min-height: 0; }
-.layout.sidebar-closed { grid-template-columns: minmax(0, 1fr); }
+.map-panel { position: absolute; inset: 0; }
 header { position: relative; }
 .menu-toggle { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0; }
 .hide-options { position: absolute; top: -6px; right: 0; }
@@ -419,9 +416,9 @@ details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
 .sheet-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
 .sheet-status { margin: 0 0 10px; font-size: 12px; }
 @media (max-width: 750px) {
-  .layout { display: flex; flex-direction: column-reverse; height: 100dvh; overflow: hidden; }
-  .map-panel { flex: 1; min-height: 120px; }
-  aside { flex: none; height: 45dvh; min-height: 80px; border-top: 1px solid var(--ui-border); border-right: 0; padding: 0 16px 16px; overflow-y: auto; }
+  /* The map ends above the collapsed sheet, which opens up over it. */
+  .map-panel { bottom: var(--sheet-collapsed); }
+  aside { top: auto; right: 0; width: auto; height: 45dvh; min-height: 80px; border-top: 1px solid var(--ui-border); border-right: 0; box-shadow: 0 -2px 12px #0002; padding: 0 16px 16px; overflow-y: auto; }
   aside.collapsed { height: var(--sheet-collapsed); overflow: hidden; }
   header { margin-bottom: 16px; }
   .sheet-toolbar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; padding: 12px 0; background: var(--ui-surface); z-index: 1; }

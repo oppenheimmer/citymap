@@ -19,12 +19,6 @@ export interface SceneSnapshot { buffers: Float32Array[]; bounds: Camera; camera
 export interface SceneOptions {
   /** Called with the data-independent view of the composed frame after camera and size changes. */
   onView?: (view: GeoView) => void;
-  /**
-   * CSS pixel size of the composed map: the map area with the settings collapsed. Its frame
-   * is what the map shows, shares and exports; a smaller canvas shows the whole frame, smaller.
-   * Defaults to the canvas.
-   */
-  area?: Size;
   /** Fixed-size offscreen rendering, such as PNG export. */
   fixedSize?: { width: number; height: number };
   lineWidth?: number;
@@ -50,22 +44,22 @@ export class SceneController {
   private lineWidth: number;
   private frameWaits = new Set<() => void>();
   private fitTo: 'roads' | 'bounds';
+  /** CSS pixel size of the canvas, which shows exactly the composed map. */
   private area: Size;
   /**
    * What the map is composed around, set by a link, Fit map or a design and moved by
-   * gestures. The frame is this in the area's shape, so resizing there and back restores it.
+   * gestures. The frame is this in the canvas's shape, so resizing there and back restores it.
    */
   private intent!: Camera;
   /** Set while the scene moves its own camera, so only user gestures move the frame. */
   private showing = false;
 
-  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera, fit = 'roads', area }: SceneOptions = {}) {
+  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera, fit = 'roads' }: SceneOptions = {}) {
     this.canvas = canvas;
     this.settings = copyDesign(settings);
     this.lineWidth = lineWidth;
     this.fitTo = fit;
-    const rect = canvas.getBoundingClientRect();
-    this.area = area?.width && area.height ? { ...area } : fixedSize ? { ...fixedSize } : { width: rect.width || 1, height: rect.height || 1 };
+    this.area = fixedSize ? { ...fixedSize } : this.measure();
     this.geometry = { ...geometry, buffers: [], ranks: [] };
     if (!canvas.getContext('webgl', { alpha: true, antialias: true })) throw new Error('WebGL unavailable. Try a browser with hardware acceleration enabled.');
     this.renderer = createScene(canvas, { devicePixelRatio: fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, 2), allowRotation: false, allowPinchRotation: false, size: fixedSize });
@@ -73,7 +67,7 @@ export class SceneController {
     geometry.buffers.forEach((buffer, index) => this.append(buffer, geometry.ranks[index] ?? 0));
     this.applyColors(settings);
     this.setCamera(camera || (settings.view ? cameraFromView(settings.view, geometry.origin) : geometry.bounds));
-    // Panning and zooming move and scale the frame with the view; the canvas may show more around it.
+    // Panning and zooming move and scale the frame with the view.
     this.onTransform = () => {
       if (!this.showing) {
         const before = this.composed, after = inscribedCamera(this.camera(), this.area.width / this.area.height);
@@ -90,7 +84,8 @@ export class SceneController {
     this.observer = new ResizeObserver(() => {
       if (this.disposed || fixedSize) return;
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      // A resized canvas, such as one beside opened settings, still shows the whole frame.
+      // The frame takes the canvas's new shape around the same map.
+      this.area = this.measure();
       this.show();
       onView?.(this.view());
     });
@@ -199,21 +194,19 @@ export class SceneController {
 
   /**
    * Composes the map around `camera` (a centre with extents along the screen's axes): the
-   * frame takes the area's shape, widened so all of `camera` stays in it.
+   * frame takes the canvas's shape, widened so all of `camera` stays in it.
    */
   setCamera(camera: Camera) {
     this.intent = { ...camera };
     this.show();
   }
 
-  /** The composed map's size changed: the frame takes its new shape around the same map. */
-  setArea(area: Size) {
-    if (!(area.width > 0 && area.height > 0) || area.width === this.area.width && area.height === this.area.height) return;
-    this.area = { ...area };
-    this.show();
+  private measure(): Size {
+    const rect = this.canvas.getBoundingClientRect();
+    return { width: rect.width || 1, height: rect.height || 1 };
   }
 
-  /** The composed frame: what the map was composed around, in the area's shape. */
+  /** The composed frame: what the map was composed around, in the canvas's shape. */
   private get composed(): Camera { return fitCamera(this.intent, this.area.width / this.area.height); }
 
   /**
@@ -262,7 +255,7 @@ export class SceneController {
     camera.zoomCenterByScaleFactor(1 - 1 / factor, 0, 0);
     camera.redraw();
   }
-  /** The composed frame, which the canvas shows whole and exports draw. */
+  /** The composed frame, which the canvas shows and exports draw. */
   frame(): Camera { return this.composed; }
   /** The visible centre with its extents along the (possibly rotated) screen axes. */
   camera(): Camera {
@@ -275,10 +268,7 @@ export class SceneController {
   }
   /** The composed frame as a geographic view that survives different data extents. */
   view(): GeoView { return viewFromCamera(this.composed, this.geometry.origin); }
-  /**
-   * The composed map, whether or not the canvas currently shows more around it. `regions`
-   * limits live map regions to those an export frame needs; other roads are kept.
-   */
+  /** The composed map as shown. `regions` limits live map regions to those an export frame needs; other roads are kept. */
   snapshot(regions?: ReadonlySet<string>): SceneSnapshot {
     // Exports contain only the road classes currently shown.
     const buffers = this.collections.filter(collection => !this.hidden(collection.rank) && (!regions || !collection.owner || regions.has(collection.owner))).map(collection => collection.positions);

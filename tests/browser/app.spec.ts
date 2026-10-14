@@ -45,9 +45,7 @@ test('render, pan/zoom, colors, Unicode labels and PNG/SVG downloads', async ({ 
   await page.getByRole('button', { name: 'Download PNG' }).click();
   const png = await readFile((await (await pngDownload).path())!);
   expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
-  // Exports default to the composed map: the map area with the options collapsed.
-  const area = (await page.locator('main').boundingBox())!;
-  expect(png.readUInt32BE(16)).toBe(Math.round(area.width)); expect(png.readUInt32BE(20)).toBe(Math.round(area.height));
+  expect(png.readUInt32BE(16)).toBe(Math.round(box.width)); expect(png.readUInt32BE(20)).toBe(Math.round(box.height));
   const pixels = await page.evaluate(async bytes => {
     const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
     const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;

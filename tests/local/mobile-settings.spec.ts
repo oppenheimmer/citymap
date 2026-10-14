@@ -19,7 +19,7 @@ test('saved settings download preserves the design and its portable restore link
 
 test.describe('mobile sheet', () => {
   test.use({viewport:{width:390,height:844},hasTouch:true,isMobile:process.env.PLAYWRIGHT_BROWSER !== 'firefox',deviceScaleFactor:2});
-  test('settings scroll independently, collapsing expands the map, and desktop resize restores controls', async ({ page }) => {
+  test('settings scroll independently, collapsing uncovers the map, and desktop resize restores controls', async ({ page }) => {
     await page.goto('/'); await sample(page);
     const before = (await page.locator('canvas').boundingBox())!;
     await page.locator('aside').evaluate(aside => { aside.scrollTop = aside.scrollHeight; });
@@ -27,27 +27,26 @@ test.describe('mobile sheet', () => {
     await page.getByRole('button',{name:'Hide controls',exact:true}).tap();
     await expect(page.getByRole('button',{name:'Show controls',exact:true})).toHaveAttribute('aria-expanded','false');
     await expect(page.getByLabel('Find a city')).not.toBeVisible();
-    await expect.poll(async () => (await page.locator('canvas').boundingBox())!.height).toBeGreaterThan(before.height);
+    // The sheet opens over the map: collapsing it uncovers the map, which keeps its size.
+    await expect.poll(async () => (await page.locator('aside').boundingBox())!.height).toBe(96);
+    expect(await page.locator('canvas').boundingBox()).toEqual(before);
     await page.setViewportSize({width:1000,height:750}); await expect(page.getByLabel('Find a city')).toBeVisible();
     await page.setViewportSize({width:390,height:844}); await page.getByRole('button',{name:'Show controls',exact:true}).tap();
     await expect(page.getByLabel('Find a city')).toBeVisible(); expect(await page.evaluate(() => document.documentElement.scrollHeight <= innerHeight + 1)).toBe(true);
   });
-  test('the open sheet shows the whole composed map, and links and exports keep it', async ({ page }) => {
+  test('the sheet opens over the map without resizing it, and links and exports keep the map shown', async ({ page }) => {
     await page.goto('/'); await sample(page);
-    const canvas = page.locator('canvas'), frame = page.locator('.map .frame');
+    const canvas = page.locator('canvas');
     const view = async () => (await share(page)).searchParams.get('view')!.split(',').map(Number);
-    const before = await view();
-    // The composed map is the map area with the sheet collapsed, shown whole and smaller above the open sheet.
-    const open = (await canvas.boundingBox())!, shown = (await frame.boundingBox())!;
-    expect(shown.height).toBeCloseTo(open.height, 0); expect(shown.width / shown.height).toBeCloseTo(390 / (844 - 96), 2);
-    expect(shown.x - open.x).toBeCloseTo(open.x + open.width - shown.x - shown.width, 0);
-    await expect(frame).not.toHaveCSS('box-shadow', 'none');
+    const before = await view(), map = (await canvas.boundingBox())!;
+    // The map fills the screen above the collapsed sheet's strip, whether or not the sheet is open.
+    expect([map.x, map.y, map.width, map.height]).toEqual([0, 0, 390, 844 - 96]);
     await page.getByRole('button',{name:'Export',exact:true}).click();
     await expect(page.getByLabel('Width in pixels')).toHaveValue('780'); await expect(page.getByLabel('Height in pixels')).toHaveValue(String(2 * (844 - 96)));
     await page.getByRole('button',{name:'Close',exact:true}).click();
     await page.getByRole('button',{name:'Hide controls',exact:true}).tap();
-    await expect.poll(async () => (await canvas.boundingBox())!.height).toBe(844 - 96);
-    expect(await frame.boundingBox()).toEqual(await canvas.boundingBox()); await expect(frame).toHaveCSS('box-shadow', 'none');
+    await expect.poll(async () => (await page.locator('aside').boundingBox())!.height).toBe(96);
+    expect(await canvas.boundingBox()).toEqual(map);
     await page.getByRole('button',{name:'Show controls',exact:true}).tap();
     (await view()).forEach((value, index) => expect(value).toBeCloseTo(before[index], index < 2 ? 5 : 1));
   });
