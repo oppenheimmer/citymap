@@ -72,7 +72,7 @@ test('exports rotate the roads with the map', async ({ page }) => {
   // Width and height of the road drawing, from every exported segment end.
   const extent = async () => {
     await page.getByRole('button', { name: 'Export', exact: true }).click();
-    await page.getByLabel('Width in pixels').fill('1000'); await page.getByLabel('Height in pixels').fill('1000');
+    await page.getByLabel('Width in pixels').fill('1000');
     const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
     const xml = (await readFile((await (await pending).path())!)).toString('utf8');
     await page.getByRole('button', { name: 'Close', exact: true }).click();

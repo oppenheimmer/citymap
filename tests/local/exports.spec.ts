@@ -20,10 +20,23 @@ test('PNG and SVG preserve dimensions, visible roads, Unicode, palette, transpar
   await page.getByRole('button', { name: 'Close', exact: true }).click(); await expect(label(page)).toHaveText('東京 & <City>: map');
 });
 
-for (const [width, height] of [['0', '600'], ['800', 'NaN'], ['8193', '600'], ['4097', '4096'], ['800.5', '600']]) test(`export rejects invalid ${width}×${height} and accepts corrected dimensions`, async ({ page }) => {
-  await page.goto('/'); await sample(page); await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByLabel('Width in pixels').fill(width); await page.getByLabel('Height in pixels').fill(height === 'NaN' ? '' : height);
-  await page.getByRole('button', { name: 'Download SVG', exact: true }).click(); await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Export dimensions');
-  await page.getByLabel('Width in pixels').fill('512'); await page.getByLabel('Height in pixels').fill('512'); expect((await download(page, 'SVG')).bytes.toString()).toContain('width="512"');
+test('export width and height keep the map shape, within the limits and as the window changes', async ({ page }) => {
+  await page.goto('/'); await sample(page); await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const width = page.getByLabel('Width in pixels'), height = page.getByLabel('Height in pixels');
+  // The map is 1000×750: typing either edge sets the other, and the arrows stay within the limits.
+  await width.fill('1200'); await expect(height).toHaveValue('900');
+  await height.fill('300'); await expect(width).toHaveValue('400');
+  await expect(width).toHaveAttribute('min', '342'); await expect(width).toHaveAttribute('max', '4729');
+  // Leaving a field moves a size beyond the limits to the nearest that fits; an emptied one comes back.
+  for (const [typed, fittedWidth, fittedHeight] of [['0', '342', '257'], ['8193', '4729', '3547'], ['800.5', '801', '601']]) {
+    await width.fill(typed); await width.blur(); await expect(width).toHaveValue(fittedWidth); await expect(height).toHaveValue(fittedHeight);
+  }
+  await height.fill(''); await height.blur(); await expect(height).toHaveValue('601');
+  expect((await download(page, 'SVG')).bytes.toString('utf8')).toContain('width="801" height="601" viewBox="0 0 801 601"');
+  // A window that changes shape keeps the width; the height follows the map.
+  await width.fill('800'); await width.blur();
+  await page.setViewportSize({ width: 1000, height: 500 }); await expect(height).toHaveValue('400'); await expect(width).toHaveValue('800');
+  const png = (await download(page, 'PNG')).bytes; expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([800, 400]);
 });
 
 test('export cancellation terminates background work and permits another export', async ({ page }) => {

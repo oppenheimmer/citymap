@@ -69,7 +69,10 @@ carry no visible OpenStreetMap credit (SVG keeps it in its metadata; the app sho
 it in the sidebar footer), so credit OpenStreetMap wherever you share them.
 On desktop the options sidebar collapses to a menu button. The sidebar, and the
 phone's sheet, open over the map without resizing or moving it, so exports show
-exactly the map you see with them closed, by default at its size.
+exactly the map you see with them closed, by default at its size. The export's
+width and height keep the map's shape: typing one sets the other, sizes beyond
+256–8192 pixels or 16 megapixels move to the nearest that fits, and a window that
+changes shape while the dialog is open keeps the width.
 Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
 

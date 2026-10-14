@@ -2,6 +2,7 @@ import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
 import type { Geometry, MapFont } from './domain.ts';
 import { canvasFont, embeddedFonts, exportFaces, labelWidth, loadFonts } from './fonts.ts';
+import { EXPORT_LIMITS } from './export-size.ts';
 import { EXPORT_BORDER, placeMarks } from './marks.ts';
 import type { Centre, Size } from './marks.ts';
 import { NORTH_ARROW } from './north-arrow.ts';
@@ -13,7 +14,8 @@ export { download } from './download.ts';
 
 export interface ExportOptions { width: number; height: number; transparent: boolean; grid: GridOptions }
 export function checkDimensions(options: ExportOptions) {
-  if (!Number.isSafeInteger(options.width) || !Number.isSafeInteger(options.height) || options.width < 256 || options.height < 256 || options.width > 8192 || options.height > 8192 || options.width * options.height > 16_777_216) throw new Error('Export dimensions must be 256–8192 pixels and at most 16 megapixels.');
+  const { min, max, pixels } = EXPORT_LIMITS;
+  if (!Number.isSafeInteger(options.width) || !Number.isSafeInteger(options.height) || options.width < min || options.height < min || options.width > max || options.height > max || options.width * options.height > pixels) throw new Error('Export dimensions must be 256–8192 pixels and at most 16 megapixels.');
 }
 async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: AbortSignal): Promise<Blob> {
   const worker = new Worker(new URL('../workers/svg.worker.ts', import.meta.url), { type: 'module' });

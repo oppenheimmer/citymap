@@ -4,6 +4,7 @@ import { bbox, boundaryFromNominatim, covers, DEFAULT_DESIGN, id, overpassQuery,
 import { osmGeometry, pointBounds, projector } from '../src/lib/geometry.ts';
 import { parseUrl, shareUrl } from '../src/lib/url-state.ts';
 import { cameraFromView, viewFromCamera } from '../src/lib/view.ts';
+import { EXPORT_LIMITS, linkedSize } from '../src/lib/export-size.ts';
 
 test('typed boundary IDs and area offsets preserve large integers', () => {
   const result = boundaryFromNominatim({ osm_type: 'relation', osm_id: '9007199254740993', display_name: 'Large ID city', boundingbox: ['35', '36', '139', '140'] });
@@ -75,6 +76,21 @@ test('geographic views match the projector and restore the same place when data 
   const [bx, by] = b.project(...place), restored = cameraFromView(view, b.origin);
   assert.ok(Math.abs(bx - x) > 100);
   near((restored.left + restored.right) / 2, bx, 1e-6); near((restored.bottom + restored.top) / 2, by, 1e-6);
+});
+test('export sizes keep the map shape within the export limits', () => {
+  assert.deepEqual(linkedSize(800, 4 / 3), [800, 600]); assert.deepEqual(linkedSize(600, 3 / 4), [600, 800]);
+  // A phone map of 390×748 CSS pixels at twice the density.
+  assert.deepEqual(linkedSize(780, 390 / 748), [780, 1496]);
+  assert.deepEqual(linkedSize(800.5, 4 / 3), [801, 601]); assert.deepEqual(linkedSize(9000, 1), [4096, 4096]);
+  const { min, max, pixels } = EXPORT_LIMITS;
+  for (const ratio of [1 / 32, 0.25, 390 / 748, 1, 4 / 3, 16 / 9, 3, 32]) for (const edge of [0, 100, 256, 1000, 5000, 9000]) {
+    const [own, other] = linkedSize(edge, ratio);
+    assert.ok([own, other].every(value => Number.isInteger(value) && value >= min && value <= max) && own * other <= pixels, `${edge} at ${ratio}: ${own}×${other}`);
+    // The other edge is the nearest whole pixel to the map's shape.
+    assert.ok(Math.abs(other - own / ratio) <= 0.5, `${edge} at ${ratio}: ${own}×${other}`);
+  }
+  // Out-of-range edges move to the nearest size that fits.
+  assert.deepEqual(linkedSize(0, 4 / 3), [342, 257]); assert.deepEqual(linkedSize(9000, 4 / 3), [4729, 3547]);
 });
 test('views and extents stay correct across the antimeridian', () => {
   const bounds = pointBounds([[179.2, -16.8], [-179.6, -16.2], [179.9, -16.5]]);
