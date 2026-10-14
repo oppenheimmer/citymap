@@ -297,3 +297,34 @@ test('an export is complete only once every loaded region of its frame is drawn'
     assert.equal(viewport.exportRegions(camera, 0).complete, true);
   } finally { viewport.dispose(); }
 });
+
+test('regions in view are evicted after those out of view, even at road classes too dense to load at this zoom', async () => {
+  const { z, x, y } = originTile(cellLevel(1, origin[1]));
+  // A square `cells` street cells across, around the street cell `dx` cells east of the start's.
+  const around = (dx: number, cells: number): Camera => {
+    const box = tileRect({ z, x: x + dx, y }, origin), cx = (box.left + box.right) / 2, cy = (box.bottom + box.top) / 2, half = (box.right - box.left) * cells / 2;
+    return { left: cx - half, right: cx + half, bottom: cy - half, top: cy + half };
+  };
+  let camera = around(0, 0.2);
+  const requests: CellRequest[] = [], drawn = new Set<string>();
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  // Street regions weigh 16 kB and major-road regions 16 bytes: the budget holds two street regions and a few major ones.
+  const reply = (request: CellRequest) => worker.onmessage!({ data: { type: 'cells', id: request.id, cells: request.cells.map(({ rank }) => { const segments = rank ? 1000 : 1; return { positions: new Float32Array(segments * 4).buffer, segments }; }), bytes: 0, fetchMs: 1, decodeMs: 0 } });
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: async (_positions: Float32Array, _rank: number, _signal: AbortSignal | undefined, owner?: string) => { if (owner) drawn.add(owner); }, removeOwner: (owner: string) => { drawn.delete(owner); return 0; } } as unknown as SceneController;
+  const viewport = new LiveViewport(scene, origin, 'streets', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 2 * 16_000 + 100, createWorker: () => worker as unknown as Worker }, () => {});
+  const load = async () => { for (const request of requests.splice(0)) reply(request); await new Promise(resolve => setImmediate(resolve)); };
+  const move = async (next: Camera) => { camera = next; viewport.viewChanged(); await new Promise(resolve => setTimeout(resolve, LIVE_LIMITS.debounceMs + 50)); await load(); };
+  const shown = `1:${z}/${x}/${y}`, away = `1:${z}/${x + 6}/${y}`;
+  try {
+    // Streets load beside the start, then about 28 km east.
+    await load();
+    await move(around(6, 0.2));
+    assert.ok(drawn.has(shown) && drawn.has(away));
+    // Zoomed out over the start, streets are too dense to load and the eastern ones are out of
+    // view; the major roads that load exceed the budget.
+    await move(around(0, 8));
+    assert.deepEqual(viewport.coverage().limited, [1]);
+    assert.ok(drawn.has(shown), 'Streets in view stay drawn');
+    assert.ok(!drawn.has(away), 'Streets out of view are evicted first');
+  } finally { viewport.dispose(); }
+});

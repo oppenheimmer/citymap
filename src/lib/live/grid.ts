@@ -68,7 +68,7 @@ export function tileDistance(tile: Tile, point: Origin): number {
 }
 
 /** Separating-axis test of a convex polygon against a rectangle; touching edges do not intersect. */
-function intersects(polygon: Point[], box: Camera): boolean {
+export function intersects(polygon: Point[], box: Camera): boolean {
   const xs = polygon.map(point => point[0]), ys = polygon.map(point => point[1]);
   if (Math.max(...xs) <= box.left || Math.min(...xs) >= box.right || Math.max(...ys) <= box.bottom || Math.min(...ys) >= box.top) return false;
   const corners: Point[] = [[box.left, box.bottom], [box.right, box.bottom], [box.right, box.top], [box.left, box.top]];

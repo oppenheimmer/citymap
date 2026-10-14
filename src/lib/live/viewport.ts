@@ -4,7 +4,7 @@ import type { SceneController } from '../SceneController.ts';
 import type { CellCommand, CellReply } from '../worker-protocol.ts';
 import { frameCorners, viewFromCamera } from '../view.ts';
 import { metresPerSceneUnit } from '../scale-bar.ts';
-import { cellLevel, coverTiles, GRID_VERSION, groundDistance, tileDistance, tileKey, tileRect } from './grid.ts';
+import { cellLevel, coverTiles, GRID_VERSION, groundDistance, intersects, tileDistance, tileKey, tileRect } from './grid.ts';
 import type { Tile } from './grid.ts';
 import { CellFailure, QUERY_SCHEMA } from './overpass.ts';
 import type { FailureCode } from './overpass.ts';
@@ -111,7 +111,7 @@ export interface LiveCoverage {
 
 interface CellResult { positions: Float32Array; segments: number; bytes: number; fetchMs: number; fetchedAt: number; snapshotAt?: string }
 /** `drawing` counts uploads queued or under way; the region is drawn once none is left. */
-interface Region { rank: RoadRank; bytes: number; segments: number; buffers: Float32Array[]; lastSeen: number; fetchedAt: number; cached: boolean; drawing: number; snapshotAt?: string }
+interface Region { tile: Tile; rank: RoadRank; bytes: number; segments: number; buffers: Float32Array[]; lastSeen: number; fetchedAt: number; cached: boolean; drawing: number; snapshotAt?: string }
 
 const jobKey = (rank: RoadRank, tile: Tile) => `${rank}:${tileKey(tile)}`;
 
@@ -296,8 +296,10 @@ export class LiveViewport {
     const dense = limited.length === this.ranks().length;
     this.visible = specs; this.required = required; this.limited = limited;
     this.centre = reachable && !(dense && distance > radius) ? centre : undefined;
-    const now = performance.now();
-    for (const spec of specs) { const region = this.regions.get(spec.key); if (region) region.lastSeen = now; }
+    // Every loaded region in view counts as seen, including classes too dense to load at this
+    // zoom, so regions out of view are evicted first.
+    const now = performance.now(), shown = this.ranks();
+    for (const region of this.regions.values()) if (shown.includes(region.rank) && intersects(visible, tileRect(region.tile, this.origin))) region.lastSeen = now;
     this.scheduler.want(specs, retained);
     this.evict();
     this.emit();
@@ -347,7 +349,9 @@ export class LiveViewport {
 
   private loaded = (task: LeafTask, result: CellResult, cached: boolean) => {
     let region = this.regions.get(task.job);
-    if (!region) this.regions.set(task.job, region = { rank: task.rank, bytes: 0, segments: 0, buffers: [], lastSeen: performance.now(), fetchedAt: result.fetchedAt, cached, drawing: 0, snapshotAt: result.snapshotAt });
+    // The region's cell: a leaf is that cell, or a quarter of it `depth` times over.
+    const tile = { z: task.tile.z - task.depth, x: task.tile.x >> task.depth, y: task.tile.y >> task.depth };
+    if (!region) this.regions.set(task.job, region = { tile, rank: task.rank, bytes: 0, segments: 0, buffers: [], lastSeen: performance.now(), fetchedAt: result.fetchedAt, cached, drawing: 0, snapshotAt: result.snapshotAt });
     region.bytes += result.positions.byteLength; region.segments += result.segments; region.buffers.push(result.positions);
     region.fetchedAt = Math.min(region.fetchedAt, result.fetchedAt);
     if (result.snapshotAt && (!region.snapshotAt || result.snapshotAt > region.snapshotAt)) region.snapshotAt = result.snapshotAt;
