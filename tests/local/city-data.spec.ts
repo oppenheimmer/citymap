@@ -84,6 +84,10 @@ test('exports rotate the roads with the map', async ({ page }) => {
   await page.getByLabel('Map rotation').evaluate(el => { (el as HTMLInputElement).value = '90'; el.dispatchEvent(new Event('input', { bubbles: true })); });
   await page.getByRole('button', { name: 'Fit map', exact: true }).click();
   const [turnedWidth, turnedHeight] = await extent();
-  // A quarter turn swaps the drawing's proportions.
+  // A quarter turn either way swaps the drawing's proportions.
   expect(turnedWidth / turnedHeight).toBeCloseTo(height / width, 1);
+  await page.getByRole('radio', { name: 'Left' }).check();
+  await page.getByRole('button', { name: 'Fit map', exact: true }).click();
+  const [backWidth, backHeight] = await extent();
+  expect(backWidth / backHeight).toBeCloseTo(height / width, 1);
 });

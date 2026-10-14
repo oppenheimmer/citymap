@@ -1,5 +1,5 @@
-import { bbox, DEFAULT_DESIGN, id, ROAD_DETAILS } from './domain.ts';
-import type { Boundary, Design, GeoView, OSMType, RoadDetail } from './domain.ts';
+import { bbox, DEFAULT_DESIGN, id, MAP_FONTS, ROAD_DETAILS } from './domain.ts';
+import type { Boundary, Design, GeoView, MapFont, OSMType, RoadDetail } from './domain.ts';
 import { MAX_LATITUDE } from './view.ts';
 
 function number(value: string | null, fallback: number, min: number, max: number) {
@@ -24,12 +24,14 @@ export function parseUrl(search: string): { query: string; boundary?: Boundary; 
   const design: Design = {
     roadColor: color(p.get('roads') || p.get('lineColor'), DEFAULT_DESIGN.roadColor), roadOpacity: number(p.get('roadOpacity'), 0.8, 0, 1),
     backgroundColor: color(p.get('background') || p.get('backgroundColor'), DEFAULT_DESIGN.backgroundColor), backgroundOpacity: number(p.get('backgroundOpacity'), 1, 0, 1),
-    label: { text: (p.get('label') || '').slice(0, 256), color: color(p.get('labelColor'), label.color), opacity: number(p.get('labelOpacity'), 1, 0, 1), x: number(p.get('labelX'), label.x, 0, 1), y: number(p.get('labelY'), label.y, 0, 1), size: number(p.get('labelSize'), label.size, 10, 128) },
+    label: { text: (p.get('label') || '').slice(0, 256), color: color(p.get('labelColor'), label.color), opacity: number(p.get('labelOpacity'), 1, 0, 1), x: number(p.get('labelX'), label.x, 0, 1), y: number(p.get('labelY'), label.y, 0, 1), size: number(p.get('labelSize'), label.size, 10, 128), bold: p.get('labelBold') === '1', italic: p.get('labelItalic') === '1' },
     detail: ROAD_DETAILS.includes(p.get('detail') as RoadDetail) ? p.get('detail') as RoadDetail : DEFAULT_DESIGN.detail,
+    font: MAP_FONTS.includes(p.get('font') as MapFont) ? p.get('font') as MapFont : DEFAULT_DESIGN.font,
     north: p.get('north') !== '0',
     northAt: { x: number(p.get('northX'), DEFAULT_DESIGN.northAt.x, 0, 1), y: number(p.get('northY'), DEFAULT_DESIGN.northAt.y, 0, 1) },
     scaleBar: p.get('scaleBar') !== '0',
-    rotation: Math.round(number(p.get('rotation'), 0, 0, 180)),
+    // Negative turns counter-clockwise. Older links only used 0–180, which remain valid.
+    rotation: Math.round(number(p.get('rotation'), 0, -180, 180)) || 0,
     view: parseView(p.get('view')),
   };
   // A scale bar without its own position follows the north arrow.
@@ -82,8 +84,11 @@ export function shareUrl(origin: string, path: string, boundary: Boundary, desig
   p.set('background', design.backgroundColor.slice(1)); p.set('backgroundOpacity', String(design.backgroundOpacity));
   p.set('label', design.label.text); p.set('labelColor', design.label.color.slice(1)); p.set('labelOpacity', String(design.label.opacity));
   p.set('labelX', String(design.label.x)); p.set('labelY', String(design.label.y)); p.set('labelSize', String(design.label.size));
+  if (design.label.bold) p.set('labelBold', '1');
+  if (design.label.italic) p.set('labelItalic', '1');
   // Designs saved before these settings existed keep the defaults.
   if (design.detail) p.set('detail', design.detail);
+  if (design.font) p.set('font', design.font);
   if (design.north === false) p.set('north', '0');
   if (design.northAt) { p.set('northX', String(design.northAt.x)); p.set('northY', String(design.northAt.y)); }
   if (design.scaleBar === false) p.set('scaleBar', '0');

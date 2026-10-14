@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import MapCanvas from './MapCanvas.svelte';
-  import { bbox, boundaryFromNominatim, covers, publicUrl } from './lib/domain.ts';
+  import { bbox, boundaryFromNominatim, covers, hasLocation, publicUrl } from './lib/domain.ts';
   import type { Boundary, Design, GeoView, Geometry, LoadProgress, MarkPosition, PreparationTimings, Providers, RoadDetail, SourceInfo } from './lib/domain.ts';
   import type { SceneController } from './lib/SceneController.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
@@ -15,9 +15,20 @@
   import { describeLoad, formatBytes } from './lib/load-status.ts';
   import type { Transfer } from './lib/load-status.ts';
   import type { GridMode } from './lib/graticule.ts';
+  import type { LiveCoverage, LiveSettings, LiveViewport } from './lib/live/viewport.ts';
+  import type { FailureCode } from './lib/live/overpass.ts';
+  import { isPublicOverpass } from './lib/live/overpass.ts';
+  import { clearCellCache } from './lib/live/cell-cache.ts';
+  import { fitCamera, frameCorners } from './lib/view.ts';
 
   // Synthetic sample maps exist only in test builds, for deterministic browser tests.
   const SAMPLES = import.meta.env.VITE_TEST_FIXTURES === '1';
+  // Live roads load by map view in bounded cells when enabled; otherwise one query per area.
+  // Test builds may choose either mode per page, so both stay covered.
+  const testing = new URLSearchParams(SAMPLES ? location.search : '');
+  const LIVE_VIEWPORT = testing.has('liveMode') ? testing.get('liveMode') === 'viewport' : import.meta.env.VITE_LIVE_VIEWPORT === '1';
+  // Test builds can shrink the live geometry budget to exercise eviction with small fixtures.
+  const LIVE_BUDGET = Number(testing.get('liveBudget')) || undefined;
   const link = parseUrl(location.search);
   const linked = link.boundary?.fixture && !SAMPLES ? undefined : link.boundary;
   let query = $state(link.query);
@@ -38,7 +49,18 @@
   let startedAt = $state(0), lastActivityAt = $state(0), clock = $state(0);
   const activity = $derived(describeLoad(progress, transfer, startedAt, lastActivityAt, clock));
   const percent = (value: number) => `${Math.round(value * 100)}%`;
+  const turn = (degrees: number) => degrees ? `${Math.abs(degrees)} degrees ${degrees < 0 ? 'counter-clockwise' : 'clockwise'}` : 'not rotated';
+  // The slider sets how far the map turns, from 0°; the direction is chosen separately.
+  // The design keeps one signed angle: negative turns left (counter-clockwise).
+  let turnLeft = $state((link.design.rotation || 0) < 0);
+  $effect(() => { const degrees = design.rotation || 0; if (degrees) turnLeft = degrees < 0; });
+  function rotate(degrees: number, left = turnLeft) { turnLeft = left; design.rotation = degrees && (left ? -degrees : degrees); }
   let options = $state.raw<(WorkerLoad & { forceNetwork?: boolean }) | null>(null);
+  // Live viewport maps: the loader, its settings and the loading state of the visible map.
+  let live: LiveViewport | null = null;
+  let liveSettings = $state.raw<(Omit<LiveSettings, 'cache'> & { useCache: boolean }) | undefined>(undefined);
+  let liveCoverage = $state.raw<LiveCoverage | null>(null);
+  let exportProgress = $state('');
   let confirmation = $state<number | null>(null);
   let metrics = $state.raw<{ first: number; total: number; segments: number; preparation?: PreparationTimings } | null>(null);
   let exporting = $state(false), exportWidth = $state(1280), exportHeight = $state(960), transparent = $state(false);
@@ -52,6 +74,7 @@
   let searchRun = 0;
   let historyTimer: ReturnType<typeof setTimeout> | undefined;
   let providers: Providers;
+  let overpassConcurrency = 1;
   let mobile = $state(false), controlsOpen = $state(true);
   // Desktop sidebar; phones use the collapsible sheet instead.
   let sidebarOpen = $state(true);
@@ -81,9 +104,9 @@
     if (!ready || !selected) return;
     historyTimer = setTimeout(() => { window.history.replaceState(null, '', url()); }, 250);
   }
-  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.detail, design.north, design.northAt.x, design.northAt.y, design.scaleBar, design.scaleBarAt?.x, design.scaleBarAt?.y, design.rotation]; history(); });
+  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.label.bold, design.label.italic, design.detail, design.font, design.north, design.northAt.x, design.northAt.y, design.scaleBar, design.scaleBarAt?.x, design.scaleBarAt?.y, design.rotation]; history(); });
   function cancel() {
-    generation++; mounted = false; loading = false; ready = false; controller = null;
+    generation++; mounted = false; loading = false; ready = false; controller = null; live = null; liveCoverage = null;
     confirmation = null; progress = null; transfer = null; status = 'Load cancelled.';
   }
   // Any new stage or received bytes counts as activity for the stall warning.
@@ -100,13 +123,17 @@
     return () => clearInterval(timer);
   });
   function choose(boundary: Boundary, allowLarge = true, forceNetwork = false, restore?: Design) {
-    generation++; mounted = false; ready = false; controller = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
+    generation++; mounted = false; ready = false; controller = null; live = null; liveCoverage = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
     progress = null; transfer = null; startedAt = lastActivityAt = clock = performance.now();
     if (restore) design = { ...restore, label: { ...restore.label }, northAt: { ...restore.northAt }, scaleBarAt: restore.scaleBarAt ? { ...restore.scaleBarAt } : undefined };
-    else { design.view = undefined; design.rotation = 0; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
+    else { design.view = undefined; design.rotation = 0; turnLeft = false; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
     bboxText = boundary.bbox?.join(',') || '';
-    options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined };
+    const viewport = LIVE_VIEWPORT && !boundary.fixture && hasLocation(boundary, design.view);
+    options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined, ...(viewport ? { viewport } : {}) };
+    // Smaller devices keep less road geometry before unseen regions are evicted.
+    const small = matchMedia('(max-width: 750px)').matches || ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
+    liveSettings = viewport ? { overpass: providers.overpass, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV } : undefined;
     mounted = true;
   }
   function sample(size: 'small' | 'medium' | 'large') { choose({ key: `fixture-${size}`, fixture: size, name: `${size[0].toUpperCase()}${size.slice(1)} synthetic grid`, kind: 'synthetic' }); }
@@ -135,18 +162,44 @@
     finally { if (run === searchRun) searching = false; }
   }
   function editQuery() { searchAbort?.abort(); searchRun++; searching = false; }
-  function loaded(scene: SceneController, geometry: Geometry, first: number, total: number, id: number) {
+  function loaded(scene: SceneController, geometry: Geometry, first: number, total: number, id: number, viewport?: LiveViewport) {
     if (id !== generation) return;
     controller = scene; ready = true; loading = false; source = geometry.source; coverage = geometry.coverage; confirmation = null;
-    metrics = { first, total, segments: geometry.segmentCount, preparation: geometry.preparation };
-    status = `${selected!.name} ready.`;
+    live = viewport || null;
+    // A live viewport map is usable at once; its roads keep loading as the view changes.
+    if (live) status = 'Loading roads in view…';
+    else { metrics = { first, total, segments: geometry.segmentCount, preparation: geometry.preparation }; status = `${selected!.name} ready.`; }
     history();
   }
-  function failed(message: string, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; ready = false; controller = null; error = message; status = 'Map could not be loaded.'; }
+  function failed(message: string, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; ready = false; controller = null; live = null; liveCoverage = null; error = message; status = 'Map could not be loaded.'; }
+  const LIMITED = ['roads', 'streets', 'footpaths and service roads'];
+  // Why live loading paused, from the provider failure that paused it.
+  const PAUSED: Partial<Record<FailureCode, string>> = {
+    unreachable: 'The road service cannot be reached from this network. Check the connection, then retry loading roads.',
+    rate_limited: 'The road service is busy. Retry loading roads when you are ready.',
+    timeout_or_resource_limit: 'The road service is overloaded or this area is too dense. Zoom in, or retry loading roads later.',
+    response_too_large: 'The road service is overloaded or this area is too dense. Zoom in, or retry loading roads later.',
+    provider_unavailable: 'The road service is not responding. Retry loading roads later.',
+  };
+  function covered(value: LiveCoverage, id: number) {
+    if (id !== generation) return;
+    liveCoverage = value;
+    // Phase changes only, so the live region announces little while loading.
+    if (value.exhausted) status = 'This session has made many road requests. Retry loading roads to continue.';
+    else if (value.paused) status = PAUSED[value.pauseReason || 'provider_unavailable'] || PAUSED.provider_unavailable!;
+    else if (value.loading && value.cooldown > 0) status = 'The road service asked to wait. Loading resumes shortly…';
+    else if (value.loading) status = 'Loading roads in view…';
+    else if (value.failed) status = 'Some roads in view could not be loaded.';
+    else if (value.beyond === 'entirely') status = `This view is more than ${value.radius / 1000} km from where the map started, so no roads load here. Search for a place to map it.`;
+    else if (value.limited.length) status = `Zoom in to load ${LIMITED[Math.min(...value.limited)]} here.`;
+    else status = `${selected!.name} ready.`;
+  }
   function large(bytes: number, id: number) { if (id !== generation) return; controlsOpen = true; mounted = false; loading = false; confirmation = bytes; status = 'Confirm this download to continue.'; }
   function view(view: GeoView, id: number) { if (id === generation) { design.view = view; history(); } }
   function setDetail(level: RoadDetail) {
     design.detail = level;
+    // Live viewport maps load newly shown road classes by themselves.
+    if (source?.viewport) return;
     // Live geometry holds only the classes it was downloaded with; fetch more when needed.
     // Otherwise the map shows or hides the loaded classes without downloading.
     if (selected && mounted && !(ready && coverage && covers(coverage, level))) choose(selected, true, false, copy());
@@ -165,18 +218,27 @@
     exportError = ''; exportDialog.showModal();
   }
   async function exportFile(format: 'png' | 'svg') {
-    if (!controller || exporting || !source?.complete) return;
-    const snapshot = controller.snapshot();
-    exporting = true; exportError = ''; exportAbort = new AbortController();
+    if (!controller || exporting || !(source?.complete || source?.viewport && live)) return;
+    const scene = controller, viewport = live, snapshot = scene.snapshot();
+    exporting = true; exportError = ''; exportProgress = ''; exportAbort = new AbortController();
     try {
       await new Promise(requestAnimationFrame);
-      const { exportMap, download } = await import('./lib/exports.ts');
-      const blob = await exportMap(snapshot, { width: exportWidth, height: exportHeight, transparent, grid: { mode: gridMode, opacity: gridOpacity } }, format, exportAbort.signal);
+      const { exportMap, download, checkDimensions } = await import('./lib/exports.ts');
+      const settings = { width: exportWidth, height: exportHeight, transparent, grid: { mode: gridMode, opacity: gridOpacity } };
+      checkDimensions(settings);
+      if (viewport) {
+        // Every region of the exported frame loads first, so a file never has missing roads.
+        const frame = frameCorners(fitCamera(snapshot.camera, exportWidth / exportHeight), snapshot.design.rotation || 0);
+        const regions = await viewport.prepareExport(frame, exportAbort.signal, (done, total) => { exportProgress = `Loading map regions for the export: ${done} of ${total}…`; });
+        snapshot.buffers = scene.snapshot(regions).buffers;
+        exportProgress = '';
+      }
+      const blob = await exportMap(snapshot, settings, format, exportAbort.signal);
       exportAbort.signal.throwIfAborted();
       download(blob, `${snapshot.design.label.text || selected!.name}.${format}`);
       status = `${format.toUpperCase()} exported.`;
     } catch (e) { if (!exportAbort?.signal.aborted) exportError = e instanceof Error ? e.message : 'Export failed'; }
-    finally { exporting = false; }
+    finally { exporting = false; exportProgress = ''; }
   }
   async function share() {
     shareText = url();
@@ -198,7 +260,10 @@
       status = 'Design settings exported. Open the link in the file to restore this map.';
     } catch { error = 'This saved design could not be exported. You can remove it and save a new one.'; controlsOpen = true; }
   }
-  async function clear() { status = await clearCityCache() ? 'Saved city geometry cleared. Designs are preserved.' : 'Local cache is unavailable in this browser.'; }
+  async function clear() {
+    const [cities] = await Promise.all([clearCityCache(), clearCellCache()]);
+    status = cities ? 'Saved city geometry cleared. Designs are preserved.' : 'Local cache is unavailable in this browser.';
+  }
   function date(value?: string) { return value && Number.isFinite(Date.parse(value)) ? dateFormatter.format(new Date(value)) : 'unavailable'; }
 
   onMount(() => {
@@ -209,6 +274,12 @@
       // Without a configured R2 origin, city datasets come from the app's own bundled /data.
       const cityData = publicUrl(import.meta.env.VITE_CITY_DATA_BASE_URL || '');
       providers = { cityDataBase: cityData || publicUrl(new URL(`${import.meta.env.BASE_URL}data`, location.origin).href), cityDataBundled: !cityData, legacyCacheBase: publicUrl(import.meta.env.VITE_AREA_SERVER || ''), overpass: publicUrl(import.meta.env.VITE_OVERPASS_URL || '', 'https://overpass-api.de/api/interpreter'), search: publicUrl(import.meta.env.VITE_SEARCH_URL || '', new URL('/api/search', location.origin).href) };
+      // One request at a time suits a shared public road service; a private one may allow more.
+      const concurrency = Number(import.meta.env.VITE_OVERPASS_CONCURRENCY || 1);
+      if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('VITE_OVERPASS_CONCURRENCY must be a whole number from 1 to 4');
+      // Shared public instances get one request at a time; more applies to private providers.
+      overpassConcurrency = isPublicOverpass(providers.overpass) ? 1 : concurrency;
+      if (import.meta.env.DEV && overpassConcurrency < concurrency) console.warn(`[citymap] VITE_OVERPASS_CONCURRENCY=${concurrency} is capped at 1 for the public road service ${new URL(providers.overpass).hostname}.`);
       if (linked) {
         if (link.auto && !link.warning) choose(linked, false, false, link.design);
         else { status = 'This link selects a city. Load its roads to continue.'; bboxText = linked.bbox?.join(',') || ''; }
@@ -226,7 +297,7 @@
       <span class="sheet-title">{selected?.name.split(',')[0] || 'Citymap'}</span>
       {#if !controlsOpen && loading}<button onclick={cancel}>Cancel load</button>{/if}
       <button aria-expanded={controlsOpen} aria-controls="settings-content" onclick={() => { controlsOpen = !controlsOpen; }}>{controlsOpen ? 'Hide controls' : 'Show controls'}</button>
-      {#if loading}{#if activity.max}<progress class="sheet-progress" aria-hidden="true" max={activity.max} value={activity.value}></progress>{:else}<progress class="sheet-progress" aria-hidden="true"></progress>{/if}{/if}
+      {#if loading}{#if activity.max}<progress class="sheet-progress" aria-hidden="true" max={activity.max} value={activity.value}></progress>{:else}<progress class="sheet-progress" aria-hidden="true"></progress>{/if}{:else if liveCoverage?.loading}<progress class="sheet-progress" aria-hidden="true" max={liveCoverage.required} value={liveCoverage.ready}></progress>{/if}
     </div>
     {#if mobile && !controlsOpen}<p class="sheet-status" role="status" aria-live="polite">{status}</p>{/if}
     <div id="settings-content" hidden={mobile && !controlsOpen}>
@@ -245,21 +316,31 @@
         <button onclick={cancel}>Cancel load</button>
       </div>
     {/if}
+    {#if liveCoverage && ready && (!liveCoverage.complete || liveCoverage.beyond !== 'none')}
+      <div class="load-status live-status">
+        {#if liveCoverage.loading}<progress aria-label="Roads in view" max={liveCoverage.required} value={liveCoverage.ready}></progress>{/if}
+        <p class="hint">{liveCoverage.ready} of {liveCoverage.required} map regions in view loaded{liveCoverage.failed ? ` · ${liveCoverage.failed} failed` : ''}{liveCoverage.limited.length ? ' · zoom in for more road detail' : ''}</p>
+        {#if liveCoverage.beyond !== 'none'}<p class="hint">Roads load only within {liveCoverage.radius / 1000} km of where this map started.</p>{/if}
+        {#if liveCoverage.failed || liveCoverage.paused || liveCoverage.exhausted}<button onclick={() => live?.retry()}>Retry loading roads</button>{/if}
+      </div>
+    {/if}
     {#if error}<div role="alert" class="error">{error}{#if selected}<button onclick={() => choose(selected!, true, true, copy())}>Retry map</button>{/if}</div>{/if}
     {#if confirmation !== null}<div class="notice">{confirmation ? `This map needs about ${formatBytes(confirmation)} of cached data.` : 'Live downloads can be large. Load this map when you are ready.'}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button></div>{:else if selected && !mounted && !loading}<button onclick={() => choose(selected!, true, false, copy())}>Load roads</button>{/if}
     {#if selected}
-      <fieldset disabled={!ready}><legend>Map controls</legend><div class="buttons"><button onclick={() => controller?.zoom(1.25)} aria-label="Zoom in">+</button><button onclick={() => controller?.zoom(0.8)} aria-label="Zoom out">−</button><button onclick={() => controller?.fit()}>Fit map</button><button onclick={openExport}>Export</button></div><div class="slider-label"><label for="rotation">Map rotation</label><output for="rotation">{design.rotation || 0}°</output></div><input id="rotation" type="range" min="0" max="180" step="1" bind:value={design.rotation} aria-valuetext={`${design.rotation || 0} degrees clockwise`}><p class="hint">Turn the map to fill the frame, then use Fit map.</p></fieldset>
+      <fieldset disabled={!ready}><legend>Map controls</legend><div class="buttons"><button onclick={() => controller?.zoom(1.25)} aria-label="Zoom in">+</button><button onclick={() => controller?.zoom(0.8)} aria-label="Zoom out">−</button><button onclick={() => controller?.fit()}>Fit map</button><button onclick={openExport}>Export</button></div><div class="slider-label"><label for="rotation">Map rotation</label><output for="rotation">{Math.abs(design.rotation || 0)}°</output></div><div class="choices" role="radiogroup" aria-label="Rotation direction"><label class="checkbox"><input type="radio" name="turn" checked={!turnLeft} onchange={() => rotate(Math.abs(design.rotation || 0), false)}> Right</label><label class="checkbox"><input type="radio" name="turn" checked={turnLeft} onchange={() => rotate(Math.abs(design.rotation || 0), true)}> Left</label></div><input id="rotation" type="range" min="0" max="180" step="1" value={Math.abs(design.rotation || 0)} oninput={event => rotate(Number(event.currentTarget.value))} aria-valuetext={turn(design.rotation || 0)}><p class="hint">Right turns the map clockwise, Left counter-clockwise. Turn it to fill the frame, then use Fit map.</p></fieldset>
       <details open><summary>Customize</summary>
         <fieldset><legend>Road detail</legend><label for="detail">Roads shown</label><select id="detail" value={design.detail} onchange={event => setDetail(event.currentTarget.value as RoadDetail)}><option value="major">Major roads</option><option value="streets">Streets</option><option value="all">All ways, including footpaths and service roads</option></select><p class="hint">Footpaths, sidewalks and service ways can make dense cities solid black.</p></fieldset>
         <fieldset><legend>Presets</legend><div class="buttons">{#each presets as preset (preset.name)}<button onclick={() => applyPreset(preset)}>{preset.name}</button>{/each}</div></fieldset>
         <fieldset><legend>Colors</legend><label>Road color <input type="color" bind:value={design.roadColor}></label><div class="slider-label"><label for="road-opacity">Road opacity</label><output for="road-opacity">{percent(design.roadOpacity)}</output></div><input id="road-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.roadOpacity} aria-valuetext={percent(design.roadOpacity)}><label>Background color <input type="color" bind:value={design.backgroundColor}></label><div class="slider-label"><label for="background-opacity">Background opacity</label><output for="background-opacity">{percent(design.backgroundOpacity)}</output></div><input id="background-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.backgroundOpacity} aria-valuetext={percent(design.backgroundOpacity)}></fieldset>
-        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label>Label color <input type="color" bind:value={design.label.color}></label><div class="slider-label"><label for="label-opacity">Label opacity</label><output for="label-opacity">{percent(design.label.opacity)}</output></div><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity} aria-valuetext={percent(design.label.opacity)}><div class="slider-label"><label for="size">Label size</label><output for="size">{design.label.size} px</output></div><input id="size" type="range" min="10" max="128" bind:value={design.label.size} aria-valuetext={`${design.label.size} pixels`}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><label class="checkbox"><input type="checkbox" bind:checked={design.scaleBar}> Show scale bar</label><p class="hint">Drag the label, north arrow or scale bar on the map, or focus one and use arrow keys.</p></fieldset>
+        <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label for="font">Typeface</label><select id="font" bind:value={design.font}><option value="serif">Serif (Computer Modern)</option><option value="mono">Monospace (Fira Code)</option><option value="sans">Sans-serif</option></select><div class="choices"><label class="checkbox"><input type="checkbox" bind:checked={design.label.bold}> Bold</label><label class="checkbox"><input type="checkbox" bind:checked={design.label.italic}> Italic</label></div><p class="hint">The typeface is used for the label, north arrow, scale bar and coordinate grid; bold and italic style the label.</p><label>Label color <input type="color" bind:value={design.label.color}></label><div class="slider-label"><label for="label-opacity">Label opacity</label><output for="label-opacity">{percent(design.label.opacity)}</output></div><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity} aria-valuetext={percent(design.label.opacity)}><div class="slider-label"><label for="size">Label size</label><output for="size">{design.label.size} px</output></div><input id="size" type="range" min="10" max="128" bind:value={design.label.size} aria-valuetext={`${design.label.size} pixels`}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><label class="checkbox"><input type="checkbox" bind:checked={design.scaleBar}> Show scale bar</label><p class="hint">Drag the label, north arrow or scale bar on the map, or focus one and use arrow keys.</p></fieldset>
       </details>
       <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button></div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
       <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose({ ...selected!, revision: undefined, manifestSha256: undefined }, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
-        {#if source}<p>{source.local ? 'Local cache' : source.bundled ? 'Built-in city data' : ({ r2: 'R2 cache', legacy: 'Legacy cache', live: 'Live OpenStreetMap data', fixture: 'Synthetic sample' }[source.kind])}<br>Source date: {date(source.snapshotAt)}<br>Downloaded: {date(source.downloadedAt)}</p>{/if}
+        {#if source?.viewport}<p>Live OpenStreetMap data, loaded by map view<br>Source date: {date(liveCoverage?.stats.snapshotAt)}<br>Downloaded: {date(liveCoverage?.stats.oldestFetch ? new Date(liveCoverage.stats.oldestFetch).toISOString() : source.downloadedAt)}</p>
+        {:else if source}<p>{source.local ? 'Local cache' : source.bundled ? 'Built-in city data' : ({ r2: 'R2 cache', legacy: 'Legacy cache', live: 'Live OpenStreetMap data', fixture: 'Synthetic sample' }[source.kind])}<br>Source date: {date(source.snapshotAt)}<br>Downloaded: {date(source.downloadedAt)}</p>{/if}
         <label for="bbox">Bounding box: south, west, north, east</label><input id="bbox" bind:value={bboxText} placeholder="35.6,139.6,35.8,139.8"><button onclick={boxLoad}>Load bounding box</button>
       </details>
+      {#if liveCoverage}{@const stats = liveCoverage.stats}<details><summary>Load timings</summary><p>{stats.regions.toLocaleString()} map regions · {stats.segments.toLocaleString()} segments{stats.firstRoadMs !== undefined ? ` · first road frame ${stats.firstRoadMs.toFixed(1)} ms` : ''}</p><p>{stats.requests.toLocaleString()} road requests · {stats.cached.toLocaleString()} from the browser cache · {formatBytes(stats.bytes)} downloaded{stats.medianFetchMs !== undefined ? ` · median request ${stats.medianFetchMs.toFixed(0)} ms` : ''}{stats.splits ? ` · ${stats.splits} dense regions split` : ''}</p></details>{/if}
       {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p>{#if metrics.preparation}<p>Download {metrics.preparation.downloadMs.toFixed(1)} ms · decode {metrics.preparation.decodeMs.toFixed(1)} ms · index {metrics.preparation.indexMs.toFixed(1)} ms · projection {metrics.preparation.projectMs.toFixed(1)} ms</p><p class="hint">Download time includes delivery waits; parallel request times can overlap.</p>{/if}</details>{/if}
     {/if}
     {#if saved.length}<details><summary>Saved designs</summary>{#each saved as record (record.id)}<div class="saved"><button onclick={() => restore(record)}>{record.name}</button><button aria-label={`Export settings ${record.name}`} onclick={() => exportDesign(record)}>Export JSON</button><button aria-label={`Delete design ${record.name}`} onclick={() => { removeDesign(record.id); saved = designs(); }}>Delete</button></div>{/each}</details>{/if}
@@ -268,11 +349,11 @@
   </aside>
   <section class="map-panel" aria-label="Map preview">
     {#if !mobile && !sidebarOpen}<button class="menu-toggle show-options" bind:this={showOptions} aria-label="Show options" aria-expanded="false" aria-controls="options" onclick={() => toggleSidebar(true)}>{@render hamburger()}</button>{/if}
-    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
+    {#if mounted && options}{#key generation}<MapCanvas runId={generation} {options} {design} live={liveSettings} oncoverage={covered} onlabel={label => { design.label = label; }} onmark={(mark: 'northAt' | 'scaleBarAt', at: MarkPosition) => { design[mark] = at; }} onview={view} onerror={failed} onlarge={large} onprogress={track} onready={loaded} />{/key}
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
-<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
+<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min="256" max="8192" bind:value={exportWidth}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min="256" max="8192" bind:value={exportHeight}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">{exportProgress || 'Preparing export…'}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
 
 <style>
 .layout { display: grid; grid-template-columns: 320px minmax(0, 1fr); height: 100dvh; }
@@ -332,4 +413,5 @@ details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
 .export-dialog h2 { margin-top: 0; }
 .grid-options { margin-top: 12px; }
 .grid-options .checkbox { margin: 6px 0; }
+.choices { display: flex; gap: 18px; margin: 6px 0 4px; }.choices .checkbox { margin: 0; }
 </style>

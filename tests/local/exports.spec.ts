@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { test, expect, sample, slider, label } from '../support/local.ts';
+import { test, expect, sample, slider, label, share } from '../support/local.ts';
 import type { Page } from '@playwright/test';
 async function download(page: Page, format: 'PNG' | 'SVG') { const pending = page.waitForEvent('download'); await page.getByRole('button', { name: `Download ${format}`, exact: true }).click(); const file = await pending; return { bytes: await readFile((await file.path())!), filename: file.suggestedFilename() }; }
 
@@ -64,6 +64,57 @@ test('PNG canvas failure and font loading failure are visible without losing the
   await page.getByRole('button', { name: 'Close', exact: true }).click(); await expect(page.locator('canvas')).toBeVisible();
   await page.evaluate(() => { Object.defineProperty(document.fonts, 'ready', { get() { return Promise.reject(new Error('Test fonts unavailable')); } }); });
   await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByRole('button', { name: 'Download SVG', exact: true }).click(); await expect(page.getByRole('dialog').getByRole('alert')).toContainText('Test fonts unavailable');
+});
+
+test('map text uses Computer Modern by default, Fira Code or sans-serif, with a bold or italic label, on screen and in exports', async ({ page }) => {
+  await page.goto('/'); await sample(page); await page.getByLabel('Label text').fill('Typeface Test');
+  const loaded = (family: string) => page.evaluate(name => [...document.fonts].some(face => face.family.replace(/["']/g, '') === name && face.status === 'loaded'), family);
+  await expect(page.getByLabel('Typeface')).toHaveValue('serif');
+  await expect(label(page)).toHaveCSS('font-family', /^"CMU Serif".*, serif$/);
+  await expect(page.getByRole('button', { name: /^Scale bar/ }).locator('text').first()).toHaveCSS('font-family', /^"CMU Serif"/);
+  // The shipped font itself loads, same-origin, rather than a fallback.
+  await expect.poll(() => loaded('CMU Serif')).toBe(true);
+  const exported = async () => {
+    await page.getByRole('button', { name: 'Export', exact: true }).click(); await page.getByLabel('Width in pixels').fill('800'); await page.getByLabel('Height in pixels').fill('600');
+    await page.getByLabel('Ticks on the border').check();
+    const svg = await download(page, 'SVG'), png = await download(page, 'PNG');
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    const xml = svg.bytes.toString('utf8');
+    const valid = await page.evaluate(source => !new DOMParser().parseFromString(source, 'image/svg+xml').querySelector('parsererror'), xml);
+    const label = xml.match(/<text [^>]*>Typeface Test<\/text>/)![0];
+    // Label, north arrow, scale bar and grid labels all name the same typeface; embedded faces follow.
+    return { valid, label, faces: [...xml.matchAll(/@font-face\{font-family:'([^']+)';font-style:(\w+);font-weight:(\d+)/g)].map(match => match.slice(1).join(' ')), embedded: (xml.match(/data:font\/woff2;base64,/g) || []).length, families: [...new Set([...xml.matchAll(/font-family="([^"]+)"/g)].map(match => match[1]))], png: png.bytes };
+  };
+  const differing = (a: Buffer, b: Buffer) => page.evaluate(async ([x, y]) => {
+    const read = async (bytes: number[]) => { const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' })); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d')!; ctx.drawImage(bitmap, 0, 0); return ctx.getImageData(0, 0, canvas.width, canvas.height).data; };
+    const [p, q] = [await read(x), await read(y)]; let count = 0; for (let i = 0; i < p.length; i += 4) if (p[i] !== q[i]) count++; return count;
+  }, [[...a], [...b]]);
+  const serif = await exported();
+  expect(serif.valid).toBe(true);
+  expect(serif.families).toHaveLength(1); expect(serif.families[0]).toMatch(/^&apos;CMU Serif&apos;.*, serif$/);
+  // Regular text and the bold compass letter travel inside the SVG.
+  expect(serif.faces).toEqual(['CMU Serif normal 400', 'CMU Serif normal 700']);
+  expect(serif.label).not.toMatch(/font-weight|font-style/);
+  await page.getByLabel('Bold', { exact: true }).check(); await page.getByLabel('Italic', { exact: true }).check();
+  await expect(label(page)).toHaveCSS('font-weight', '700'); await expect(label(page)).toHaveCSS('font-style', 'italic');
+  const link = await share(page); expect(link.searchParams.get('labelBold')).toBe('1'); expect(link.searchParams.get('labelItalic')).toBe('1');
+  const styled = await exported();
+  expect(styled.label).toContain('font-weight="bold" font-style="italic"');
+  expect(styled.faces).toEqual(['CMU Serif italic 700', 'CMU Serif normal 400', 'CMU Serif normal 700']);
+  expect(await differing(serif.png, styled.png), 'The PNG label is bold and italic').toBeGreaterThan(100);
+  await page.getByLabel('Typeface').selectOption('mono');
+  await expect(label(page)).toHaveCSS('font-family', /^"Fira Code".*, monospace$/);
+  await expect.poll(() => loaded('Fira Code')).toBe(true);
+  expect((await share(page)).searchParams.get('font')).toBe('mono');
+  const mono = await exported();
+  expect(mono.valid).toBe(true); expect(mono.families[0]).toMatch(/^&apos;Fira Code&apos;.*, monospace$/);
+  // Fira Code has no italic design: the italic label slants its upright faces (Latin and Latin Extended).
+  expect(mono.faces).toEqual(['Fira Code normal 700', 'Fira Code normal 700', 'Fira Code normal 400', 'Fira Code normal 400']);
+  expect(await differing(styled.png, mono.png), 'The PNG uses the chosen typeface').toBeGreaterThan(100);
+  await page.getByLabel('Typeface').selectOption('sans');
+  const sans = await exported();
+  expect(sans.families).toEqual(['sans-serif']); expect(sans.embedded).toBe(0);
+  await page.goto(link.href); await expect(label(page)).toHaveCSS('font-weight', '700'); await expect(page.getByLabel('Italic', { exact: true })).toBeChecked();
 });
 
 test('exports offer no grid, border ticks or light grid lines, without an on-image map credit', async ({ page }) => {

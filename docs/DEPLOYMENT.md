@@ -103,6 +103,7 @@ Before deploying, add these project environment variables. Use the
 | Variable | Value | Used by |
 | --- | --- | --- |
 | `VITE_CITY_DATA_BASE_URL` | `https://data.example.com` or your temporary development delivery URL. Leave it unset to use only the bundled city (Monaco) and live roads for the rest. | Browser, embedded during build |
+| `VITE_LIVE_VIEWPORT` | `1` to load live roads by map view, after the [rollout check](LIVE_ROADS.md#rollout); unset keeps one query per city | Browser, embedded during build |
 | `SEARCH_PROVIDER_URL` | `https://nominatim.openstreetmap.org/search` | Search function |
 | `APP_ORIGIN` | Actual production app URL | Search application identification |
 | `R2_ACCOUNT_ID` | Your Cloudflare Account ID | Search function |
@@ -111,8 +112,8 @@ Before deploying, add these project environment variables. Use the
 | `R2_SECRET_ACCESS_KEY` | Search credential's Secret Access Key | Search function |
 
 Leave `VITE_SEARCH_URL` blank to use same-origin `/api/search`. Leave
-`VITE_OVERPASS_URL`, `VITE_AREA_SERVER` and `SEARCH_PROVIDER_API_KEY` blank for
-this setup. Do not set `VITE_TEST_FIXTURES`: it enables synthetic sample maps
+`VITE_OVERPASS_URL`, `VITE_OVERPASS_CONCURRENCY`, `VITE_AREA_SERVER` and
+`SEARCH_PROVIDER_API_KEY` blank for this setup. Do not set `VITE_TEST_FIXTURES`: it enables synthetic sample maps
 meant only for tests, and the normal build ships none. `R2_DATA_BUCKET` is a local publisher
 setting and is not required by Vercel.
 
@@ -284,7 +285,8 @@ eligible. The app validates decoded hashes, fragment continuity and complete
 counts. Before a revision is selected, an absent, unreachable, slow (8 s) or
 invalid latest pointer falls back to live roads; a selected or pinned revision that
 fails delivery or validation fails visibly instead of mixing sources. Reopen a shared design and download a small PNG/SVG to
-confirm the deployed API, data and export paths.
+confirm the deployed API, data and export paths. With `VITE_LIVE_VIEWPORT=1`, also
+follow the [live roads rollout check](LIVE_ROADS.md#rollout).
 
 `api/search.ts` imports server modules with `.ts` extensions, which local Node 24
 runs directly. Vercel compiles the function with the nearest tsconfig,
@@ -305,7 +307,8 @@ changing build/server environment settings. The checked production `dist` is
 also retained by CI as `citymap-vercel`; it contains frontend assets, while a
 complete Vercel deployment must include the source API function as well.
 
-Roll back the app to a previous Vercel deployment. Roll back a city by publishing
+Roll back the app to a previous Vercel deployment. To return from live roads by
+map view to one query per city, unset `VITE_LIVE_VIEWPORT` and redeploy. Roll back a city by publishing
 its retained manifest again; immutable chunk bytes are never replaced. For a
 catalog rollback, supply the complete retained city set. Keep raw extracts,
 build logs, local plans and private search state outside the public bucket.

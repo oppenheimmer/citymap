@@ -7,6 +7,11 @@ function withinIdle<T>(read: Promise<T>, ms: number): Promise<T> {
   return Promise.race([read, stalled]).finally(() => clearTimeout(timer));
 }
 
+/** A response body larger than its byte limit. */
+export class ResponseLimitError extends Error {
+  constructor() { super('Data response exceeds the byte limit. Choose a smaller area.'); this.name = 'ResponseLimitError'; }
+}
+
 /**
  * Bound streamed bodies even when Content-Length is absent or compressed. A steadily
  * arriving body may take as long as it needs; a stall longer than `idleMs` fails.
@@ -22,7 +27,7 @@ export async function responseBytes(response: Response, limit: number, progress?
       const part = await withinIdle(reader.read(), idleMs);
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > limit) throw new Error('Data response exceeds the byte limit. Choose a smaller area.');
+      if (bytes > limit) throw new ResponseLimitError();
       parts.push(part.value);
       progress?.(bytes);
     }

@@ -31,7 +31,7 @@ export const SCALE_BAR = { maxLength: 140, font: 10, tooth: 6, stroke: 1.25 } as
 const TOP_TEXT = 5, RAIL = 19, BOTTOM_TEXT = 33, HEIGHT = 38;
 const label = (value: number) => String(Math.round(value));
 
-// About 0.6 em per character in the sans-serif labels.
+// About 0.6 em per character: the widest map typeface, monospace, and slightly over the others.
 const labelWidth = (text: string) => text.length * SCALE_BAR.font * 0.6;
 // The larger unit is used when at least two whole units fit; otherwise the smaller one.
 // Steps too narrow for their neighbouring labels are skipped; when no two-step scale is

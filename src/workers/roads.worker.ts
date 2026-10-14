@@ -8,6 +8,7 @@ import { overpassQuery, roadRank } from '../lib/domain.ts';
 import { BUNDLED_CITIES } from '../lib/bundled-cities.ts';
 import type { LoadProgress, RoadDetail, RoadRank, SourceInfo } from '../lib/domain.ts';
 import { RequestError, request } from '../lib/request.ts';
+import { classifyRemark, sanitizeRemark } from '../lib/live/overpass.ts';
 import type { WorkerCommand, WorkerLoad, WorkerResult } from '../lib/worker-protocol.ts';
 
 const scope = self as unknown as { onmessage: (event: MessageEvent<WorkerCommand>) => void; postMessage: (message: WorkerResult, transfer?: Transferable[]) => void };
@@ -166,7 +167,19 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   return { kind: 'r2', downloadedAt: new Date().toISOString(), snapshotAt: manifest.source.snapshot_at, revision: manifest.dataset_revision, manifestSha256: pointer.manifest_sha256, complete: true, bundled: load.providers.cityDataBundled || undefined };
 }
 
-async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
+/** A provider remark, kept as a sanitized diagnostic for development logs only. */
+class ProviderRemark extends Error {
+  readonly diagnostic: string;
+  constructor(remark: string) {
+    // Overpass reports timeouts and memory exhaustion as remarks; the area is then too large.
+    super(classifyRemark(remark) === 'timeout_or_resource_limit'
+      ? 'The road provider ran out of time or memory for this area. Choose a smaller area or less road detail.'
+      : 'The road provider could not complete this query. Retry or choose a smaller area.');
+    this.diagnostic = sanitizeRemark(remark);
+  }
+}
+
+async function loadRoads(load: WorkerLoad): Promise<SourceInfo | 'viewport'> {
   if (load.fixtureUrl) {
     progress({ stage: 'download', message: 'Loading sample roads…' });
     const data = json(await downloaded(load.fixtureUrl, { cache: load.forceNetwork ? 'reload' : 'default' }, MAX_BYTES, undefined, (bytes, total, final) => reportBytes('Loading sample roads…', bytes, total, {}, final)));
@@ -202,6 +215,8 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
       progress({ stage: 'cache', message: 'Legacy city cache is unavailable. Loading live roads…' });
     }
   }
+  // Without a stored dataset, live roads load by map view in bounded cells instead.
+  if (load.viewport) return 'viewport';
   // Overpass computes the whole query before streaming, so this wait can be long and silent.
   progress({ stage: 'download', message: 'Waiting for the road service…' });
   if (!load.allowLarge) { scope.postMessage({ type: 'large', bytes: 0 }); throw new Error('Live download needs confirmation'); }
@@ -216,7 +231,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo> {
   liveBytes(body.byteLength, true);
   preparation.downloadMs += performance.now() - downloadStarted;
   const data = json(body);
-  if (typeof data.remark === 'string') throw new Error('The road provider could not complete this query. Retry or choose a smaller area.');
+  if (typeof data.remark === 'string') throw new ProviderRemark(data.remark);
   progress({ stage: 'project', message: 'Indexing and projecting roads…' });
   let geometry: ReturnType<typeof osmGeometry>;
   try { geometry = preparedJson(data); }
@@ -238,5 +253,7 @@ scope.onmessage = async event => {
   }
   if (started) return;
   started = true;
-  loadRoads(event.data as WorkerLoad).then(source => scope.postMessage({ type: 'done', source, segmentCount, coverage, preparation })).catch(error => { if (!abort.signal.aborted) scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : 'Road loading failed' }); });
+  loadRoads(event.data as WorkerLoad).then(source => scope.postMessage(source === 'viewport' ? { type: 'viewport' } : { type: 'done', source, segmentCount, coverage, preparation })).catch(error => {
+    if (!abort.signal.aborted) scope.postMessage({ type: 'error', message: error instanceof Error ? error.message : 'Road loading failed', diagnostic: error instanceof ProviderRemark ? error.diagnostic : undefined });
+  });
 };

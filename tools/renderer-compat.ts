@@ -36,6 +36,18 @@ export function rendererCompat(): Plugin {
         const expected = id.endsWith('/build/wgl.module.js') ? 2 : 1;
         if (code.match(data)?.length !== expected) throw new Error('Review renderer buffer-view compatibility before changing w-gl.');
         code = code.replace(data, '$1wireCollection.positions;');
+        // Live map regions are removed one at a time, but dispose() also deletes the shader
+        // program that every other collection shares. Release only this collection's buffers.
+        let released = 0;
+        for (const [factory, buffers] of [['makeWireProgram', 'gl.deleteBuffer(lineBuffer);'], ['makeThickWireProgram', 'gl.deleteBuffer(lineBuffer); gl.deleteBuffer(positionBuffer);']]) {
+          const start = code.indexOf(`function ${factory}(`);
+          if (start < 0) continue;
+          const api = code.indexOf('var api = {', start), returned = code.indexOf('return api;', api);
+          if (api < 0 || returned < 0) throw new Error('Review renderer buffer release compatibility before changing w-gl.');
+          code = `${code.slice(0, api)}var api = { release: releaseBuffers,${code.slice(api + 11, returned)}return api;\n    function releaseBuffers() { ${buffers} }${code.slice(returned + 11)}`;
+          released++;
+        }
+        if (released !== expected) throw new Error('Review renderer buffer release compatibility before changing w-gl.');
       }
       return { code, map: null };
     },

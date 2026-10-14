@@ -29,7 +29,7 @@ async function run(t: TestContext, load: Partial<WorkerLoad>, route: Route) {
   const messages: WorkerResult[] = [];
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
-  const scope = { onmessage: undefined as undefined | ((event: { data: unknown }) => void), postMessage(message: WorkerResult) { messages.push(message); if (message.type === 'done' || message.type === 'error') finish(); } };
+  const scope = { onmessage: undefined as undefined | ((event: { data: unknown }) => void), postMessage(message: WorkerResult) { messages.push(message); if (message.type === 'done' || message.type === 'error' || message.type === 'viewport') finish(); } };
   Object.defineProperty(globalThis, 'self', { value: scope, configurable: true });
   t.after(() => { Reflect.deleteProperty(globalThis, 'self'); });
   const requests: string[] = [];
@@ -112,4 +112,26 @@ test('a bundled-only data origin serves its own cities and is never probed for o
   const other = await run(t, { boundary: { key: 'osm-relation-77', name: 'Elsewhere', kind: 'city', areaId: '3600000077' }, providers }, fromShipped);
   assert.deepEqual(other.requests, [overpass]);
   assert.equal(other.messages.at(-1)!.type, 'done');
+});
+
+test('viewport loads hand over to live cells instead of querying the whole area, after stored datasets are tried', async t => {
+  const { messages, requests } = await run(t, { viewport: true, boundary: { key: 'osm-relation-88', name: 'Elsewhere', kind: 'city', areaId: '3600000088' }, allowLarge: false }, url => url.endsWith('/latest.json') ? new Response('', { status: 404 }) : r2(url));
+  assert.deepEqual(messages.at(-1), { type: 'viewport' });
+  assert.ok(!requests.includes(overpass), 'No whole-area live query is sent');
+  assert.ok(requests.some(url => url.endsWith('/latest.json')), 'A favourite city dataset is still looked up first');
+  // A stored favourite still wins over live loading.
+  const stored = await run(t, { viewport: true }, r2);
+  const done = stored.messages.at(-1)!;
+  assert.ok(done.type === 'done' && done.source.kind === 'r2');
+});
+
+test('provider remarks report resource limits with a sanitized development diagnostic', async t => {
+  const { messages } = await run(t, { useCache: false }, () => new Response(JSON.stringify({ elements: [], remark: 'runtime error: Query timed out in "query" at line 1 after 121 seconds.\n<b>' })));
+  const error = messages.at(-1)!;
+  assert.equal(error.type, 'error');
+  if (error.type === 'error') {
+    assert.match(error.message, /ran out of time or memory/);
+    assert.doesNotMatch(error.message, /runtime error/);
+    assert.equal(error.diagnostic, 'runtime error: Query timed out in "query" at line 1 after 121 seconds. <b>');
+  }
 });

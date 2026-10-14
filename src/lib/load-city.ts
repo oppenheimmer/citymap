@@ -5,9 +5,12 @@ import type { WorkerLoad, WorkerResult } from './worker-protocol.ts';
 
 export interface LoadCallbacks {
   progress(progress: LoadProgress): void;
+  /** No stored dataset applies: load live roads by map view. Only sent for `viewport` loads. */
+  viewport?(): Promise<void> | void;
   chunk(positions: Float32Array, bounds: Geometry['bounds'], origin: Origin, rank: RoadRank): Promise<void>;
   done(geometry: Geometry): Promise<void>;
-  error(message: string): void;
+  /** `diagnostic` is sanitized provider detail for development logs, never for display. */
+  error(message: string, diagnostic?: string): void;
   large(bytes: number): void;
 }
 
@@ -17,7 +20,8 @@ export interface LoadCallbacks {
  */
 async function cachedCity(options: WorkerLoad): Promise<Geometry | undefined> {
   const { key, revision, manifestSha256 } = options.boundary;
-  const usable = (geometry: Geometry | undefined) => geometry && covers(geometry.coverage, options.detail) ? geometry : undefined;
+  // Whole-area live geometry saved before viewport loading is not reused by it.
+  const usable = (geometry: Geometry | undefined) => geometry && covers(geometry.coverage, options.detail) && !(options.viewport && geometry.source.kind === 'live') ? geometry : undefined;
   if (!revision) return usable(await getCity(key));
   const pinned = await getCity(`${key}@${revision}`);
   if (pinned) return pinned;
@@ -82,8 +86,12 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
             if ('requestIdleCallback' in window) window.requestIdleCallback(persist, { timeout: 2000 });
             else setTimeout(persist, 0);
           }
+        } else if (message.type === 'viewport') {
+          worker?.terminate(); worker = undefined;
+          if (!options.viewport || !callbacks.viewport || buffers.length) throw new Error('Live map loading is unavailable');
+          await callbacks.viewport();
         } else if (message.type === 'large') { stop(); callbacks.large(message.bytes); }
-        else if (message.type === 'error') { stop(); callbacks.error(message.message); }
+        else if (message.type === 'error') { stop(); callbacks.error(message.message, message.diagnostic); }
       }).catch(error => { if (!disposed) { stop(); callbacks.error(error instanceof Error ? error.message : 'City loading failed'); } });
     };
     worker.onerror = () => { if (!disposed) { stop(); callbacks.error('Background processing failed. Retry or choose a smaller area.'); } };

@@ -18,6 +18,8 @@ if (entry) {
   check(!source.includes('Small sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data'), 'Test sample controls/provider absent');
   const env = { ...loadEnv('production', process.cwd(), ''), ...process.env };
   for (const key of ['R2_SECRET_ACCESS_KEY', 'R2_ACCESS_KEY_ID', 'SEARCH_PROVIDER_API_KEY']) if (env[key]) check(!source.includes(env[key]), `${key} stays server-only`);
+  check(['', '0', '1'].includes(env.VITE_LIVE_VIEWPORT || ''), 'Live viewport flag is 1 or unset');
+  check(!env.VITE_OVERPASS_CONCURRENCY || /^[1-4]$/.test(env.VITE_OVERPASS_CONCURRENCY), 'Live road concurrency is 1–4');
   if (!values.offline) {
     const provider = new URL(env.SEARCH_PROVIDER_URL || 'https://nominatim.openstreetmap.org/search');
     check(provider.protocol === 'https:', 'HTTPS production search provider');
@@ -29,8 +31,11 @@ if (entry) {
     if (env.VITE_CITY_DATA_BASE_URL) check(new URL(env.VITE_CITY_DATA_BASE_URL).protocol === 'https:', 'HTTPS public R2 delivery origin');
   }
 }
-for (const name of ['roads.worker-', 'svg.worker-', 'SceneController-', 'exports-']) check(files.some(file => file.startsWith(name)), `${name} lazy artifact`);
+for (const name of ['roads.worker-', 'svg.worker-', 'cells.worker-', 'viewport-', 'SceneController-', 'exports-']) check(files.some(file => file.startsWith(name)), `${name} lazy artifact`);
 check(!(await readdir('dist')).includes('fixtures'), 'No sample fixtures ship');
+// Map typefaces ship as hashed same-origin assets, with their Open Font Licenses.
+check(['cmu-serif-regular-', 'cmu-serif-bold-italic-', 'fira-code-latin-400-'].every(name => files.some(file => file.startsWith(name) && file.endsWith('.woff2'))), 'Map typefaces ship');
+for (const license of ['CMU-Serif-OFL.txt', 'Fira-Code-OFL.txt']) check(await readFile(`dist/fonts/${license}`, 'utf8').then(text => text.includes('SIL OPEN FONT LICENSE'), () => false), `${license} ships`);
 for (const key of BUNDLED_CITIES) check(await readFile(`dist/data/v2/cities/${key}/latest.json`).then(() => true, () => false), `Bundled ${key} ships`);
 const config = JSON.parse(await readFile('vercel.json', 'utf8'));
 check(config.outputDirectory === 'dist' && config.installCommand === 'npm ci', 'Vercel single-package build');

@@ -32,7 +32,7 @@ function pixel(camera: ReturnType<typeof monaco>['camera'], width: number, heigh
   return [width / 2 + (dx * Math.cos(r) + dy * Math.sin(r)) * unit, height / 2 - (-dx * Math.sin(r) + dy * Math.cos(r)) * unit];
 }
 
-for (const rotation of [0, 90, 30]) test(`meridians and parallels pass through the coordinates they label at ${rotation}°`, () => {
+for (const rotation of [0, 90, 30, -30, -90]) test(`meridians and parallels pass through the coordinates they label at ${rotation}°`, () => {
   const { projection, camera, centre } = monaco(1200, 900);
   const lines = graticule(camera, centre, 1200, 900, rotation);
   assert.ok(lines.filter(line => line.axis === 'lon').length >= 3 && lines.filter(line => line.axis === 'lat').length >= 3);
@@ -46,6 +46,8 @@ for (const rotation of [0, 90, 30]) test(`meridians and parallels pass through t
     assert.ok(Math.abs((px - line.point[0]) * line.direction[1] - (py - line.point[1]) * line.direction[0]) < 1e-6);
   }
   if (rotation === 90) { assert.deepEqual(meridian.direction.map(v => Math.round(v) + 0), [1, 0]); assert.deepEqual(parallel.direction.map(v => Math.round(v) + 0), [0, 1]); }
+  // A counter-clockwise quarter turn also lays meridians across the frame.
+  if (rotation === -90) { assert.equal(Math.abs(Math.round(meridian.direction[0])), 1); assert.equal(Math.abs(Math.round(parallel.direction[1])), 1); }
 });
 
 test('north-up ticks: teeth on every border, labels at the tooth tips, perpendicular to them', () => {
@@ -87,7 +89,7 @@ const family = (tooth: { x1: number; y1: number; x2: number; y2: number }, rotat
   const r = rotation * Math.PI / 180, d = [tooth.x2 - tooth.x1, tooth.y2 - tooth.y1], len = Math.hypot(d[0], d[1]);
   return Math.abs((d[0] * Math.sin(r) - d[1] * Math.cos(r)) / len) > 0.999 ? 'lon' : 'lat';
 };
-for (const rotation of [0, 30, 45, 60, 90, 120, 150, 180]) test(`at ${rotation}° each edge pair carries only longitudes or only latitudes`, () => {
+for (const rotation of [0, 30, 45, 60, 90, 120, 150, 180, -30, -60, -120, -180]) test(`at ${rotation}° each edge pair carries only longitudes or only latitudes`, () => {
   const width = 1000, height = 800, { camera, centre } = monaco(width, height);
   const upright = Math.abs(Math.cos(rotation * Math.PI / 180)) >= Math.abs(Math.sin(rotation * Math.PI / 180)) - 1e-9;
   // Longitudes along the width (top/bottom) while meridians are closer to vertical.

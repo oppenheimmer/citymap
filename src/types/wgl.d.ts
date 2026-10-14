@@ -2,6 +2,7 @@ declare module 'w-gl' {
   export interface ViewBox { left: number; right: number; top: number; bottom: number }
   export interface Scene {
     appendChild(child: WireCollection): void;
+    removeChild(child: WireCollection): void;
     setViewBox(box: ViewBox): void;
     setClearColor(r: number, g: number, b: number, a: number): void;
     setPixelRatio(ratio: number): void;

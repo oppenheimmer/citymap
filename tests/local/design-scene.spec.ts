@@ -166,6 +166,32 @@ test('map rotation turns the map and compass, keeps the view, survives links and
   await sample(page); await expect(page.getByLabel('Map rotation')).toHaveValue('0');
 });
 
+test('the map also turns left from a slider that starts at 0°, and links and exports keep the direction', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const rotation = page.getByLabel('Map rotation', { exact: true }), left = page.getByRole('radio', { name: 'Left' }), right = page.getByRole('radio', { name: 'Right' });
+  // The slider starts at its left end, 0°, in either direction.
+  await expect(rotation).toHaveAttribute('min', '0'); await expect(rotation).toHaveValue('0'); await expect(right).toBeChecked();
+  await expect(rotation).toHaveAttribute('aria-valuetext', 'not rotated');
+  await left.check(); await expect(rotation).toHaveValue('0'); await expect(rotation).toHaveAttribute('aria-valuetext', 'not rotated');
+  await slider(page, 'Map rotation', 45);
+  await expect(page.locator('output[for="rotation"]')).toHaveText('45°');
+  await expect(rotation).toHaveAttribute('aria-valuetext', '45 degrees counter-clockwise');
+  // rotate(-45deg) is the matrix cos 45°, −sin 45°, sin 45°, cos 45°.
+  await expect(page.getByRole('button', { name: /^North arrow/ }).locator('svg')).toHaveCSS('transform', /^matrix\(0\.707\d*, -0\.707\d*, 0\.707\d*, 0\.707\d*, 0, 0\)$/);
+  const link = await share(page); expect(link.searchParams.get('rotation')).toBe('-45');
+  // Switching direction keeps the angle and turns the other way.
+  await right.check(); await expect(rotation).toHaveValue('45');
+  expect((await share(page)).searchParams.get('rotation')).toBe('45');
+  await page.goto(link.href); await expect(status(page)).toContainText('ready');
+  await expect(rotation).toHaveValue('45'); await expect(left).toBeChecked();
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
+  expect((await readFile((await (await pending).path())!)).toString('utf8')).toMatch(/scale\([\d.]+\) rotate\(-45 /);
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  // A new city starts unrotated, turning right.
+  await sample(page); await expect(rotation).toHaveValue('0'); await expect(right).toBeChecked();
+});
+
 test('saved designs restore settings after reload and can be deleted; no recent-city list is shown', async ({ page }) => {
   await page.goto('/'); await sample(page); await page.getByLabel('Label text').fill('Saved 東京'); await page.getByRole('button', { name: 'Night', exact: true }).click(); await page.getByRole('button', { name: 'Save design', exact: true }).click();
   await page.goto('/'); await detail(page, 'Saved designs'); await page.getByRole('button', { name: 'Saved 東京', exact: true }).click(); await expect(status(page)).toContainText('ready'); await expect(page.getByLabel('Road color')).toHaveValue('#e1e7d9');

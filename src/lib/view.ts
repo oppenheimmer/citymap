@@ -4,10 +4,10 @@ import type { Camera, GeoView, Origin } from './domain.ts';
 // rotated to the origin longitude, centred on the origin latitude and y-flipped for the scene.
 // Mercator is linear in longitude, so changing the origin only translates the scene.
 export const SCALE = 6371393;
-const TX = 480, TY = 250, RAD = Math.PI / 180;
+export const TX = 480, TY = 250, RAD = Math.PI / 180;
 export const MAX_LATITUDE = 85.0511;
 
-const mercator = (lat: number) => Math.log(Math.tan(Math.PI / 4 + lat * RAD / 2));
+export const mercator = (lat: number) => Math.log(Math.tan(Math.PI / 4 + lat * RAD / 2));
 export const wrapLongitude = (lon: number) => ((lon + 540) % 360 + 360) % 360 - 180;
 
 export function viewFromCamera(camera: Camera, origin: Origin): GeoView {
@@ -21,6 +21,18 @@ export function fitCamera(camera: Camera, aspect: number): Camera {
   const height = Math.max(camera.top - camera.bottom, (camera.right - camera.left) / aspect);
   const cx = (camera.left + camera.right) / 2, cy = (camera.top + camera.bottom) / 2;
   return { left: cx - height * aspect / 2, right: cx + height * aspect / 2, bottom: cy - height / 2, top: cy + height / 2 };
+}
+
+/**
+ * Scene-space corners of `camera` shown at a clockwise `rotation` in degrees, with its
+ * extents scaled by `scale`. Clockwise from the top left of the screen, as exports draw it.
+ */
+export function frameCorners(camera: Camera, rotation = 0, scale = 1): [number, number][] {
+  const cx = (camera.left + camera.right) / 2, cy = (camera.top + camera.bottom) / 2;
+  const hw = (camera.right - camera.left) * scale / 2, hh = (camera.top - camera.bottom) * scale / 2;
+  const r = rotation * RAD, cos = Math.cos(r), sin = Math.sin(r);
+  // Inverse of the export transform: screen right/up offsets (u, v) to scene offsets.
+  return ([[-hw, hh], [hw, hh], [hw, -hh], [-hw, -hh]] as const).map(([u, v]) => [cx + u * cos - v * sin, cy + u * sin + v * cos]);
 }
 
 export function cameraFromView(view: GeoView, origin: Origin): Camera {

@@ -81,3 +81,26 @@ for (const [file, factory] of [
   collection.isDirtyBuffer = true; draw();
   assert.deepEqual(received, [[-1, 0, 1, 0], [-1, 0, 1, 0]]);
 });
+
+test('build/wgl.module.js wire programs release only their own buffers, keeping the shared shader program', async () => {
+  const { code } = await transform('build/wgl.module.js', '?v=local-test');
+  for (const [factory, end, buffers] of [['makeWireProgram', 'function getShadersCode$1(', 1], ['makeThickWireProgram', 'function getShadersCode$2(', 2]] as const) {
+    const start = code.indexOf(`function ${factory}(`), stop = code.indexOf(end, start);
+    assert.ok(start > 0 && stop > start);
+    const cache = { get: () => undefined, set: () => {}, remove: () => {} };
+    const glUtils = { compile: () => ({}), link: () => ({ program: true }), getLocations: () => ({ attributes: {}, uniforms: {} }) };
+    const make = new Function('lineProgramCache', 'lineProgramCache$1', 'getShadersCode$1', 'getShadersCode$2', 'glUtils', `${code.slice(start, stop)} return ${factory};`)(cache, cache, () => ({}), () => ({}), glUtils);
+    const deleted: unknown[] = [], programs: unknown[] = [];
+    let created = 0;
+    const gl = new Proxy({ createBuffer: () => ({ buffer: ++created }), deleteBuffer: (buffer: unknown) => deleted.push(buffer), deleteProgram: (program: unknown) => programs.push(program), getExtension: () => ({}) }, { get: (target, key) => Reflect.get(target, key) || (() => {}) });
+    const program = make(gl, { allowColors: false, is3D: false, width: 2 });
+    program.release();
+    assert.deepEqual(deleted, Array.from({ length: buffers }, (_, i) => ({ buffer: i + 1 })));
+    assert.deepEqual(programs, [], 'The shared shader program stays usable by other collections');
+  }
+});
+for (const file of ['src/lines/makeWireProgram.ts', 'src/lines/makeThickWireProgram.ts']) test(`${file} exposes a buffer-only release`, async () => {
+  const { code } = await transform(file, '?v=local-test');
+  assert.match(code, /var api = \{ release: releaseBuffers,/);
+  assert.match(code, /function releaseBuffers\(\) \{ gl\.deleteBuffer\(lineBuffer\);/);
+});

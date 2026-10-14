@@ -1,6 +1,7 @@
 import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
-import type { Geometry } from './domain.ts';
+import type { Geometry, MapFont } from './domain.ts';
+import { canvasFont, embeddedFonts, exportFaces, loadFonts } from './fonts.ts';
 import { EXPORT_BORDER, placeMarks } from './marks.ts';
 import type { Centre, Size } from './marks.ts';
 import { NORTH_ARROW } from './north-arrow.ts';
@@ -11,7 +12,7 @@ import { fitCamera } from './view.ts';
 export { download } from './download.ts';
 
 export interface ExportOptions { width: number; height: number; transparent: boolean; grid: GridOptions }
-function dimensions(options: ExportOptions) {
+export function checkDimensions(options: ExportOptions) {
   if (!Number.isSafeInteger(options.width) || !Number.isSafeInteger(options.height) || options.width < 256 || options.height < 256 || options.width > 8192 || options.height > 8192 || options.width * options.height > 16_777_216) throw new Error('Export dimensions must be 256–8192 pixels and at most 16 megapixels.');
 }
 async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: AbortSignal): Promise<Blob> {
@@ -26,7 +27,10 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
     });
     void result.catch(() => {});
     const scale = options.width / snapshot.width;
-    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, centre: { lon: snapshot.view.lon, lat: snapshot.view.lat }, scale, labelSize: snapshot.design.label.size * scale, strokeWidth: scale / snapshot.pixelRatio });
+    // The chosen typeface travels inside the file, so viewers without it draw the same text.
+    const fonts = await embeddedFonts(snapshot.design.font, exportFaces(snapshot.design, options.grid.mode !== 'none'), signal);
+    signal?.throwIfAborted();
+    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, centre: { lon: snapshot.view.lon, lat: snapshot.view.lat }, scale, labelSize: snapshot.design.label.size * scale, strokeWidth: scale / snapshot.pixelRatio, fonts }, fonts.map(font => font.bytes));
     for (const buffer of snapshot.buffers) {
       signal?.throwIfAborted();
       // Bounded copies preserve screen/export geometry ownership and allow UI feedback.
@@ -41,7 +45,7 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
   } finally { if (abort) signal?.removeEventListener('abort', abort); worker.terminate(); }
 }
 
-function drawGrid(context: CanvasRenderingContext2D, grid: GridDrawing, ink: string) {
+function drawGrid(context: CanvasRenderingContext2D, grid: GridDrawing, ink: string, font: MapFont) {
   context.save();
   context.strokeStyle = context.fillStyle = ink; context.lineWidth = grid.lineWidth;
   const stroke = (lines: GridDrawing['lines'], alpha: number) => {
@@ -51,7 +55,7 @@ function drawGrid(context: CanvasRenderingContext2D, grid: GridDrawing, ink: str
     context.stroke();
   };
   stroke(grid.lines, grid.lineOpacity); stroke(grid.teeth, 1);
-  context.globalAlpha = 1; context.font = `${grid.font}px sans-serif`; context.textAlign = 'center'; context.textBaseline = 'middle';
+  context.globalAlpha = 1; context.font = canvasFont(font, { weight: 400, italic: false }, grid.font); context.textAlign = 'center'; context.textBaseline = 'middle';
   for (const text of grid.texts) {
     context.save(); context.translate(text.x, text.y); context.rotate(text.angle * Math.PI / 180);
     context.fillText(text.text, 0, 0);
@@ -61,10 +65,14 @@ function drawGrid(context: CanvasRenderingContext2D, grid: GridDrawing, ink: str
 }
 
 export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions, format: 'png' | 'svg', signal?: AbortSignal): Promise<Blob> {
-  dimensions(options);
+  checkDimensions(options);
   await document.fonts.ready;
   signal?.throwIfAborted();
   if (format === 'svg') return svg(snapshot, options, signal);
+  // Canvas text draws with whatever font is ready, so load each face it uses first.
+  const font = snapshot.design.font;
+  await loadFonts(font, exportFaces(snapshot.design, options.grid.mode !== 'none'));
+  signal?.throwIfAborted();
   const canvas = document.createElement('canvas');
   canvas.width = options.width; canvas.height = options.height;
   const geometry: Geometry = { buffers: [], ranks: [], coverage: 'all', bounds: snapshot.bounds, origin: [0, 0], segmentCount: 0, source: { kind: 'live', complete: true, downloadedAt: '' } };
@@ -86,12 +94,12 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     const bar = snapshot.design.scaleBar ? scaleBar(fittedWidth(snapshot.camera, options.width / options.height) / options.width * metresPerSceneUnit(snapshot.view.lat) * scale) : undefined;
     const area = { width: options.width, height: options.height };
     const grid = gridDrawing(fitCamera(snapshot.camera, options.width / options.height), snapshot.view, options.width, options.height, scale, options.grid, EXPORT_BORDER, snapshot.design.rotation || 0);
-    if (grid) drawGrid(context, grid, snapshot.design.roadColor);
+    if (grid) drawGrid(context, grid, snapshot.design.roadColor, font);
     // Marks and the label move inward a few pixels when they would cover grid teeth or labels.
     const placed = placeMarks(snapshot.design, area, scale, bar, grid?.keepouts, 4 * Math.max(1, scale));
     const c = color(label.color, label.opacity);
     context.fillStyle = `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`;
-    context.font = `${label.size * scale}px sans-serif`;
+    context.font = canvasFont(font, { weight: label.bold ? 700 : 400, italic: !!label.italic }, label.size * scale);
     context.textAlign = 'center'; context.textBaseline = 'middle';
     context.fillText(label.text, placed.label.x, placed.label.y);
     // Marks are CSS-pixel geometry, laid out as on screen and scaled to the export.
@@ -111,7 +119,7 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
       const rose = new Path2D(path);
       for (const circle of circles) { rose.moveTo(circle.cx + circle.r, circle.cy); rose.arc(circle.cx, circle.cy, circle.r, 0, 2 * Math.PI); }
       context.stroke(rose);
-      context.font = `bold ${letter.size}px sans-serif`;
+      context.font = canvasFont(font, { weight: 700, italic: false }, letter.size);
       context.fillText('N', letter.x, letter.y);
     });
     if (bar && placed.scaleBar) mark(placed.scaleBar, bar, () => {
@@ -119,7 +127,7 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
       context.beginPath();
       for (const line of bar.lines) { context.moveTo(line.x1, line.y1); context.lineTo(line.x2, line.y2); }
       context.stroke();
-      context.font = `${SCALE_BAR.font}px sans-serif`;
+      context.font = canvasFont(font, { weight: 400, italic: false }, SCALE_BAR.font);
       for (const text of bar.texts) context.fillText(text.text, text.x, text.y);
     });
     context.strokeStyle = snapshot.design.roadColor; context.lineWidth = EXPORT_BORDER;

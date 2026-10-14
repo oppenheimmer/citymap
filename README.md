@@ -49,8 +49,13 @@ Maps default to street-level road detail; footpaths, sidewalks and service ways
 are optional, and live loads download only the classes shown. A minimal compass
 rose and a railway-style scale bar (whole kilometres or metres above, miles or feet
 below, measured at the map centre) can be dragged anywhere on the map; the scale
-bar sits below the compass until moved. A rotation slider (0–180°) turns the map to
-fill the frame, and the compass keeps pointing at map north. Exports carry both
+bar sits below the compass until moved. A rotation slider (0–180°, starting at 0°)
+turns the map right (clockwise) or left (counter-clockwise) to fill the frame, and
+the compass keeps pointing at map north. Links store the turn as one signed angle. Map text (label, compass, scale bar and grid
+labels) uses Computer Modern (CMU Serif) by default, Fira Code or sans-serif, and the
+label can be bold and italic. Fira Code has no italic design, so its italic is
+slanted. The fonts are self-hosted, load only when used, and are embedded in SVG
+exports, so the files look the same in any browser. Exports carry both
 marks and a 3 px road-colour border, with an optional latitude/longitude grid: ticks
 on the border or light grid lines at a chosen opacity, labelled in degrees and
 minutes (decimal minutes, never seconds). Labels sit at the tooth tips,
@@ -63,6 +68,19 @@ it in the sidebar footer), so credit OpenStreetMap wherever you share them.
 On desktop the options sidebar collapses to a menu button.
 Version-1 data sources and older query
 links remain supported as data compatibility, without Vue code or dependencies.
+
+## Live roads by map view
+
+With `VITE_LIVE_VIEWPORT=1`, cities without a stored dataset load live roads for
+the area on screen instead of one whole-city query, which public Overpass may be
+unable to complete for large cities at street detail. A search opens a bounded view
+of the city centre; panning and zooming load neighbouring map regions within 50 km
+of where the map started, one road class at a time, at most one request at a time. Dense regions split, rate limits
+pause loading, and regions far behind the view are evicted from memory and the GPU.
+Exports first load every region of their exact frame and refuse to save a map
+with missing roads. Only explicitly published favourite cities live in R2.
+[How it works, limits, rollout and rollback](docs/LIVE_ROADS.md). The feature is off
+by default.
 
 ## Local tests without deployed services
 
@@ -158,3 +176,5 @@ No account resources have been provisioned by the documentation.
 
 Code: [MIT](https://opensource.org/license/mit).
 Map data: [© OpenStreetMap contributors, ODbL](https://www.openstreetmap.org/copyright).
+Fonts: CMU Serif (Computer Modern Unicode, Andrey V. Panov et al.) and Fira Code (The
+Fira Code Project Authors), each under the [SIL Open Font License 1.1](public/fonts/).
