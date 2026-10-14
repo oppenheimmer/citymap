@@ -8,7 +8,8 @@ import { parseCellQuery, syntheticCell } from './live-roads.ts';
 // `dense`: live cell queries wider than this many degrees of longitude time out, as dense areas can.
 // `match`: the scenario applies only to road queries containing this text; others succeed.
 // `blocked`: refuse without CORS headers, so browsers see a network failure, as with a blocked connection.
-interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; trickle?: number; failures?: number; retryAfter?: string; dense?: number; match?: string; blocked?: boolean }
+// `slotWait`: the Overpass-style status page (/status) says a slot frees in this many seconds; otherwise slots are free.
+interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; trickle?: number; failures?: number; retryAfter?: string; dense?: number; match?: string; blocked?: boolean; slotWait?: number }
 interface SearchCall { query: string; userAgent?: string; format: string | null; limit: string | null }
 let scenarios: { search: Scenario; roads: Scenario } = { search: {}, roads: {} };
 const realCity = buildDataset(JSON.parse(gunzipSync(await readFile(new URL('../fixtures/real-city/monaco.json.gz', import.meta.url))).toString('utf8')), 2048);
@@ -16,7 +17,7 @@ const dataObjects = new Map(realCity.objects.map(object => [object.key, object])
 let corruptData = false;
 // Dataset pointer failure: an HTTP status, or a 404 without CORS headers (a browser network error).
 let pointerFailure: number | 'cors' | undefined;
-let searches: SearchCall[] = [], roads: string[] = [], aborted = 0, blocked: string[] = [], datasets: string[] = [];
+let searches: SearchCall[] = [], roads: string[] = [], aborted = 0, blocked: string[] = [], datasets: string[] = [], statusChecks = 0;
 const proxy = providerProxy(['http://127.0.0.1:8082', 'http://127.0.0.1:8091'], target => blocked.push(target));
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:8082');
@@ -25,9 +26,15 @@ const server = createServer(async (req, res) => {
   try {
     let input = ''; for await (const bytes of req) { input += bytes; if (input.length > 2 * 1024 * 1024) throw new Error('Control input too large'); }
     if (url.pathname === '/health') { res.end('{}'); return; }
-    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; datasets = []; aborted = 0; blocked = []; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
+    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; datasets = []; aborted = 0; blocked = []; statusChecks = 0; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
     if (url.pathname === '/__control' && req.method === 'POST') { const next = JSON.parse(input); scenarios = { ...scenarios, ...next }; if (typeof next.corruptData === 'boolean') corruptData = next.corruptData; if ('pointerFailure' in next) pointerFailure = next.pointerFailure ?? undefined; res.end('{}'); return; }
-    if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, aborted, blocked, datasets })); return; }
+    if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, aborted, blocked, datasets, statusChecks })); return; }
+    if (url.pathname === '/status') {
+      statusChecks++; res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      const wait = scenarios.roads.slotWait;
+      res.end(`Connected as: 2130706433\nCurrent time: ${new Date().toISOString()}\nRate limit: 2\n${wait ? `Slot available after: ${new Date(Date.now() + wait * 1000).toISOString()}, in ${wait} seconds.\n` : '2 slots available now.\n'}Currently running queries (pid, space limit, time limit, start time):\n`);
+      return;
+    }
     if (url.pathname.startsWith('/data/')) {
       const key = url.pathname.slice('/data/'.length); datasets.push(key);
       if (pointerFailure && key.endsWith('/latest.json')) {

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { roadRank } from '../src/lib/domain.ts';
-import { CellFailure, cellQuery, classifyRemark, fetchCell, isPublicOverpass, rankFilter, retryAfter, sanitizeRemark } from '../src/lib/live/overpass.ts';
+import { CellFailure, cellQuery, classifyRemark, fetchCell, isPublicOverpass, rankFilter, retryAfter, sanitizeRemark, slotWait, statusUrl } from '../src/lib/live/overpass.ts';
 import { tileBBox } from '../src/lib/live/grid.ts';
 
 const HIGHWAYS = ['motorway', 'motorway_link', 'trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link',
@@ -56,7 +56,8 @@ test('provider failures are typed, including runtime errors inside HTTP 200 bodi
   assert.equal((await failure(run(new Response(JSON.stringify({ remark: 'runtime error: something else' }))))).code, 'provider_unavailable');
   const limited = await failure(run(new Response('busy', { status: 429, headers: { 'Retry-After': '30' } })));
   assert.deepEqual([limited.code, limited.status, limited.retryAfter], ['rate_limited', 429, 30_000]);
-  for (const [status, code] of [[400, 'invalid_request'], [404, 'invalid_request'], [503, 'provider_unavailable'], [504, 'provider_unavailable']] as const) assert.equal((await failure(run(new Response('', { status })))).code, code);
+  // 502–504 are Overpass's "too busy"; other server errors are failures of the provider.
+  for (const [status, code] of [[400, 'invalid_request'], [404, 'invalid_request'], [500, 'provider_unavailable'], [502, 'provider_busy'], [503, 'provider_busy'], [504, 'provider_busy']] as const) assert.equal((await failure(run(new Response('', { status })))).code, code);
   assert.equal((await failure(run(new Response('{')))).code, 'decode_failure');
   assert.equal((await failure(run(new Response('7')))).code, 'decode_failure');
   // A refused, blocked or CORS-withheld connection is unreachable, not merely busy.
@@ -91,6 +92,31 @@ test('remarks are classified, sanitized and Retry-After accepts seconds or dates
   assert.equal(retryAfter('12'), 12_000); assert.equal(retryAfter(null), undefined); assert.equal(retryAfter('soon'), undefined);
   assert.equal(retryAfter(new Date(Date.parse('2026-10-01T00:00:30Z')).toUTCString(), Date.parse('2026-10-01T00:00:00Z')), 30_000);
   assert.equal(retryAfter('-5'), 0);
+});
+
+test('a rate limit reads the wait from the Overpass status page, which browsers can read when Retry-After is hidden', async () => {
+  assert.equal(statusUrl('https://overpass-api.de/api/interpreter'), 'https://overpass-api.de/api/status');
+  assert.equal(statusUrl('http://127.0.0.1:8091/roads?x=1'), 'http://127.0.0.1:8091/status');
+  assert.equal(statusUrl('not a url'), undefined);
+  const page = (lines: string) => `Connected as: 2130706433\nCurrent time: 2026-10-14T14:29:40Z\nRate limit: 2\n${lines}Currently running queries (pid, space limit, time limit, start time):\n`;
+  assert.equal(slotWait(page('2 slots available now.\n')), 0);
+  assert.equal(slotWait(page('Slot available after: 2026-10-14T14:29:52Z, in 12 seconds.\nSlot available after: 2026-10-14T14:30:40Z, in 60 seconds.\n')), 12_000);
+  assert.equal(slotWait(page('Slot available after: 2026-10-14T14:29:39Z, in -1 seconds.\n')), 0);
+  for (const text of ['', '<html>busy</html>', page('0 slots available now.\n'), 'Slot available after: soon, in many seconds.']) assert.equal(slotWait(text), undefined, text);
+  const statuses: string[] = [];
+  const limited = (status: Response | Error) => fetchCell({ url: 'http://localhost/api/interpreter', query, signal: new AbortController().signal, maxBytes: 1024, deadline: 1000, idle: 1000, fetch: async (url, init) => {
+    if (init?.method === 'POST') return new Response('', { status: 429 });
+    statuses.push(String(url));
+    if (status instanceof Error) throw status;
+    return status;
+  } });
+  const waited = await failure(limited(new Response(page('Slot available after: 2026-10-14T14:29:52Z, in 12 seconds.\n'))));
+  assert.deepEqual([waited.code, waited.retryAfter, statuses], ['rate_limited', 12_000, ['http://localhost/api/status']]);
+  // An unreadable status page leaves the wait to the scheduler's backoff.
+  for (const status of [new Response('', { status: 404 }), new Response('<html></html>'), new TypeError('Failed to fetch')]) {
+    const unknown = await failure(limited(status));
+    assert.deepEqual([unknown.code, unknown.retryAfter], ['rate_limited', undefined]);
+  }
 });
 
 test('shared public Overpass instances are recognised so they get one request at a time', () => {

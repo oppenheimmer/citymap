@@ -33,12 +33,13 @@ export function cellQuery(tile: Tile, rank: RoadRank, limits = CELL_LIMITS): str
 
 /**
  * Why a cell could not load. Resource limits and oversized responses split the cell; rate
- * limits pause the whole session; an unavailable or unreachable provider retries with backoff.
- * `unreachable` is a network-level failure: no connection, a refused or blocked connection,
- * or a response the browser withholds (CORS).
+ * limits and a busy provider (HTTP 502–504, Overpass's "too busy") make every request wait;
+ * an unavailable or unreachable provider retries with backoff. `unreachable` is a
+ * network-level failure: no connection, a refused or blocked connection, or a response the
+ * browser withholds (CORS).
  */
-export type FailureCode = 'timeout_or_resource_limit' | 'rate_limited' | 'provider_unavailable' | 'unreachable' | 'invalid_request' | 'response_too_large' | 'decode_failure' | 'cancelled';
-export const FAILURE_CODES: readonly FailureCode[] = ['timeout_or_resource_limit', 'rate_limited', 'provider_unavailable', 'unreachable', 'invalid_request', 'response_too_large', 'decode_failure', 'cancelled'];
+export type FailureCode = 'timeout_or_resource_limit' | 'rate_limited' | 'provider_busy' | 'provider_unavailable' | 'unreachable' | 'invalid_request' | 'response_too_large' | 'decode_failure' | 'cancelled';
+export const FAILURE_CODES: readonly FailureCode[] = ['timeout_or_resource_limit', 'rate_limited', 'provider_busy', 'provider_unavailable', 'unreachable', 'invalid_request', 'response_too_large', 'decode_failure', 'cancelled'];
 
 /**
  * Shared public Overpass instances: one request at a time, whatever the configured
@@ -63,13 +64,45 @@ export class CellFailure extends Error {
 // eslint-disable-next-line no-control-regex -- strips control characters from provider text.
 export const sanitizeRemark = (text: string) => text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').trim().slice(0, 240);
 export const classifyRemark = (remark: string): FailureCode => /time[sd]? ?out|out of memory|memory|maxsize|too large/i.test(remark) ? 'timeout_or_resource_limit' : 'provider_unavailable';
-export const classifyStatus = (status: number): FailureCode => status === 429 ? 'rate_limited' : status >= 500 ? 'provider_unavailable' : 'invalid_request';
+export const classifyStatus = (status: number): FailureCode => status === 429 ? 'rate_limited' : status >= 502 && status <= 504 ? 'provider_busy' : status >= 500 ? 'provider_unavailable' : 'invalid_request';
 /** Retry-After as milliseconds from delta seconds or an HTTP date. */
 export function retryAfter(value: string | null, now = Date.now()): number | undefined {
   if (!value?.trim()) return;
   const seconds = Number(value);
   const ms = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - now;
   return Number.isFinite(ms) ? Math.max(0, ms) : undefined;
+}
+
+/** Overpass's status page beside its interpreter: `…/api/interpreter` becomes `…/api/status`. */
+export function statusUrl(interpreter: string): string | undefined {
+  try {
+    const url = new URL(interpreter);
+    url.pathname = url.pathname.replace(/[^/]*$/, 'status'); url.search = '';
+    return url.href;
+  } catch { return; }
+}
+
+/**
+ * Milliseconds until this client may query again, from an Overpass status page: 0 with a
+ * slot free, otherwise the soonest "Slot available after: …, in N seconds.". The page is
+ * untrusted text: only these lines are read, and nothing else in it is kept.
+ */
+export function slotWait(text: string): number | undefined {
+  if (/^[1-9]\d* slots? available now\.$/m.test(text)) return 0;
+  const waits = [...text.matchAll(/^Slot available after: \S+, in (-?\d{1,6}) seconds?\.$/gm)].map(match => Math.max(0, Number(match[1])) * 1000);
+  return waits.length ? Math.min(...waits) : undefined;
+}
+
+const STATUS_DEADLINE = 5000;
+/** How long the status page asks to wait, read within a few seconds; undefined when unavailable. */
+async function statusWait(url: string, fetcher: typeof fetch, signal: AbortSignal): Promise<number | undefined> {
+  const status = statusUrl(url);
+  if (!status || signal.aborted) return;
+  try {
+    const response = await fetcher(status, { signal: AbortSignal.any([signal, AbortSignal.timeout(STATUS_DEADLINE)]) });
+    if (!response.ok) { await response.body?.cancel().catch(() => {}); return; }
+    return slotWait(new TextDecoder().decode(await responseBytes(response, 16 * 1024, undefined, STATUS_DEADLINE)));
+  } catch { return; }
 }
 
 export interface CellFetch {
@@ -99,7 +132,10 @@ export async function fetchCell(options: CellFetch): Promise<{ data: object; byt
   } finally { clearTimeout(timer); }
   if (!response.ok) {
     await response.body?.cancel().catch(() => {});
-    throw new CellFailure(classifyStatus(response.status), { status: response.status, retryAfter: retryAfter(response.headers.get('Retry-After')) });
+    const code = classifyStatus(response.status);
+    // Browsers cannot read Overpass's Retry-After, so a rate limit asks its status page instead.
+    const wait = retryAfter(response.headers.get('Retry-After')) ?? (code === 'rate_limited' ? await statusWait(options.url, options.fetch || fetch, signal) : undefined);
+    throw new CellFailure(code, { status: response.status, retryAfter: wait });
   }
   const length = Number(response.headers.get('Content-Length'));
   if (Number.isSafeInteger(length) && length > options.maxBytes) {

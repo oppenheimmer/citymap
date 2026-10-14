@@ -110,6 +110,28 @@ test('rate limits pause every request for the requested time and never split cel
   assert.equal(h.calls[3].task.job, 'b'); assert.ok(h.calls.every(call => call.task.depth === 0));
 });
 
+test('a busy provider makes every request wait 10, 20, 40 then 60 s, never failing or splitting cells, then pauses', async () => {
+  const h = harness({ concurrency: 1, pauseAfter: 5 });
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  for (const [index, wait] of [10_000, 20_000, 40_000, 60_000].entries()) {
+    h.calls[index].reject(fail('provider_busy')); await flush();
+    assert.equal(h.scheduler.cooldownUntil - h.clock.now(), wait); assert.equal(h.scheduler.cooldownReason, 'provider_busy');
+    assert.equal(h.scheduler.status('a'), 'pending');
+    await h.clock.advance(wait - 1); assert.equal(h.calls.length, index + 1);
+    await h.clock.advance(1); assert.equal(h.calls.length, index + 2);
+  }
+  assert.ok(h.calls.every(call => call.task.job === 'a' && call.task.depth === 0));
+  h.calls[4].reject(fail('provider_busy')); await flush();
+  assert.deepEqual([h.scheduler.paused, h.scheduler.pauseReason], [true, 'provider_busy']);
+  assert.ok(h.outcomes.every(outcome => outcome.endsWith(':provider_busy:cooldown')));
+  // A rate limit asking for up to five minutes is waited out without pausing.
+  const patient = harness({ concurrency: 1 });
+  patient.scheduler.want([job('a', 1)]);
+  patient.calls[0].reject(fail('rate_limited', 240_000)); await flush();
+  assert.equal(patient.scheduler.paused, false); assert.equal(patient.scheduler.cooldownReason, 'rate_limited');
+  await patient.clock.advance(240_000); assert.equal(patient.calls.length, 2);
+});
+
 test('repeated provider failures pause the session until an explicit retry', async () => {
   const h = harness({ concurrency: 1, pauseAfter: 3, retries: 0 });
   h.scheduler.want([job('a', 1), job('b', 2), job('c', 3), job('d', 4)]);

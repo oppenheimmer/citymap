@@ -60,6 +60,14 @@
   let live: LiveViewport | null = null;
   let liveSettings = $state.raw<(Omit<LiveSettings, 'cache'> & { useCache: boolean }) | undefined>(undefined);
   let liveCoverage = $state.raw<LiveCoverage | null>(null);
+  // When a provider cooldown ends, on the performance clock, for a countdown that ticks between coverage updates.
+  let resumeAt = $state(0), waitClock = $state(0);
+  const waitSeconds = $derived(Math.max(0, Math.ceil((resumeAt - waitClock) / 1000)));
+  $effect(() => {
+    if (resumeAt <= performance.now()) return;
+    const timer = setInterval(() => { waitClock = performance.now(); if (waitClock >= resumeAt) clearInterval(timer); }, 250);
+    return () => clearInterval(timer);
+  });
   let exportProgress = $state('');
   let confirmation = $state<number | null>(null);
   let metrics = $state.raw<{ first: number; total: number; segments: number; preparation?: PreparationTimings } | null>(null);
@@ -185,6 +193,7 @@
   const PAUSED: Partial<Record<FailureCode, string>> = {
     unreachable: 'The road service cannot be reached from this network. Check the connection, then retry loading roads.',
     rate_limited: 'The road service is busy. Retry loading roads when you are ready.',
+    provider_busy: 'The road service is too busy right now. Retry loading roads later.',
     timeout_or_resource_limit: 'The road service is overloaded or this area is too dense. Zoom in, or retry loading roads later.',
     response_too_large: 'The road service is overloaded or this area is too dense. Zoom in, or retry loading roads later.',
     provider_unavailable: 'The road service is not responding. Retry loading roads later.',
@@ -192,10 +201,11 @@
   function covered(value: LiveCoverage, id: number) {
     if (id !== generation) return;
     liveCoverage = value;
+    waitClock = performance.now(); resumeAt = value.cooldown > 0 ? waitClock + value.cooldown : 0;
     // Phase changes only, so the live region announces little while loading.
     if (value.exhausted) status = 'This session has made many road requests. Retry loading roads to continue.';
     else if (value.paused) status = PAUSED[value.pauseReason || 'provider_unavailable'] || PAUSED.provider_unavailable!;
-    else if (value.loading && value.cooldown > 0) status = 'The road service asked to wait. Loading resumes shortly…';
+    else if (value.loading && value.cooldown > 0) status = value.waiting === 'provider_busy' ? 'The road service is busy. Loading resumes by itself shortly…' : 'The road service asked to wait. Loading resumes shortly…';
     else if (value.loading) status = 'Loading roads in view…';
     else if (value.failed) status = 'Some roads in view could not be loaded.';
     else if (value.beyond === 'entirely') status = `This view is more than ${value.radius / 1000} km from where the map started, so no roads load here. Search for a place to map it.`;
@@ -331,6 +341,7 @@
     {#if liveCoverage && ready && (!liveCoverage.complete || liveCoverage.beyond !== 'none')}
       <div class="load-status live-status">
         {#if liveCoverage.loading}<progress aria-label="Roads in view" max={liveCoverage.required} value={liveCoverage.ready}></progress>{/if}
+        {#if waitSeconds > 0}<p class="hint">{liveCoverage.waiting === 'provider_busy' ? 'The road service is busy' : 'The road service asked to wait'}: retrying in {waitSeconds} s.</p>{/if}
         <p class="hint">{liveCoverage.ready} of {liveCoverage.required} map regions in view loaded{liveCoverage.failed ? ` · ${liveCoverage.failed} failed` : ''}{liveCoverage.limited.length ? ' · zoom in for more road detail' : ''}</p>
         {#if liveCoverage.beyond !== 'none'}<p class="hint">Roads load only within {liveCoverage.radius / 1000} km of where this map started.</p>{/if}
         {#if !liveCoverage.exportable}<p class="hint">Export is available once the centre of the map has loaded.</p>{/if}

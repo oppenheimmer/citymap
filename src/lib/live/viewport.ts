@@ -96,6 +96,8 @@ export interface LiveCoverage {
   exhausted: boolean;
   /** Milliseconds until a provider cooldown ends. */
   cooldown: number;
+  /** Why requests wait during a cooldown: a rate limit or a busy provider. */
+  waiting?: FailureCode;
   stats: LiveStats;
 }
 
@@ -202,7 +204,7 @@ export class LiveViewport {
       exportable: this.centre.length > 0 && this.centre.every(key => this.scheduler.status(key) === 'ready'),
       beyond: this.beyond, radius: LIVE_LIMITS.radiusMetres,
       paused: this.scheduler.paused, pauseReason: this.scheduler.pauseReason, exhausted: this.scheduler.exhausted,
-      cooldown: Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now()),
+      cooldown: Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now()), waiting: this.scheduler.cooldownReason,
       stats: { ...this.stats, failures: { ...this.stats.failures } },
     };
   }

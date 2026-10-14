@@ -44,15 +44,16 @@ type LeafState = 'lookup' | 'queued' | 'active' | 'ready' | 'failed';
 interface Leaf { key: string; tile: Tile; depth: number; state: LeafState; attempts: number; notBefore: number; code?: FailureCode; controller?: AbortController }
 interface Job { spec: JobSpec; leaves: Map<string, Leaf> }
 
-const RATE_LIMIT_BACKOFF = 5_000, RETRY_BACKOFF = 2_000, MAX_BACKOFF = 60_000;
+const RATE_LIMIT_BACKOFF = 5_000, BUSY_BACKOFF = 10_000, RETRY_BACKOFF = 2_000, MAX_BACKOFF = 60_000;
 /** Shorter waits are lengthened; a provider asking for longer pauses the session instead. */
-export const MIN_COOLDOWN = 1_000, MAX_COOLDOWN = 120_000;
+export const MIN_COOLDOWN = 1_000, MAX_COOLDOWN = 300_000;
 
 /**
  * Loads wanted cells in priority order with bounded concurrency. Work for cells that are no
  * longer wanted is dropped, and in-flight requests are aborted unless their cell is retained.
- * Resource failures split only that cell, to a bounded depth; rate limits pause every request
- * without splitting; repeated provider failures pause the session until `retry()`.
+ * Resource failures split only that cell, to a bounded depth; rate limits and a busy provider
+ * pause every request without splitting; repeated provider failures pause the session until
+ * `retry()`.
  */
 export class CellScheduler<T> {
   private readonly jobs = new Map<string, Job>();
@@ -67,6 +68,8 @@ export class CellScheduler<T> {
   /** The session request budget is spent. */
   exhausted = false;
   cooldownUntil = 0;
+  /** Why every request is waiting until `cooldownUntil`. */
+  cooldownReason?: FailureCode;
   requests = 0;
   /** The provider failure that paused the session, to explain it. */
   pauseReason?: FailureCode;
@@ -221,12 +224,12 @@ export class CellScheduler<T> {
     const failed = () => { leaf.state = 'failed'; leaf.code = failure.code; };
     switch (failure.code) {
       case 'cancelled': leaf.state = 'queued'; return;
-      case 'rate_limited': {
-        // Never split or retry around a rate limit: every request waits.
+      case 'rate_limited': case 'provider_busy': {
+        // Never split or retry around a rate limit or a busy provider: every request waits.
         this.failures++; leaf.state = 'queued'; outcome = 'cooldown';
-        const wait = failure.retryAfter ?? this.backoff(this.failures, RATE_LIMIT_BACKOFF);
+        const wait = failure.retryAfter ?? this.backoff(this.failures, failure.code === 'rate_limited' ? RATE_LIMIT_BACKOFF : BUSY_BACKOFF);
         if (wait > MAX_COOLDOWN) { this.paused = true; this.pauseReason = failure.code; }
-        else this.cooldownUntil = now + Math.max(MIN_COOLDOWN, wait);
+        else { this.cooldownUntil = now + Math.max(MIN_COOLDOWN, wait); this.cooldownReason = failure.code; }
         break;
       }
       case 'provider_unavailable': case 'unreachable':

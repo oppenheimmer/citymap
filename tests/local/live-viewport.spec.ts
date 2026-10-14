@@ -164,8 +164,9 @@ test('a dense cell is split into quarters only where needed, and rate limits wai
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText('dense regions split');
   await control(request, { roads: { status: 429, failures: 1, retryAfter: '1' } });
   await drag(page, -0.9);
-  // Cross-origin responses hide Retry-After, so the wait falls back to a jittered 5 s backoff.
+  // Cross-origin responses hide Retry-After, so the wait comes from the status page: a free slot.
   await expect.poll(async () => (await cellQueries(request)).length, { timeout: 15_000 }).toBeGreaterThan(queries.length + 1);
+  expect((await stats(request)).statusChecks).toBe(1);
   await expect(status(page)).toContainText('ready');
   const after = (await cellQueries(request)).slice(queries.length);
   // The rate-limited request is repeated as it was; nothing is split.
@@ -207,6 +208,28 @@ test('Export waits only for the centre of the map, then exports the map availabl
   await expect(exportButton).toBeEnabled();
   const { xml } = await svg(page, 'Exported available map.');
   expect(xml.match(/<path d="M/g)!.length).toBeGreaterThan(0);
+});
+
+test('a rate limit waits as long as the road service status page says, with a countdown', async ({ page, request }) => {
+  // The status page asks for 9 s; the fallback guess would be about 5 s.
+  await control(request, { roads: { status: 429, failures: 1, slotWait: 9 } });
+  await choose(page, 'Waiting city');
+  await expect(page.locator('.live-status')).toContainText(/The road service asked to wait: retrying in [7-9] s\./);
+  await expect(status(page)).toContainText('The road service asked to wait');
+  expect((await stats(request)).statusChecks).toBe(1); expect(await cellQueries(request)).toHaveLength(1);
+  await expect(status(page)).toContainText('Waiting city, Japan ready', { timeout: 20_000 });
+  await expect(page.getByText(/retrying in/)).toHaveCount(0);
+});
+
+test('a busy road service makes every request wait, with a countdown, instead of failing regions', async ({ page, request }) => {
+  await control(request, { roads: { status: 504, failures: 1 } });
+  await choose(page, 'Busy city');
+  await expect(page.locator('.live-status')).toContainText(/The road service is busy: retrying in \d+ s\./);
+  await expect(status(page)).toContainText('The road service is busy. Loading resumes by itself');
+  await expect(page.locator('.live-status')).not.toContainText('failed');
+  // Nothing else is requested during the wait, and a busy service needs no status page.
+  await settle(page);
+  expect(await cellQueries(request)).toHaveLength(1); expect((await stats(request)).statusChecks).toBe(0);
 });
 
 test('regions far behind the view are evicted with their GPU buffers and reload when revisited', async ({ page, request }) => {

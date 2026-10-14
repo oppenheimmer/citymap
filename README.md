@@ -78,8 +78,9 @@ With `VITE_LIVE_VIEWPORT=1`, cities without a stored dataset load live roads for
 the area on screen instead of one whole-city query, which public Overpass may be
 unable to complete for large cities at street detail. A search opens a bounded view
 of the city centre; panning and zooming load neighbouring map regions within 50 km
-of where the map started, one road class at a time, at most one request at a time. Dense regions split, rate limits
-pause loading, and regions far behind the view are evicted from memory and the GPU.
+of where the map started, one road class at a time, at most one request at a time. Dense regions split; rate limits and a
+busy service make loading wait, as long as the service's status page says, with a
+countdown; and regions far behind the view are evicted from memory and the GPU.
 The centre of the map loads first. Export becomes available once it has loaded and
 writes the map available, without waiting for the regions still loading around it.
 Only explicitly published favourite cities live in R2.

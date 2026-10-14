@@ -23,9 +23,9 @@ loading bounds both.
 | Piece | File | Role |
 | --- | --- | --- |
 | Cell grid | `src/lib/live/grid.ts` | Web Mercator tiles as query units. Each road rank has its own level: about 20 km for major roads, 5 km for streets, 2.4 km for every way, coarser towards the poles so ground size stays similar. Tile columns end at ±180°, so no cell crosses the antimeridian. |
-| Queries | `src/lib/live/overpass.ts` | One rank per cell: `way[filter](s,w,n,e);out geom qt;` with `[timeout:30][maxsize:64 MiB]`. The filters match `roadRank()` exactly, so ranks never overlap. Responses are capped at 32 MiB. Every failure is typed, including timeouts reported as a `remark` inside HTTP 200. |
+| Queries | `src/lib/live/overpass.ts` | One rank per cell: `way[filter](s,w,n,e);out geom qt;` with `[timeout:30][maxsize:64 MiB]`. The filters match `roadRank()` exactly, so ranks never overlap. Responses are capped at 32 MiB. Every failure is typed, including timeouts reported as a `remark` inside HTTP 200, and HTTP 502–504, Overpass's "too busy". After a 429 the worker reads the provider's status page (`…/api/status`, beside the interpreter), which browsers can read although they cannot read `Retry-After`, for when a slot frees. Only its slot lines are parsed; nothing else in it is kept. |
 | Geometry | `src/lib/live/cell-roads.ts`, `src/workers/cells.worker.ts` | A worker decodes, projects with the session's fixed origin and clips each road to its cell. Clipping is half-open: a road on a shared edge is drawn by exactly one cell, and roads crossing edges meet exactly. Cells without roads are valid. |
-| Scheduler | `src/lib/live/scheduler.ts` | Wanted cells load in priority order: first the centre of the map (cells touching the middle half of the composed map's width and height), major roads before streets; then the rest by distance from the centre, whatever their class. Queued work for cells that left the view is dropped; requests more than a view away are aborted. Timeouts and oversized responses split only that cell, at most twice. A 429 pauses every request (Retry-After, or a jittered 5 s backoff when the header is unreadable) and never splits. Unavailable providers get one retry. Five consecutive provider failures, or 600 requests in a session, pause loading until the user retries; a retry still waits out a rate-limit cooldown that is running. |
+| Scheduler | `src/lib/live/scheduler.ts` | Wanted cells load in priority order: first the centre of the map (cells touching the middle half of the composed map's width and height), major roads before streets; then the rest by distance from the centre, whatever their class. Queued work for cells that left the view is dropped; requests more than a view away are aborted. Timeouts and oversized responses split only that cell, at most twice. A 429 makes every request wait until the status page says a slot frees (a jittered 5 s backoff when it cannot be read) and never splits. A busy provider (HTTP 502–504) makes every request wait 10, 20, 40 then 60 s, jittered, rather than failing regions. Waits of up to five minutes run by themselves, with a countdown under the map status; a longer one pauses loading. Other unavailable responses get one retry. Five consecutive provider failures, or 600 requests in a session, pause loading until the user retries; a retry still waits out a cooldown that is running. |
 | Viewport | `src/lib/live/viewport.ts` | Turns the rotated, padded camera frame into wanted cells (debounced 250 ms, at most once a second while panning). Each loaded cell owns its GPU collections; regions not seen recently are evicted beyond 160 MiB (64 MiB on small devices). Eviction deletes their buffers but keeps the shared shader program (see `tools/renderer-compat.ts`). |
 | Browser cache | `src/lib/live/cell-cache.ts` | Optional IndexedDB copies of complete cells: 96 MiB, 72 hours, least recently used first. Keys include the grid version, query schema, provider URL and cell. Stored geometry is translated to the session origin. *Use cached city data* turns it off; *Refresh city data* bypasses it and *Clear city cache* empties it. |
 | Start | `src/lib/live/start.ts` | Starts at the search result's centre: 5 km wide for Streets, 2.5 km for All, 30 km for Major, or less for a small place. *Fit map* frames the searched bounds and still loads by view. A drawn bounding box is shown whole. |
@@ -99,12 +99,15 @@ After five consecutive provider failures, loading pauses until the user selects
 - **Cannot be reached:** the connection was refused or blocked, or the browser
   withheld the response (CORS). Check that this machine can reach the provider,
   for example with
-  `curl -I https://overpass-api.de/api/status`. Overpass instances can refuse
+  `curl -A 'citymap check' https://overpass-api.de/api/status` (the public
+  instance refuses clients that do not identify themselves). Overpass instances can refuse
   addresses after heavy use; such a block usually lifts after a while. Moving
   the same traffic to another public instance only to get around a block is
   against their usage policies. A firewall on your own network is a different
   case: use a reachable instance, or your own, in `VITE_OVERPASS_URL`.
-- **Busy:** rate limited (HTTP 429). Wait, then retry.
+- **Busy:** rate limited (HTTP 429) beyond a five-minute wait. Wait, then retry.
+- **Too busy right now:** HTTP 502–504 five times in a row, across waits of 10
+  to 60 s. Retry later.
 - **Overloaded or too dense:** cells kept timing out even after splitting. Zoom
   in, or retry later.
 - **Not responding:** server errors or no response before the deadline.
