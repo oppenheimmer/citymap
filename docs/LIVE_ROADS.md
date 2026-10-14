@@ -39,8 +39,8 @@ bounds how much a single session can ever request.
 Road detail is cumulative and per rank. Switching from Streets to All requests
 only the new classes; switching back requests nothing. Recolouring never
 refetches. A view needing more than 36 cells of a rank, such as streets across a
-whole metropolis, keeps the coarser ranks and asks the user to zoom in. Nothing
-requests hundreds of cells.
+whole metropolis, stops requesting that rank and asks the user to zoom in. Roads
+already loaded stay visible. Nothing requests hundreds of cells.
 
 **Export** stays unavailable until every cell in the centre of the map has
 loaded: the cells touching the middle half of the map's width and height, for
@@ -53,8 +53,10 @@ centre. The dialog says **Exported available map.** when any region was
 missing. Only an export shaped unlike the view can need more of its centre;
 that part loads first (up to 120 cells, with progress and Cancel). If it fails,
 or lies beyond the 50 km radius, nothing is exported and the dialog says why.
-Road classes too dense to load at the current zoom are left out of the export
-rather than drawn in patches. Exports never restart loading or skip a cooldown.
+Exports preserve every loaded road visible when export starts, including detail
+loaded during earlier pans or closer views. Loading limits apply only to additional
+fetching; already loaded roads still appear in PNG and SVG. Exports never restart
+loading or skip a cooldown.
 
 Favourite cities keep the existing path. The roads worker first tries the
 bundled or R2 dataset. Only when none applies does it hand over to viewport

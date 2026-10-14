@@ -270,7 +270,8 @@
         // The centre of the frame is loaded; the rest is exported as far as it has loaded.
         const frame = fitCamera(snapshot.camera, width / height);
         const prepared = await viewport.prepareExport(frame, snapshot.design.rotation || 0, exportAbort.signal, (done, total) => { exportProgress = `Loading the centre of the map: ${done} of ${total} regions…`; });
-        snapshot.buffers = scene.snapshot(prepared.regions).buffers;
+        // Keep the roads visible when export began, even if loading evicts their regions.
+        snapshot.buffers = [...new Set([...snapshot.buffers, ...scene.snapshot(prepared.regions).buffers])];
         complete = prepared.complete;
         exportProgress = '';
       }

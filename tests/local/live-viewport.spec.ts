@@ -160,6 +160,59 @@ test('a fully loaded view exports every road, and roads cross cell seams once wi
   expect(png.readUInt32BE(16)).toBe(width); expect(png.readUInt32BE(20)).toBe(height);
 });
 
+test('zoomed-out exports preserve loaded streets and footpaths without fetching limited detail', async ({ page, request }) => {
+  await liveCity(page, 'Loaded detail city', '&detail=all'); await idle(request);
+  expect(new Set((await requestedCells(request)).map(cell => cell.rank))).toEqual(new Set([0, 1, 2]));
+  await page.getByLabel('Road color').fill('#000000'); await page.getByLabel('Background color').fill('#ffffff');
+  // The fine roads have already loaded; jumping out limits further requests for both ranks.
+  for (let i = 0; i < 10; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
+  await expect(status(page)).toContainText('Zoom in to load streets here'); await idle(request);
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+  const before = await cellQueries(request);
+  const every = await svg(page, 'Exported available map.');
+  const segments = (xml: string) => [...xml.matchAll(/M([-\d.]+),([-\d.]+)L([-\d.]+),([-\d.]+)/g)].map(match => match.slice(1).join(','));
+  const allSegments = segments(every.xml);
+  expect(new Set(allSegments).size, 'Snapshot and prepared geometry are merged without drawing roads twice').toBe(allSegments.length);
+  // The settings cover the canvas but do not resize it; capture the same composed frame.
+  await page.getByRole('button', { name: 'Hide options', exact: true }).click();
+  const screen = await page.locator('canvas').screenshot();
+  await page.getByRole('button', { name: 'Show options', exact: true }).click();
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PNG', exact: true }).click();
+  const png = await readFile((await (await pending).path())!);
+  await expect(page.getByRole('dialog').getByRole('status')).toHaveText('Exported available map.');
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  expect([png.readUInt32BE(16), png.readUInt32BE(20)]).toEqual([every.width, every.height]);
+  const pixels = await page.evaluate(async ([shown, exported]) => {
+    const read = async (bytes: number[]) => {
+      const bitmap = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
+      const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height;
+      const context = canvas.getContext('2d')!; context.drawImage(bitmap, 0, 0); bitmap.close();
+      // The central patch contains the retained fine roads, clear of labels, marks and borders.
+      return context.getImageData(Math.round(canvas.width * 0.35), Math.round(canvas.height * 0.35), Math.round(canvas.width * 0.3), Math.round(canvas.height * 0.3)).data;
+    };
+    const [a, b] = await Promise.all([read(shown), read(exported)]);
+    let screenRoads = 0, missing = 0, extra = 0;
+    for (let i = 0; i < a.length; i += 4) {
+      const screenRoad = a[i] < 128, exportRoad = b[i] < 128;
+      if (screenRoad) screenRoads++;
+      if (screenRoad && !exportRoad) missing++;
+      if (!screenRoad && exportRoad) extra++;
+    }
+    return { screenRoads, missing, extra };
+  }, [[...screen], [...png]]);
+  expect(pixels.screenRoads).toBeGreaterThan(200);
+  expect(pixels.missing, 'PNG retains the road pixels visible on screen').toBeLessThan(pixels.screenRoads * 0.05);
+  expect(pixels.extra, 'PNG has the same road density as the screen').toBeLessThan(pixels.screenRoads * 0.05);
+  await page.getByLabel('Roads shown').selectOption('streets');
+  const streets = segments((await svg(page, 'Exported available map.')).xml);
+  await page.getByLabel('Roads shown').selectOption('major');
+  const major = segments((await svg(page)).xml);
+  expect(streets.length, 'Already loaded streets remain in the export above the loading limit').toBeGreaterThan(major.length);
+  expect(allSegments.length, 'Already loaded footpaths remain in the export above the loading limit').toBeGreaterThan(streets.length);
+  expect(await cellQueries(request), 'Exporting retained geometry requests no additional road cells').toEqual(before);
+});
+
 test('a dense cell is split into quarters only where needed, and rate limits wait without splitting', async ({ page, request }) => {
   // Major-road cells (about 0.18° wide) time out; their quarters load. Street cells are unaffected.
   await control(request, { roads: { dense: 0.1 } });

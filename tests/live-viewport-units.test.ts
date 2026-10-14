@@ -213,3 +213,44 @@ test('the centre of the view loads first, makes the map exportable, and exports 
     assert.equal((await viewport.prepareExport(camera, 0, new AbortController().signal, () => {})).complete, true);
   } finally { viewport.dispose(); }
 });
+
+test('exports preserve loaded roads after zooming out beyond their loading limits, at the selected detail', async () => {
+  const z = cellLevel(2, origin[1]), n = 2 ** z;
+  const x = Math.floor((origin[0] + 180) / 360 * n), y = Math.floor((1 - Math.log(Math.tan(Math.PI / 4 + origin[1] * Math.PI / 360)) / Math.PI) / 2 * n);
+  const small = tileRect({ z, x, y }, origin), cx = (small.left + small.right) / 2, cy = (small.bottom + small.top) / 2;
+  let camera: Camera = { left: cx - (small.right - small.left) / 5, right: cx + (small.right - small.left) / 5, bottom: cy - (small.top - small.bottom) / 5, top: cy + (small.top - small.bottom) / 5 };
+  const requests: CellRequest[] = [], drawn = new Set<string>();
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  const reply = (request: CellRequest) => worker.onmessage!({ data: { type: 'cells', id: request.id, cells: request.cells.map(({ tile }) => {
+    const box = tileRect(tile, origin);
+    return { positions: new Float32Array([box.left, (box.bottom + box.top) / 2, box.right, (box.bottom + box.top) / 2]).buffer, segments: 1 };
+  }), bytes: request.cells.length * 16, fetchMs: 1, decodeMs: 0 } });
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: async (_positions: Float32Array, _rank: number, _signal: AbortSignal | undefined, owner?: string) => { if (owner) drawn.add(owner); }, removeOwner: (owner: string) => { drawn.delete(owner); return 0; } } as unknown as SceneController;
+  const viewport = new LiveViewport(scene, origin, 'all', { overpass: 'http://localhost/roads', concurrency: 1000, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
+  try {
+    for (const request of requests) reply(request);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual([...new Set(requests.flatMap(request => request.cells.map(cell => cell.rank)))].sort(), [0, 1, 2]);
+    assert.equal(viewport.coverage().complete, true);
+    const loadedDetail = [...drawn].filter(key => !key.startsWith('0:'));
+    assert.ok(loadedDetail.length >= 2, 'Streets and finer roads are already drawn before zooming out');
+    const loadedRequests = requests.length;
+    // The expanded frame is still small enough to load major roads, but exceeds the
+    // 36-cell limit for streets and finer roads. Previously loaded detail stays drawn.
+    const street = tileRect({ z: z - 2, x: x >> 2, y: y >> 2 }, origin);
+    const halfWidth = (street.right - street.left) * 4, halfHeight = (street.top - street.bottom) * 4;
+    camera = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
+    viewport.viewChanged();
+    const exporting = viewport.prepareExport(camera, 0, new AbortController().signal, () => {});
+    assert.deepEqual(viewport.coverage().limited, [1, 2]);
+    for (const request of requests.slice(loadedRequests)) reply(request);
+    const exported = await exporting;
+    assert.ok(loadedDetail.every(key => drawn.has(key)), 'The screen retains the loaded streets and finer roads');
+    assert.ok(loadedDetail.every(key => exported.regions.has(key)), 'Export includes every loaded detail owner visible in the frame');
+    assert.equal(exported.complete, false, 'Keeping loaded detail does not claim the wide frame is fully loaded');
+    assert.ok(requests.slice(loadedRequests).flatMap(request => request.cells).every(cell => cell.rank === 0), 'Neither zooming out nor exporting fetches a limited detail rank');
+    viewport.setDetail('major');
+    const major = await viewport.prepareExport(camera, 0, new AbortController().signal, () => {});
+    assert.ok(loadedDetail.every(key => !major.regions.has(key)), 'Loaded detail hidden by the selected road setting stays out of export');
+  } finally { viewport.dispose(); }
+});

@@ -216,24 +216,27 @@ export class LiveViewport {
    * of it still missing (an export shaped unlike the view) loads first. The rest of the frame
    * is exported as available, without waiting, once loaded regions are drawn. Resolves with
    * the frame's regions and whether every one has loaded; rejects when the centre cannot load.
-   * Road classes too dense to load at this zoom are left out rather than drawn in patches.
+   * Already loaded roads are kept at every selected detail level, even when this zoom
+   * limits further loading of that level.
    */
   async prepareExport(frame: Camera, rotation: number, signal: AbortSignal, progress: (ready: number, total: number) => void): Promise<{ regions: Set<string>; complete: boolean }> {
     if (this.timer) this.update();
     const exact = frameCorners(frame, rotation), centre = frameCorners(frame, rotation, LIVE_LIMITS.core);
     const specs: JobSpec[] = [], regions = new Set<string>();
     const tooLarge = () => new Error('This export frame needs too many map regions at this road detail. Zoom in, or choose less road detail.');
-    let complete = !this.limited.length;
-    for (const rank of this.ranks().filter(rank => !this.limited.includes(rank))) {
-      const z = cellLevel(rank, this.origin[1]), tiles = coverTiles(centre, this.origin, z, LIVE_LIMITS.exportCells);
+    let complete = true;
+    for (const rank of this.ranks()) {
+      const z = cellLevel(rank, this.origin[1]);
+      // Selecting geometry requests nothing: loading limits must not hide roads already drawn.
+      const all = coverTiles(exact, this.origin, z, LIVE_LIMITS.exportCells * 4);
+      if (all) for (const tile of all) regions.add(jobKey(rank, tile));
+      else { complete = false; for (const [key, region] of this.regions) if (region.rank === rank) regions.add(key); }
+      if (this.limited.includes(rank)) continue;
+      const tiles = coverTiles(centre, this.origin, z, LIVE_LIMITS.exportCells);
       if (!tiles) throw tooLarge();
       // Roads beyond the loading radius never load, so the centre must lie within it.
       if (!tiles.every(this.near)) throw new Error(`The centre of this export is more than ${LIVE_LIMITS.radiusMetres / 1000} km from where the map started, where roads do not load. Zoom in, or move back towards the starting point.`);
       tiles.forEach((tile, index) => specs.push({ key: jobKey(rank, tile), tile, rank, priority: -1e6 + rank * 1e4 + index }));
-      // Listing the frame's cells requests nothing, so it may cover far more than a view loads.
-      const all = coverTiles(exact, this.origin, z, LIVE_LIMITS.exportCells * 4);
-      if (all) for (const tile of all) regions.add(jobKey(rank, tile));
-      else { complete = false; for (const [key, region] of this.regions) if (region.rank === rank) regions.add(key); }
     }
     if (specs.length > LIVE_LIMITS.exportCells) throw tooLarge();
     const settled = () => {

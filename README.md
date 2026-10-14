@@ -87,6 +87,8 @@ busy service make loading wait, as long as the service's status page says, with 
 countdown; and regions far behind the view are evicted from memory and the GPU.
 The centre of the map loads first. Export becomes available once it has loaded and
 writes the map available, without waiting for the regions still loading around it.
+Already loaded road detail stays in PNG and SVG exports when zooming out limits
+further loading, so the export preserves the roads visible on screen.
 Only explicitly published favourite cities live in R2.
 [How it works, limits, rollout and rollback](docs/LIVE_ROADS.md). The feature is off
 by default.
