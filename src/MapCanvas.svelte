@@ -7,7 +7,8 @@
   import { loadCity } from './lib/load-city.ts';
   import { NORTH_ARROW } from './lib/north-arrow.ts';
   import { metresPerSceneUnit, scaleBar, SCALE_BAR } from './lib/scale-bar.ts';
-  import { northCentre, scaleBarCentre } from './lib/marks.ts';
+  import { labelLayout, northCentre, scaleBarCentre } from './lib/marks.ts';
+  import { labelWidth } from './lib/fonts.ts';
   import type { WorkerLoad } from './lib/worker-protocol.ts';
   import type { LiveCoverage, LiveSettings, LiveViewport } from './lib/live/viewport.ts';
   type Mark = 'label' | 'northAt' | 'scaleBarAt';
@@ -38,6 +39,15 @@
   // Ground distance per CSS pixel of the composed map at the view's centre latitude.
   const scale = $derived(design.scaleBar && design.view ? scaleBar(design.view.width / map.width * metresPerSceneUnit(design.view.lat)) : undefined);
   const compassAt = $derived(northCentre(design, map));
+  // The label stays inside the map, shrunk to fit if needed, as exports draw it. Its width is
+  // measured again once web fonts finish loading.
+  let fontsLoaded = $state(0);
+  const labelAt = $derived.by(() => { void fontsLoaded; return labelLayout(design, map, 1, labelWidth(design)); });
+  $effect(() => {
+    const loaded = () => { fontsLoaded++; };
+    document.fonts.addEventListener('loadingdone', loaded);
+    return () => document.fonts.removeEventListener('loadingdone', loaded);
+  });
   const scaleAt = $derived(scale ? scaleBarCentre(design, scale, map) : undefined);
   onMount(() => {
     let disposed = false;
@@ -130,7 +140,7 @@
   <canvas bind:this={canvas} tabindex="0" aria-label="Road map. Drag to pan; scroll or use map controls to zoom."></canvas>
   {#if drawable}
     <div class="frame" class:inset={fit < 0.995} bind:this={frame} style:left={`${(hostWidth - map.width * fit) / 2}px`} style:top={`${(hostHeight - map.height * fit) / 2}px`} style:width={`${map.width}px`} style:height={`${map.height}px`} style:transform={`scale(${fit})`}>
-      <button class="map-label" style:left={`${design.label.x * 100}%`} style:top={`${design.label.y * 100}%`} style:color={design.label.color} style:opacity={design.label.opacity} style:font-size={`${design.label.size}px`} style:font-weight={design.label.bold ? 'bold' : 'normal'} style:font-style={design.label.italic ? 'italic' : 'normal'} aria-label="Move map label with arrow keys or drag"
+      <button class="map-label" style:left={`${labelAt.centre.x}px`} style:top={`${labelAt.centre.y}px`} style:color={design.label.color} style:opacity={design.label.opacity} style:font-size={`${labelAt.size}px`} style:font-weight={design.label.bold ? 'bold' : 'normal'} style:font-style={design.label.italic ? 'italic' : 'normal'} aria-label="Move map label with arrow keys or drag"
         onpointerdown={grab('label')} onpointermove={move} onpointerup={release} onpointercancel={release} onkeydown={key('label')}>{design.label.text}</button>
       {#if design.north}
         <button class="map-mark compass" style:left={`${compassAt.x}px`} style:top={`${compassAt.y}px`} style:color={design.label.color} aria-label="North arrow. Drag or use arrow keys to move it."

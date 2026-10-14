@@ -58,6 +58,17 @@ export function fontFiles(font: MapFont, face: TextFace): FontFile[] {
 export const canvasFont = (font: MapFont, face: Omit<TextFace, 'text'>, size: number) => `${face.italic ? 'italic ' : ''}${face.weight === 700 ? 'bold ' : ''}${size}px ${fontStack(font)}`;
 
 /**
+ * Width in CSS pixels of the map label at the design's size and style, with the typeface or,
+ * until it loads, its fallback. Undefined where text cannot be measured.
+ */
+export function labelWidth(design: Design): number | undefined {
+  const context = typeof document === 'undefined' ? undefined : document.createElement('canvas').getContext('2d');
+  if (!context) return;
+  context.font = canvasFont(design.font, { weight: design.label.bold ? 700 : 400, italic: !!design.label.italic }, design.label.size);
+  return context.measureText(design.label.text).width;
+}
+
+/**
  * Loads the faces a canvas export draws; canvas text never waits for a font by itself.
  * An unavailable font leaves its fallback in place rather than failing the export.
  */

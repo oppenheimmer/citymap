@@ -49,7 +49,9 @@ Maps default to street-level road detail; footpaths, sidewalks and service ways
 are optional, and live loads download only the classes shown. A minimal compass
 rose and a railway-style scale bar (whole kilometres or metres above, miles or feet
 below, measured at the map centre) can be dragged anywhere on the map; the scale
-bar sits below the compass until moved. A rotation slider (0–180°, starting at 0°)
+bar sits below the compass until moved. The map label stays inside the map, moving
+in from the edges and, when it is wider than the map, shrinking to fit, on screen and
+in exports alike; the design keeps its chosen size for a map with more room. A rotation slider (0–180°, starting at 0°)
 turns the map right (clockwise) or left (counter-clockwise) to fill the frame, and
 the compass keeps pointing at map north. Links store the turn as one signed angle. Map text (label, compass, scale bar and grid
 labels) uses Computer Modern (CMU Serif) by default, Fira Code or sans-serif, and the

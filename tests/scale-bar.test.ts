@@ -66,3 +66,22 @@ test('marks stay inside the map, and the scale bar defaults to just below the no
   assert.equal(scaleBarCentre(DEFAULT_DESIGN, bar, { width: 800, height: 600 }, 2).y, northCentre(DEFAULT_DESIGN, { width: 800, height: 600 }, 2).y + (NORTH_ARROW.height / 2 + MARK_GAP + bar.height / 2) * 2);
   assert.deepEqual(scaleBarCentre({ ...DEFAULT_DESIGN, scaleBarAt: { x: 0.5, y: 0.5 } }, bar, map), { x: 200, y: 150 });
 });
+
+test('the map label stays inside the map, and text wider than the map shrinks to fit', async () => {
+  const { labelLayout, LABEL_MARGIN, placeMarks } = await import('../src/lib/marks.ts');
+  const { DEFAULT_DESIGN } = await import('../src/lib/domain.ts');
+  const map = { width: 400, height: 300 };
+  const at = (x: number, y: number) => ({ ...DEFAULT_DESIGN, label: { ...DEFAULT_DESIGN.label, text: 'Label', size: 20, x, y } });
+  // A label with room keeps its place and size.
+  assert.deepEqual(labelLayout(at(0.5, 0.5), map, 1, 100), { centre: { x: 200, y: 150 }, size: 20, width: 100 });
+  // Near an edge it moves in to end a margin from it; the design keeps its own position.
+  assert.equal(labelLayout(at(0.98, 0.5), map, 1, 100).centre.x, 400 - LABEL_MARGIN - 50);
+  assert.equal(labelLayout(at(0.5, 0), map, 1, 100).centre.y, 10 + LABEL_MARGIN);
+  // Wider than the map, it shrinks to span it between the margins.
+  assert.deepEqual(labelLayout(at(0.9, 0.5), map, 1, 768), { centre: { x: 200, y: 150 }, size: 10, width: 400 - 2 * LABEL_MARGIN });
+  // Exports at twice the size lay it out the same, twice as large.
+  assert.deepEqual(labelLayout(at(0.98, 0.5), { width: 800, height: 600 }, 2, 100), { centre: { x: 2 * (400 - LABEL_MARGIN - 50), y: 300 }, size: 40, width: 200 });
+  // Exports place it from the measured width and draw it at the fitted size.
+  const placed = placeMarks(at(0.9, 0.5), map, 1, undefined, [], 4, 768);
+  assert.deepEqual([placed.label, placed.labelSize], [{ x: 200, y: 150 }, 10]);
+});

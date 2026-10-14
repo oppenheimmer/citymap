@@ -1,7 +1,7 @@
 import { SceneController, color } from './SceneController.ts';
 import type { SceneSnapshot } from './SceneController.ts';
 import type { Geometry, MapFont } from './domain.ts';
-import { canvasFont, embeddedFonts, exportFaces, loadFonts } from './fonts.ts';
+import { canvasFont, embeddedFonts, exportFaces, labelWidth, loadFonts } from './fonts.ts';
 import { EXPORT_BORDER, placeMarks } from './marks.ts';
 import type { Centre, Size } from './marks.ts';
 import { NORTH_ARROW } from './north-arrow.ts';
@@ -28,9 +28,12 @@ async function svg(snapshot: SceneSnapshot, options: ExportOptions, signal?: Abo
     void result.catch(() => {});
     const scale = options.width / snapshot.width;
     // The chosen typeface travels inside the file, so viewers without it draw the same text.
-    const fonts = await embeddedFonts(snapshot.design.font, exportFaces(snapshot.design, options.grid.mode !== 'none'), signal);
+    const faces = exportFaces(snapshot.design, options.grid.mode !== 'none');
+    const fonts = await embeddedFonts(snapshot.design.font, faces, signal);
+    // The label is measured with the same typeface, so it fits the map as on screen.
+    await loadFonts(snapshot.design.font, faces);
     signal?.throwIfAborted();
-    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, centre: { lon: snapshot.view.lon, lat: snapshot.view.lat }, scale, labelSize: snapshot.design.label.size * scale, strokeWidth: scale / snapshot.pixelRatio, fonts }, fonts.map(font => font.bytes));
+    worker.postMessage({ type: 'start', ...options, camera: snapshot.camera, design: snapshot.design, centre: { lon: snapshot.view.lon, lat: snapshot.view.lat }, scale, labelWidth: labelWidth(snapshot.design), strokeWidth: scale / snapshot.pixelRatio, fonts }, fonts.map(font => font.bytes));
     for (const buffer of snapshot.buffers) {
       signal?.throwIfAborted();
       // Bounded copies preserve screen/export geometry ownership and allow UI feedback.
@@ -96,10 +99,10 @@ export async function exportMap(snapshot: SceneSnapshot, options: ExportOptions,
     const grid = gridDrawing(fitCamera(snapshot.camera, options.width / options.height), snapshot.view, options.width, options.height, scale, options.grid, EXPORT_BORDER, snapshot.design.rotation || 0);
     if (grid) drawGrid(context, grid, snapshot.design.roadColor, font);
     // Marks and the label move inward a few pixels when they would cover grid teeth or labels.
-    const placed = placeMarks(snapshot.design, area, scale, bar, grid?.keepouts, 4 * Math.max(1, scale));
+    const placed = placeMarks(snapshot.design, area, scale, bar, grid?.keepouts, 4 * Math.max(1, scale), labelWidth(snapshot.design));
     const c = color(label.color, label.opacity);
     context.fillStyle = `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${c.a})`;
-    context.font = canvasFont(font, { weight: label.bold ? 700 : 400, italic: !!label.italic }, label.size * scale);
+    context.font = canvasFont(font, { weight: label.bold ? 700 : 400, italic: !!label.italic }, placed.labelSize);
     context.textAlign = 'center'; context.textBaseline = 'middle';
     context.fillText(label.text, placed.label.x, placed.label.y);
     // Marks are CSS-pixel geometry, laid out as on screen and scaled to the export.

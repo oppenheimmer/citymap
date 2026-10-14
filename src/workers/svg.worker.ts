@@ -11,7 +11,7 @@ import type { GridOptions } from '../lib/graticule.ts';
 import { fitCamera } from '../lib/view.ts';
 
 type Request =
-  | { type: 'start'; width: number; height: number; camera: Camera; design: Design; centre: { lon: number; lat: number }; grid: GridOptions; scale: number; labelSize: number; strokeWidth: number; transparent: boolean; fonts: { file: Omit<FontFile, 'url'>; bytes: ArrayBuffer }[] }
+  | { type: 'start'; width: number; height: number; camera: Camera; design: Design; centre: { lon: number; lat: number }; grid: GridOptions; scale: number; labelWidth?: number; strokeWidth: number; transparent: boolean; fonts: { file: Omit<FontFile, 'url'>; bytes: ArrayBuffer }[] }
   | { type: 'geometry'; positions: ArrayBuffer }
   | { type: 'finish' };
 const scope = self as unknown as { onmessage: (event: MessageEvent<Request>) => void; postMessage: (value: { blob?: Blob; error?: string }) => void };
@@ -74,7 +74,7 @@ scope.onmessage = event => {
       const area = { width: setup.width, height: setup.height };
       const grid = gridDrawing(setup.camera, setup.centre, setup.width, setup.height, setup.scale, setup.grid, EXPORT_BORDER, setup.design.rotation || 0);
       // Marks and the label move inward a few pixels when they would cover grid teeth or labels.
-      const placed = placeMarks(setup.design, area, setup.scale, bar, grid?.keepouts, 4 * Math.max(1, setup.scale));
+      const placed = placeMarks(setup.design, area, setup.scale, bar, grid?.keepouts, 4 * Math.max(1, setup.scale), setup.labelWidth);
       if (grid) {
         const lines = (list: typeof grid.lines) => list.map(line => `<line x1="${n(line.x1)}" y1="${n(line.y1)}" x2="${n(line.x2)}" y2="${n(line.y2)}"/>`).join('');
         if (grid.lines.length) parts.push(`<g stroke="${setup.design.roadColor}" stroke-width="${grid.lineWidth}" stroke-opacity="${grid.lineOpacity}">${lines(grid.lines)}</g>`);
@@ -86,7 +86,7 @@ scope.onmessage = event => {
       if (setup.design.north) parts.push(`<g transform="${place(placed.north, arrow)} rotate(${n(setup.design.rotation || 0)} ${arrow.cx} ${arrow.cy})"><g fill="none" stroke="${label.color}" stroke-width="${arrow.stroke}" stroke-linejoin="round" stroke-linecap="round"><path d="${arrow.path}"/>${arrow.circles.map(circle => `<circle cx="${circle.cx}" cy="${circle.cy}" r="${circle.r}"/>`).join('')}</g><text x="${arrow.letter.x}" y="${arrow.letter.y}" fill="${label.color}" text-anchor="middle" dominant-baseline="middle" font-family="${font}" font-weight="bold" font-size="${arrow.letter.size}">N</text></g>`);
       if (bar && placed.scaleBar) parts.push(`<g transform="${place(placed.scaleBar, bar)}" fill="${label.color}"><g stroke="${label.color}" stroke-width="${SCALE_BAR.stroke}" stroke-linecap="square">${bar.lines.map(line => `<line x1="${n(line.x1)}" y1="${n(line.y1)}" x2="${n(line.x2)}" y2="${n(line.y2)}"/>`).join('')}</g>${bar.texts.map(text => `<text x="${n(text.x)}" y="${n(text.y)}" text-anchor="middle" dominant-baseline="middle" font-family="${font}" font-size="${SCALE_BAR.font}">${escape(text.text)}</text>`).join('')}</g>`);
       parts.push(`<rect x="${EXPORT_BORDER / 2}" y="${EXPORT_BORDER / 2}" width="${setup.width - EXPORT_BORDER}" height="${setup.height - EXPORT_BORDER}" fill="none" stroke="${setup.design.roadColor}" stroke-width="${EXPORT_BORDER}"/>`);
-      parts.push(`<text x="${n(placed.label.x)}" y="${n(placed.label.y)}" text-anchor="middle" dominant-baseline="middle" font-family="${font}"${label.bold ? ' font-weight="bold"' : ''}${label.italic ? ' font-style="italic"' : ''} font-size="${setup.labelSize}" fill="${label.color}" fill-opacity="${label.opacity}">${escape(label.text)}</text></svg>`);
+      parts.push(`<text x="${n(placed.label.x)}" y="${n(placed.label.y)}" text-anchor="middle" dominant-baseline="middle" font-family="${font}"${label.bold ? ' font-weight="bold"' : ''}${label.italic ? ' font-style="italic"' : ''} font-size="${n(placed.labelSize)}" fill="${label.color}" fill-opacity="${label.opacity}">${escape(label.text)}</text></svg>`);
       scope.postMessage({ blob: new Blob(parts, { type: 'image/svg+xml' }) });
     }
   } catch (error) { scope.postMessage({ error: error instanceof Error ? error.message : 'SVG export failed' }); }

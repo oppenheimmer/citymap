@@ -26,6 +26,29 @@ test('label pointer dragging, fine/coarse arrows and edge clamps affect normaliz
   await label(page).focus(); for (let i = 0; i < 25; i++) await page.keyboard.press('Shift+ArrowLeft'); expect(Number((await share(page)).searchParams.get('labelX'))).toBe(0.05);
 });
 
+test('a label too long for the map stays inside it, shrunk to fit, on screen and in exports', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const frame = page.locator('.map .frame');
+  const inside = async () => { const b = (await label(page).boundingBox())!, f = (await frame.boundingBox())!; return b.x >= f.x && b.x + b.width <= f.x + f.width && b.y >= f.y && b.y + b.height <= f.y + f.height; };
+  // A short label pushed to the right edge moves in to stay whole.
+  await label(page).focus(); for (let i = 0; i < 6; i++) await page.keyboard.press('Shift+ArrowRight');
+  expect(Number((await share(page)).searchParams.get('labelX'))).toBe(0.95);
+  expect(await inside()).toBe(true); await expect(label(page)).toHaveCSS('font-size', '28px');
+  // A label wider than the composed map (1000 px here) shrinks to fit; the design keeps its own size.
+  await page.getByLabel('Label text').fill('A very long title that is much wider than the map itself, on purpose');
+  await slider(page, 'Label size', 60);
+  await expect.poll(inside).toBe(true);
+  expect(parseFloat(await label(page).evaluate(element => getComputedStyle(element).fontSize))).toBeLessThan(60);
+  await expect(page.locator('output[for="size"]')).toHaveText('60 px'); expect((await share(page)).searchParams.get('labelSize')).toBe('60');
+  // The SVG draws it within the image, at the fitted size.
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const width = Number(await page.getByLabel('Width in pixels').inputValue());
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
+  const svg = await readFile((await (await pending).path())!, 'utf8');
+  const [, x, size] = svg.match(/<text x="([\d.]+)" y="[\d.]+" text-anchor="middle"[^>]*font-size="([\d.]+)"[^>]*>A very long title/)!.map(Number);
+  expect(size).toBeLessThan(60); expect(x).toBeCloseTo(width / 2, 0);
+});
+
 const view = async (page: Page) => (await share(page)).searchParams.get('view')!.split(',').map(Number);
 test('zoom, pan, fit and resize keep view links finite and restore the view', async ({ page }) => {
   await page.goto('/'); await sample(page); const initial = await view(page);

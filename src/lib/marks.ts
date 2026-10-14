@@ -7,6 +7,8 @@ import type { Box, Keepout, Point } from './graticule.ts';
 export const EXPORT_BORDER = 3;
 /** CSS pixels between the north arrow and a scale bar placed below it by default. */
 export const MARK_GAP = 10;
+/** CSS pixels the map label keeps clear of the map's edges. */
+export const LABEL_MARGIN = 8;
 export interface Size { width: number; height: number }
 export interface Centre { x: number; y: number }
 
@@ -24,8 +26,27 @@ export function scaleBarCentre(design: Design, bar: Size, map: Size, scale = 1):
   return markCentre({ x: north.x / map.width, y: below / map.height }, bar, map, scale);
 }
 
-/** Export positions of the marks and map label, nudged inward clear of the grid's teeth and labels. */
-export function placeMarks(design: Design, map: Size, scale: number, bar: Size | undefined, keepouts: Keepout[] = [], gap = 4): { north: Centre; scaleBar?: Centre; label: Centre } {
+/** Rough width of label text, about 0.6 em per character, for when it cannot be measured. */
+const estimatedWidth = (design: Design) => design.label.text.length * design.label.size * 0.6;
+
+/**
+ * Where the map label is drawn, and how large, so the whole text stays inside the map: its
+ * centre is moved in from the edges, and text wider than the map is shrunk to fit. `width` is
+ * the text's width in CSS pixels at the design's size; `scale` is map pixels per CSS pixel.
+ * The design keeps its own position and size, for a map with more room.
+ */
+export function labelLayout(design: Design, map: Size, scale = 1, width = estimatedWidth(design)): { centre: Centre; size: number; width: number } {
+  const margin = LABEL_MARGIN * scale, natural = width * scale;
+  const fit = natural > 0 ? Math.min(1, Math.max(0, map.width - 2 * margin) / natural) : 1;
+  const size = design.label.size * scale * fit, drawn = natural * fit;
+  return { centre: { x: clamp(design.label.x * map.width, drawn / 2 + margin, map.width), y: clamp(design.label.y * map.height, size / 2 + margin, map.height) }, size, width: drawn };
+}
+
+/**
+ * Export positions of the marks and map label, nudged inward clear of the grid's teeth and
+ * labels; `labelWidth` is the label text's measured width at the design's size, in CSS pixels.
+ */
+export function placeMarks(design: Design, map: Size, scale: number, bar: Size | undefined, keepouts: Keepout[] = [], gap = 4, labelWidth?: number): { north: Centre; scaleBar?: Centre; label: Centre; labelSize: number } {
   const box = (centre: Centre, width: number, height: number): Box => [centre.x - width / 2, centre.y - height / 2, centre.x + width / 2, centre.y + height / 2];
   const shift = (centre: Centre, [dx, dy]: Point): Centre => ({ x: centre.x + dx, y: centre.y + dy });
   const arrow = northCentre(design, map, scale), arrowBox = box(arrow, NORTH_ARROW.width * scale, NORTH_ARROW.height * scale);
@@ -39,7 +60,7 @@ export function placeMarks(design: Design, map: Size, scale: number, bar: Size |
       north = shift(arrow, offset); scaleBar = shift(at, offset);
     }
   }
-  const size = design.label.size * scale;
-  const at = { x: design.label.x * map.width, y: design.label.y * map.height }, label = shift(at, avoidGrid(box(at, design.label.text.length * size * 0.6, size), keepouts, gap));
-  return { north, scaleBar, label };
+  const layout = labelLayout(design, map, scale, labelWidth);
+  const label = shift(layout.centre, avoidGrid(box(layout.centre, layout.width, layout.size), keepouts, gap));
+  return { north, scaleBar, label, labelSize: layout.size };
 }
