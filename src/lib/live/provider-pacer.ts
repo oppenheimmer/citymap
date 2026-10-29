@@ -43,7 +43,7 @@ export class ProviderPacer {
     this.env = environment;
   }
 
-  run<T>(signal: AbortSignal, reserveMs: number, execute: () => Promise<T>, waiting: (state?: ProviderWait) => void = () => {}): Promise<T> {
+  run<T>(signal: AbortSignal, reserveMs: number, execute: () => Promise<T>, waiting: (state?: ProviderWait) => void = () => {}, preflight?: () => Promise<{ value: T } | undefined>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       let settled = false;
       const done = (result: { value: T } | { error: unknown }) => {
@@ -58,12 +58,22 @@ export class ProviderPacer {
       waiting(queued.until > this.env.clock.now() && queued.reason !== 'previous_request' ? queued : { reason: 'another_map' });
       const work = async () => {
         try {
+          const reuse = async () => {
+            const hit = await preflight?.();
+            if (signal.aborted) throw new CellFailure('cancelled');
+            if (hit !== undefined) { done(hit); return true; }
+            return false;
+          };
+          if (preflight && await reuse()) return;
           let state = this.read();
+          let waited = false;
           while (state.until > this.env.clock.now()) {
+            waited = true;
             waiting(state);
             await this.delay(state.until - this.env.clock.now(), signal);
             state = this.read();
           }
+          if (preflight && waited && await reuse()) return;
           if (signal.aborted) throw new CellFailure('cancelled');
           const started = this.env.clock.now();
           // Store before dispatch: closing the tab releases its lock but must not

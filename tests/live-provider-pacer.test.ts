@@ -55,6 +55,34 @@ test('successful results return immediately while the next request waits in prop
   await h.clock.advance(1125); assert.equal(h.timers.size, 0);
 });
 
+test('a post-lock cache hit adds no reservation, cooldown or provider failure reset', async () => {
+  const h = harness(), key = 'citymap-overpass-v1:https://overpass-api.de';
+  const original = JSON.stringify({ until: 20_000, reason: 'rate_limited', failures: 3 });
+  h.storage.set(key, original);
+  const result = await h.create().run(new AbortController().signal, 30_000, async () => { assert.fail('Cache hits must not dispatch'); }, undefined, async () => ({ value: 'cached' }));
+  assert.equal(result, 'cached'); assert.equal(h.storage.get(key), original);
+  assert.equal(h.timers.size, 0);
+});
+
+test('cache is checked again after a persisted cooldown before reserving upstream work', async () => {
+  const h = harness(), key = 'citymap-overpass-v1:https://overpass-api.de';
+  h.storage.set(key, JSON.stringify({ until: 5000, reason: 'previous_request', failures: 0 }));
+  let ready = false, reads = 0;
+  const result = h.create().run(new AbortController().signal, 30_000, async () => { assert.fail('A newly cached result must be reused'); }, undefined, async () => { reads++; return ready ? { value: 'cached later' } : undefined; });
+  await flush(); assert.equal(reads, 1); ready = true; await h.clock.advance(5000);
+  assert.equal(await result, 'cached later'); assert.equal(reads, 2);
+  assert.equal(JSON.parse(h.storage.get(key)!).until, 5000);
+});
+
+test('cancelling during an asynchronous cache preflight cannot dispatch or change provider state', async () => {
+  const h = harness(), controller = new AbortController();
+  let finish!: () => void;
+  const result = h.create().run(controller.signal, 30_000, async () => { assert.fail('Cancelled preflight must not dispatch'); }, undefined, () => new Promise(resolve => { finish = () => resolve(undefined); })).catch(error => error);
+  await flush(); controller.abort(); finish();
+  assert.equal((await result).code, 'cancelled'); await flush();
+  assert.equal(h.storage.size, 0); assert.equal(h.timers.size, 0);
+});
+
 test('independent tab instances serialize requests and share provider-requested waits', async () => {
   const h = harness();
   const first = h.run(h.create()).catch(error => error), second = h.run(h.create());

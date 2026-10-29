@@ -135,6 +135,16 @@ stopped. This can delay the next uncached view by up to 110 seconds for a
 four-cell request. Cached views remain available. The failure report records
 time spent waiting for the queue separately from successful fetch times.
 
+After acquiring the queue, a map checks the browser cell cache again before
+reserving provider work. Another tab may have downloaded those roads while this
+map waited. Completed cells become cache hits; only the remaining cells reach
+Overpass. A cache-only batch spends no request budget, creates no reservation or
+cooldown, and does not reset provider failure history. Persisted cooldowns also
+get a second cache check when the wait ends. Refresh and disabled caching still
+require fresh downloads. Partial cache hits remain loaded if the missing cells
+fail. These checks reuse completed saved cells; they do not share an unfinished
+worker response or guarantee deduplication before the first tab has saved it.
+
 Web Locks and local storage provide coordination across same-origin tabs and
 reloads. With storage denied the lock stays held through the pause; reload
 protection then cannot persist. Without usable Web Locks, maps within one page

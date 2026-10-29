@@ -32,12 +32,22 @@ export interface SchedulerOptions {
 /** What a failed request led to, for diagnostics; `alone` retries a combined request's cells one by one. */
 export type FailureOutcome = 'split' | 'retry' | 'cooldown' | 'failed' | 'alone';
 
+/** A queued batch may reuse leaves before dispatching its remaining network work. */
+export interface ScheduledBatch<T> {
+  pending(): LeafTask[];
+  reuse(task: LeafTask, result: T): void;
+  checkBudget(): void;
+  fetch(): Promise<void>;
+}
+
 export interface SchedulerHooks<T> {
   /**
    * Fetches leaves in one request, resolving with one result per task, in order. Rejections
    * are CellFailures; anything else counts as a decode failure.
    */
   execute(tasks: LeafTask[], signal: AbortSignal): Promise<T[]>;
+  /** Optional provider queue/cache preflight. Only batch.fetch() spends a request. */
+  schedule?(tasks: LeafTask[], signal: AbortSignal, batch: ScheduledBatch<T>): Promise<void>;
   /** Optional fast path, such as a browser cache, tried once per new job before any request. */
   lookup?(task: LeafTask, signal: AbortSignal): Promise<T | undefined>;
   /** Optional outage fallback. Misses retain the original retry/failure state and cooldown. */
@@ -61,6 +71,7 @@ interface Entry { job: Job; leaf: Leaf }
 const ALONE: ReadonlySet<FailureCode> = new Set(['timeout_or_resource_limit', 'response_too_large', 'invalid_request', 'decode_failure']);
 
 const RATE_LIMIT_BACKOFF = 5_000, BUSY_BACKOFF = 10_000, RETRY_BACKOFF = 2_000, MAX_BACKOFF = 60_000;
+class RequestBudgetReached extends Error {}
 /** Shorter waits are lengthened; a provider asking for longer pauses the session instead. */
 export const MIN_COOLDOWN = 1_000, MAX_COOLDOWN = 300_000;
 
@@ -226,7 +237,7 @@ export class CellScheduler<T> {
           // Quarters of a split cell, and cells a combined request failed, load alone.
           const alone = leaf.depth > 0 || !!leaf.alone;
           if (batch.length && alone) continue;
-          if (!batch.length && this.requests >= this.options.maxRequests) { this.exhausted = true; this.hooks.changed(); return; }
+          if (!batch.length && this.requests >= this.options.maxRequests && !this.hooks.schedule) { this.exhausted = true; this.hooks.changed(); return; }
           batch.push({ job, leaf });
           if (alone || batch.length >= this.batch) { this.start(batch); continue next; }
         }
@@ -241,22 +252,45 @@ export class CellScheduler<T> {
     const controller = new AbortController(), request: Request = { controller, leaves: new Set(batch.map(entry => entry.leaf)) };
     const tasks = batch.map(({ job, leaf }) => this.task(job, leaf));
     for (const { leaf } of batch) { leaf.state = 'active'; leaf.request = request; }
-    this.active++; this.requests++;
+    this.active++;
     // Leaves that stopped being wanted were detached; their results are dropped.
     const attached = () => batch.flatMap((entry, index) => entry.leaf.request === request ? [{ ...entry, task: tasks[index], index }] : []);
-    this.hooks.execute(tasks, controller.signal).then(results => {
+    const complete = (task: LeafTask, result: T, cached: boolean) => {
+      const entry = attached().find(entry => entry.task === task);
+      if (!entry || controller.signal.aborted || this.disposed) return;
+      entry.leaf.request = undefined; entry.leaf.state = 'ready'; request.leaves.delete(entry.leaf);
+      this.hooks.loaded(task, result, cached);
+    };
+    let dispatched = false;
+    const checkBudget = () => { if (attached().length && this.requests >= this.options.maxRequests) throw new RequestBudgetReached(); };
+    const scheduled: ScheduledBatch<T> = {
+      pending: () => attached().map(entry => entry.task),
+      reuse: (task, result) => { complete(task, result, true); this.hooks.changed(); },
+      checkBudget,
+      fetch: async () => {
+        controller.signal.throwIfAborted();
+        const entries = attached();
+        if (!entries.length) return;
+        checkBudget(); this.requests++; dispatched = true;
+        const results = await this.hooks.execute(entries.map(entry => entry.task), controller.signal);
+        if (results.length !== entries.length) throw new CellFailure('decode_failure');
+        entries.forEach((entry, index) => complete(entry.task, results[index], false));
+      },
+    };
+    const work = this.hooks.schedule ? this.hooks.schedule(tasks, controller.signal, scheduled) : scheduled.fetch();
+    work.then(() => {
       if (controller.signal.aborted || this.disposed) return;
-      this.active--; this.failures = 0;
-      for (const { leaf, task, index } of attached()) {
-        leaf.request = undefined; leaf.state = 'ready';
-        this.hooks.loaded(task, results[index], false);
-      }
+      this.active--; if (dispatched) this.failures = 0;
       this.hooks.changed(); this.pump();
     }, (error: unknown) => {
       if (controller.signal.aborted || this.disposed) return;
       this.active--;
       const entries = attached();
       for (const { leaf } of entries) leaf.request = undefined;
+      if (error instanceof RequestBudgetReached) {
+        for (const { leaf } of entries) leaf.state = 'queued';
+        this.exhausted = true; this.hooks.changed(); return;
+      }
       this.failRequest(entries, error instanceof CellFailure ? error : new CellFailure('decode_failure', { message: error instanceof Error ? error.message : undefined }));
       this.hooks.changed(); this.pump();
     });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CellScheduler } from '../src/lib/live/scheduler.ts';
-import type { Clock, JobSpec, LeafTask, SchedulerOptions } from '../src/lib/live/scheduler.ts';
+import type { Clock, JobSpec, LeafTask, SchedulerHooks, SchedulerOptions } from '../src/lib/live/scheduler.ts';
 import { CellFailure } from '../src/lib/live/overpass.ts';
 import type { FailureCode } from '../src/lib/live/overpass.ts';
 
@@ -29,7 +29,7 @@ const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
 /** One request: `task` is its first leaf; `resolve` takes one result, or one per leaf. */
 interface Call { task: LeafTask; tasks: LeafTask[]; signal: AbortSignal; settled: boolean; resolve(value: string | string[]): void; reject(error: unknown): void }
-function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTask) => string | undefined, recover?: (task: LeafTask, failure: CellFailure, signal: AbortSignal) => Promise<string | undefined>) {
+function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTask) => string | undefined, recover?: (task: LeafTask, failure: CellFailure, signal: AbortSignal) => Promise<string | undefined>, schedule?: SchedulerHooks<string>['schedule']) {
   const clock = fakeClock(), calls: Call[] = [], loaded: { leaf: string; job: string; result: string; cached: boolean }[] = [], outcomes: string[] = [];
   const scheduler = new CellScheduler<string>({ concurrency: 1, maxDepth: 2, retries: 1, maxRequests: 100, pauseAfter: 4, clock, ...options }, {
     execute: (tasks, signal) => new Promise((resolve, reject) => {
@@ -38,6 +38,7 @@ function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTa
     }),
     lookup: lookup && (async task => lookup(task)),
     recover,
+    schedule,
     loaded: (task, result, cached) => loaded.push({ leaf: task.leaf, job: task.job, result, cached }),
     changed: () => {},
     failed: (task, failure, outcome) => outcomes.push(`${task.leaf}:${failure.code}:${outcome}`),
@@ -46,6 +47,47 @@ function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTa
 }
 const job = (key: string, priority: number, x = priority): JobSpec => ({ key, tile: { z: 13, x, y: 10 }, rank: 1, priority });
 const fail = (code: FailureCode, retryAfter?: number) => new CellFailure(code, { retryAfter });
+
+test('post-queue cache hits spend no request budget and remaining leaves alone reach the provider', async () => {
+  const h = harness({ batch: 4, maxRequests: 1 }, undefined, undefined, async (tasks, _signal, batch) => {
+    for (const task of tasks.filter(task => task.job !== 'b')) batch.reuse(task, 'cached');
+    await batch.fetch();
+  });
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  assert.deepEqual(h.calls[0].tasks.map(task => task.job), ['b']);
+  assert.deepEqual(h.loaded.map(row => [row.job, row.cached]), [['a', true]]);
+  h.calls[0].resolve('network'); await flush();
+  h.scheduler.want([job('a', 1), job('b', 2), job('c', 3)]); await flush();
+  assert.equal(h.scheduler.status('c'), 'ready');
+  assert.equal(h.calls.length, 1); assert.equal(h.scheduler.requests, 1);
+  assert.equal(h.scheduler.exhausted, false);
+  h.scheduler.dispose();
+});
+
+test('a failed remaining request cannot fail or redeliver post-queue cache hits', async () => {
+  const h = harness({ batch: 4 }, undefined, undefined, async (tasks, _signal, batch) => {
+    batch.reuse(tasks[0], 'cached'); await batch.fetch();
+  });
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  h.calls[0].reject(fail('invalid_request')); await flush();
+  assert.equal(h.scheduler.status('a'), 'ready'); assert.equal(h.scheduler.status('b'), 'failed');
+  assert.deepEqual(h.loaded.map(row => [row.job, row.cached]), [['a', true]]);
+  assert.deepEqual(h.outcomes, ['13/2/10:invalid_request:failed']);
+  h.scheduler.dispose();
+});
+
+test('queued dispatch rechecks the request budget and leaves missing cells retryable', async () => {
+  const h = harness({ concurrency: 2, maxRequests: 1 }, undefined, undefined, async (_tasks, _signal, batch) => {
+    await flush(); batch.checkBudget(); await batch.fetch();
+  });
+  h.scheduler.want([job('a', 1), job('b', 2)]); await flush(); await flush();
+  assert.equal(h.calls.length, 1); assert.equal(h.scheduler.exhausted, true);
+  assert.equal(h.scheduler.status('b'), 'pending'); assert.deepEqual(h.outcomes, []);
+  h.calls[0].resolve('A'); await flush();
+  h.scheduler.retry(); await flush(); await flush();
+  assert.equal(h.calls.length, 2); h.calls[1].resolve('B'); await flush();
+  assert.equal(h.scheduler.status('b'), 'ready'); h.scheduler.dispose();
+});
 
 test('jobs load one at a time in priority order and a repeated want never duplicates requests', async () => {
   const h = harness();

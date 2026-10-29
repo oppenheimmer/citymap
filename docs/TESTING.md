@@ -52,6 +52,13 @@ for a fully loaded view; limited-detail exports still preserve all drawn roads.
 The displayed share link follows design edits, zoom and cache settings, resets
 when a different map is selected, and restores the latest map when opened.
 
+Post-queue cache tests cover two cold tabs downloading identical roads once,
+overlapping views requesting only their missing cells, and queued refresh or
+disabled caching still requiring fresh downloads. Unit checks verify cache-only
+batches spend no network budget or provider reservation, partial hits survive
+remaining failures, cooldown state remains intact, and cancellation during
+preflight cannot dispatch a request.
+
 ## Run the suite
 
 Use Node 24 (`nvm use`) and the locked dependencies (`npm ci` if needed). The

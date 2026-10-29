@@ -582,6 +582,56 @@ test('switching cities aborts live requests and never draws a previous city\'s c
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText('512 segments');
 });
 
+test('two cold tabs share completed cells after waiting instead of downloading them twice', async ({ page, context, request }) => {
+  const link = `/?${LIVE}&livePacing=1&auto=1&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Shared+cold+view`;
+  await control(request, { roads: { delay: 1500 } });
+  await page.goto(link);
+  await expect.poll(async () => (await cellQueries(request)).length).toBe(1);
+  const second = await context.newPage(); await second.goto(link);
+  await expect(status(second)).toContainText('Another map is using the road service');
+  await expect(status(page)).toContainText('Shared cold view ready');
+  await expect.poll(() => storedCells(page)).toHaveLength(1);
+  await expect(status(second)).toContainText('Shared cold view ready', { timeout: 15_000 });
+  expect(await cellQueries(request)).toHaveLength(1);
+  await detail(second, 'Load timings');
+  await expect(second.locator('aside')).toContainText('0 road requests · 1 from the browser cache');
+  await second.close();
+});
+
+test('an overlapping queued view sends only its missing cells to the road service', async ({ page, context, request }) => {
+  const link = `/?${LIVE}&livePacing=1&auto=1&detail=major&bbox=35,139,35.2,139.3&q=Overlapping+view&view=139.1,35.1,`;
+  await control(request, { roads: { delay: 1500 } });
+  await page.goto(`${link}500,500`);
+  await expect.poll(async () => (await cellQueries(request)).length).toBe(1);
+  const second = await context.newPage(); await second.goto(`${link}20000,20000`);
+  await expect(status(second)).toContainText('Another map is using the road service');
+  await expect(status(second)).toContainText('Overlapping view ready', { timeout: 20_000 });
+  const cells = await requestedCells(request), names = cells.map(cellName);
+  expect(cells.length).toBeGreaterThan(1);
+  expect(new Set(names).size).toBe(names.length);
+  await detail(second, 'Load timings');
+  await expect(second.locator('aside')).toContainText('1 from the browser cache');
+  await second.close();
+});
+
+for (const mode of ['cache disabled', 'refresh']) test(`a queued ${mode} still downloads fresh roads`, async ({ page, context, request }) => {
+  const link = `/?${LIVE}&livePacing=1&auto=1&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Fresh+queued+view`;
+  await control(request, { roads: { delay: 1500 } });
+  await page.goto(link);
+  await expect.poll(async () => (await cellQueries(request)).length).toBe(1);
+  const second = await context.newPage(); await second.goto(`${link}${mode === 'cache disabled' ? '&cache=0' : ''}`);
+  await expect(status(second)).toContainText('Another map is using the road service');
+  if (mode === 'refresh') {
+    await detail(second, 'Data and source');
+    await second.getByRole('button', { name: 'Refresh city data' }).click();
+  }
+  await expect(status(second)).toContainText('Fresh queued view ready', { timeout: 15_000 });
+  expect(await cellQueries(request)).toHaveLength(2);
+  await detail(second, 'Load timings');
+  await expect(second.locator('aside')).toContainText('1 road requests · 0 from the browser cache');
+  await second.close();
+});
+
 test('shared provider pacing serializes tabs, cancels queued maps and leaves cached views available', async ({ page, context, request }) => {
   await liveCity(page, 'Warm city'); await idle(request);
   const link = await share(page), cells = (await requestedCells(request)).length;

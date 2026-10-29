@@ -9,7 +9,7 @@ import type { Tile } from './grid.ts';
 import { CellFailure, isOutage, QUERY_SCHEMA, queryTimeout } from './overpass.ts';
 import type { FailureCode } from './overpass.ts';
 import { CellScheduler } from './scheduler.ts';
-import type { Clock, JobSpec, LeafTask } from './scheduler.ts';
+import type { Clock, JobSpec, LeafTask, ScheduledBatch } from './scheduler.ts';
 import type { CellCache } from './cell-cache.ts';
 import { cellCacheEpoch } from './cell-cache.ts';
 import { loadReport } from './report.ts';
@@ -188,7 +188,8 @@ export class LiveViewport {
     this.worker.onerror = () => this.rejectAll(new CellFailure('provider_unavailable', { message: 'Background road processing failed' }));
     const cache = settings.cache;
     this.scheduler = new CellScheduler<CellResult>({ concurrency: this.fallback || providerPacer(settings.overpass, settings.pace) ? 1 : settings.concurrency, maxDepth: LIVE_LIMITS.maxDepth, retries: LIVE_LIMITS.retries, maxRequests: LIVE_LIMITS.maxRequests, pauseAfter: LIVE_LIMITS.pauseAfter, batch: LIVE_LIMITS.batch, clock: settings.clock }, {
-      execute: this.execute,
+      execute: (tasks, signal) => this.fetch(tasks, signal, this.failoverPending ? this.fallback! : this.activeProvider),
+      schedule: this.schedule,
       lookup: cache && !settings.forceNetwork ? (task, signal) => this.cached(task, signal, isOutage(this.scheduler.pauseReason) || this.scheduler.cooldownUntil > (settings.clock || performance).now() && isOutage(this.scheduler.cooldownReason)) : undefined,
       recover: cache && !settings.forceNetwork ? (task, _failure, signal) => this.cached(task, signal, true) : undefined,
       loaded: this.loaded,
@@ -359,7 +360,7 @@ export class LiveViewport {
     this.emit();
   }
 
-  private execute = async (tasks: LeafTask[], signal: AbortSignal): Promise<CellResult[]> => {
+  private schedule = async (tasks: LeafTask[], signal: AbortSignal, batch: ScheduledBatch<CellResult>): Promise<void> => {
     if (this.pendingUploadBytes > LIVE_LIMITS.pendingUploadBytes) {
       await new Promise<void>((resolve, reject) => {
         const cancel = () => reject(new CellFailure('cancelled'));
@@ -370,17 +371,34 @@ export class LiveViewport {
     }
     const provider = this.failoverPending ? this.fallback! : this.activeProvider;
     const pacer = providerPacer(provider, this.settings.pace);
-    if (!pacer) return this.fetch(tasks, signal, provider);
+    const preflight = async () => {
+      if (this.settings.cache && !this.settings.forceNetwork) {
+        for (const task of batch.pending()) {
+          const hit = await this.cached(task, signal, false);
+          signal.throwIfAborted();
+          if (hit) batch.reuse(task, hit);
+        }
+      }
+      batch.checkBudget();
+      return batch.pending().length ? undefined : { value: undefined };
+    };
+    if (!pacer) {
+      if (this.settings.cache && !this.settings.forceNetwork && await preflight()) return;
+      return batch.fetch();
+    }
     const id = ++this.waitId, started = performance.now();
+    let released = false;
+    const release = () => { if (!released) { this.stats.providerWaitMs += performance.now() - started; released = true; } };
     // Includes the worker's header deadline and idle-body allowance. Cancelling a
     // browser download cannot establish that its upstream slot has been released.
-    return pacer.run(signal, (queryTimeout(tasks.length) + 50) * 1000, () => {
-      this.stats.providerWaitMs += performance.now() - started;
-      return this.fetch(tasks, signal, provider);
-    }, state => {
-      if (id !== this.waitId || this.disposed) return;
-      this.providerWait = state; this.emit();
-    });
+    try {
+      await pacer.run(signal, (queryTimeout(tasks.length) + 50) * 1000, () => {
+        release(); return batch.fetch();
+      }, state => {
+        if (id !== this.waitId || this.disposed) return;
+        this.providerWait = state; this.emit();
+      }, preflight);
+    } finally { release(); }
   };
 
   private fetch(tasks: LeafTask[], signal: AbortSignal, provider: string) {
