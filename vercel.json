@@ -52,6 +52,9 @@
     }
   ],
   "functions": {
+    "api/cache.ts": {
+      "maxDuration": 30
+    },
     "api/search.ts": {
       "maxDuration": 30
     }

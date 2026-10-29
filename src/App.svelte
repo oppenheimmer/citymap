@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import DesignImport from './DesignImport.svelte';
   import SavedDesigns from './SavedDesigns.svelte';
+  import CacheManager from './CacheManager.svelte';
   import { BUNDLED_MAPS } from './lib/bundled-maps.ts';
   import MapCanvas from './MapCanvas.svelte';
   import { bbox, boundaryFromNominatim, covers, hasLocation, publicUrl } from './lib/domain.ts';
@@ -11,7 +12,7 @@
   import { request } from './lib/request.ts';
   import { parseUrl, shareUrl } from './lib/url-state.ts';
   import { responseJson } from './lib/data/response-body.ts';
-  import { clearCityCache, designs, removeDesign, renameDesign, saveDesign, updateDesign } from './lib/city-storage.ts';
+  import { designs, removeDesign, renameDesign, saveDesign, updateDesign } from './lib/city-storage.ts';
   import type { SavedDesign } from './lib/city-storage.ts';
   import { designFile } from './lib/design-file.ts';
   import { download } from './lib/download.ts';
@@ -21,7 +22,7 @@
   import type { LiveCoverage, LiveSettings, LiveViewport } from './lib/live/viewport.ts';
   import type { FailureCode } from './lib/live/overpass.ts';
   import { isPublicOverpass } from './lib/live/overpass.ts';
-  import { clearCellCache } from './lib/live/cell-cache.ts';
+  import { clearLocalMaps } from './lib/cache-manager.ts';
   import { failureLabel } from './lib/live/report.ts';
   import { backupProvider } from './lib/live/providers.ts';
   import { fitCamera } from './lib/view.ts';
@@ -162,7 +163,7 @@
     options = { boundary, providers: mapProviders, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined, ...(viewport ? { viewport } : {}) };
     // Smaller devices keep less road geometry before unseen regions are evicted.
     const small = matchMedia('(max-width: 750px)').matches || ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
-    liveSettings = viewport ? { overpass: providers.overpass, fallback: testing.get('liveMirror') === '1' ? new URL('/mirror-roads', providers.overpass).href : overpassFallback, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV, pace: testing.get('livePacing') === '1' } : undefined;
+    liveSettings = viewport ? { overpass: providers.overpass, fallback: testing.get('liveMirror') === '1' ? new URL('/mirror-roads', providers.overpass).href : overpassFallback, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, cacheLabel: boundary.name, debug: import.meta.env.DEV, pace: testing.get('livePacing') === '1' } : undefined;
     mounted = true;
   }
   function sample(size: 'small' | 'medium' | 'large') { choose({ key: `fixture-${size}`, fixture: size, name: `${size[0].toUpperCase()}${size.slice(1)} synthetic grid`, kind: 'synthetic' }); }
@@ -318,8 +319,7 @@
     if (live) download(new Blob([JSON.stringify(live.report(), null, 2)], { type: 'application/json;charset=utf-8' }), 'citymap-load-report.json');
   }
   async function clear() {
-    const [cities] = await Promise.all([clearCityCache(), clearCellCache()]);
-    status = cities ? 'Saved city geometry cleared. Designs are preserved.' : 'Local cache is unavailable in this browser.';
+    status = (await clearLocalMaps()).message;
   }
   function date(value?: string) { return value && Number.isFinite(Date.parse(value)) ? dateFormatter.format(new Date(value)) : 'unavailable'; }
 
@@ -406,6 +406,7 @@
       {#if liveCoverage}{@const stats = liveCoverage.stats}<details><summary>Load timings</summary><p>{stats.regions.toLocaleString()} map regions · {stats.segments.toLocaleString()} segments{stats.firstRoadMs !== undefined ? ` · first road frame ${stats.firstRoadMs.toFixed(1)} ms` : ''}</p><p>{stats.requests.toLocaleString()} road requests · {stats.cached.toLocaleString()} from the browser cache · {formatBytes(stats.bytes)} downloaded{stats.medianFetchMs !== undefined ? ` · median request ${stats.medianFetchMs.toFixed(0)} ms` : ''}{stats.splits ? ` · ${stats.splits} dense regions split` : ''}</p>{#if stats.recentFailures.at(-1)}{@const failure = stats.recentFailures.at(-1)!}<p>Last request failure: {failureLabel(failure.code)}{failure.status ? ` (HTTP ${failure.status})` : ''}.</p>{/if}<button onclick={exportLoadReport}>Download load report</button><p class="hint">Includes timings and errors. Queries and map coordinates are omitted.</p></details>{/if}
       {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p>{#if metrics.preparation}<p>Download {metrics.preparation.downloadMs.toFixed(1)} ms · decode {metrics.preparation.decodeMs.toFixed(1)} ms · index {metrics.preparation.indexMs.toFixed(1)} ms · projection {metrics.preparation.projectMs.toFixed(1)} ms</p><p class="hint">Download time includes delivery waits; parallel request times can overlap.</p>{/if}</details>{/if}
     {/if}
+    <CacheManager />
     <DesignImport {generation} allowFixtures={SAMPLES} onimport={value => choose(value.boundary, true, false, value.design)} />
     <SavedDesigns records={saved} onrestore={restore} onexport={exportDesign} ondelete={record => { const removed = removeDesign(record.id); if (removed) { saved = designs(); if (savedId === record.id) savedId = null; status = 'Saved design deleted.'; } return removed; }} onrename={(record, name) => { const renamed = renameDesign(record.id, name); if (renamed) { saved = designs(); status = 'Saved design renamed.'; } return renamed; }} />
     <footer>Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors, ODbL</a>.</footer>

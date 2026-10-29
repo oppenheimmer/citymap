@@ -84,7 +84,7 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
           const geometry: Geometry = { buffers, ranks, coverage: message.coverage, bounds, origin, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
           await callbacks.done(geometry);
           if (!disposed && options.useCache) {
-            const persist = () => { if (!disposed) void putCity(cacheKey, geometry, cacheEpoch); };
+            const persist = () => { if (!disposed) void putCity(cacheKey, geometry, cacheEpoch, options.boundary.name); };
             if ('requestIdleCallback' in window) window.requestIdleCallback(persist, { timeout: 2000 });
             else setTimeout(persist, 0);
           }

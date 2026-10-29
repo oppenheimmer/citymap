@@ -18,7 +18,13 @@ if (entry) {
   check(gzipSync(source).length <= 100_000, 'Entry JavaScript under 100 KB gzip');
   check(!source.includes('Small sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data') && !source.includes('https://backup.citymap.test/api/interpreter'), 'Test sample controls/provider absent');
   const env = { ...loadEnv('production', process.cwd(), ''), ...process.env };
-  for (const key of ['R2_SECRET_ACCESS_KEY', 'R2_ACCESS_KEY_ID', 'SEARCH_PROVIDER_API_KEY']) if (env[key]) check(!source.includes(env[key]), `${key} stays server-only`);
+  const scripts = (await Promise.all(files.filter(file => file.endsWith('.js')).map(file => readFile(`dist/assets/${file}`, 'utf8')))).join('\n');
+  for (const key of ['R2_SECRET_ACCESS_KEY', 'R2_ACCESS_KEY_ID', 'SEARCH_PROVIDER_API_KEY', 'R2_CACHE_ACCESS_KEY_ID', 'R2_CACHE_SECRET_ACCESS_KEY', 'CACHE_ADMIN_TOKEN']) if (env[key]) check(!scripts.includes(env[key]), `${key} stays server-only`);
+  if (['R2_CACHE_ACCESS_KEY_ID', 'R2_CACHE_SECRET_ACCESS_KEY', 'CACHE_ADMIN_TOKEN'].some(key => !!env[key])) {
+    check(['R2_ACCOUNT_ID', 'R2_DATA_BUCKET', 'R2_CACHE_ACCESS_KEY_ID', 'R2_CACHE_SECRET_ACCESS_KEY', 'APP_ORIGIN'].every(key => !!env[key]) && (env.CACHE_ADMIN_TOKEN || '').length >= 32, 'Complete optional R2 administration configuration');
+    check(env.R2_DATA_BUCKET !== env.R2_SEARCH_BUCKET, 'R2 administration cannot use the search bucket');
+    try { check(new URL(env.APP_ORIGIN).origin === env.APP_ORIGIN, 'R2 administration uses an exact app origin'); } catch { check(false, 'R2 administration uses an exact app origin'); }
+  }
   check(['', '0', '1'].includes(env.VITE_LIVE_VIEWPORT || ''), 'Live viewport flag is unset, 1, or explicit rollback 0');
   check(!env.VITE_OVERPASS_CONCURRENCY || /^[1-4]$/.test(env.VITE_OVERPASS_CONCURRENCY), 'Live road concurrency is 1–4');
   try { backupProvider(env.VITE_OVERPASS_URL || 'https://overpass-api.de/api/interpreter', env.VITE_OVERPASS_FALLBACK_URL); check(true, 'Optional road backup is valid and independent'); }
@@ -43,6 +49,7 @@ for (const key of BUNDLED_CITIES) check(await readFile(`dist/data/v2/cities/${ke
 const config = JSON.parse(await readFile('vercel.json', 'utf8'));
 check(config.outputDirectory === 'dist' && config.installCommand === 'npm ci', 'Vercel single-package build');
 check(config.functions?.['api/search.ts']?.maxDuration === 30, 'Bounded Vercel search function');
+check(config.functions?.['api/cache.ts']?.maxDuration === 30, 'Bounded Vercel cache function');
 // Vercel compiles the function with the nearest tsconfig; without rewriting, its `.ts` imports fail at runtime.
 check(JSON.parse(await readFile('api/tsconfig.json', 'utf8')).compilerOptions?.rewriteRelativeImportExtensions === true, 'Search function imports compile to .js');
 check(config.headers.some(rule => rule.source.endsWith('/latest.json')) && config.headers.some(rule => rule.source.startsWith('/data/') && rule.headers.some(header => header.value.includes('immutable'))), 'Bundled data cache headers');

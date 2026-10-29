@@ -327,7 +327,7 @@ test.describe('mobile accessibility', () => {
   test('dialog focus/Escape, native browser shortcuts and narrow layout work', async ({ page }) => {
     await page.goto('/'); await sample(page); expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await expect(page.locator('canvas')).toHaveJSProperty('width', 780); await page.getByRole('button', { name: 'Export', exact: true }).click(); await expect(page.getByRole('dialog')).toBeVisible();
-    await page.keyboard.press('Tab'); expect(await page.evaluate(() => !!document.querySelector('dialog')!.contains(document.activeElement))).toBe(true); await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).not.toBeVisible();
+    await page.keyboard.press('Tab'); expect(await page.evaluate(() => !!document.querySelector('dialog[open]')!.contains(document.activeElement))).toBe(true); await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).not.toBeVisible();
     const browserZoomAllowed = await page.locator('canvas').evaluate(canvas => { const event = new WheelEvent('wheel', { ctrlKey: true, bubbles: true, cancelable: true }); canvas.dispatchEvent(event); return !event.defaultPrevented; }); expect(browserZoomAllowed).toBe(true);
     expect(await page.locator('canvas').evaluate(canvas => {
       const event = new KeyboardEvent('keydown', { key: '+', ctrlKey: true, bubbles: true, cancelable: true });

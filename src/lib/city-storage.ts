@@ -1,16 +1,18 @@
 import { ROAD_DETAILS } from './domain.ts';
 import type { Boundary, Design, Geometry } from './domain.ts';
+import { CacheGeneration, GENERATION_KEY } from './cache-generation.ts';
+import type { LocalCacheEntry } from './cache-generation.ts';
 
 const DATABASE = 'citymap-geometry';
 // Format 2 added the projection origin for geographic views; 3 adds road ranks and coverage.
 const FORMAT = 3;
 const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_CITY_BYTES = 32 * 1024 * 1024;
-let epoch = 0;
+const generation = new CacheGeneration('cities');
 /** Deferred writes keep their generation so clearing cannot be undone by an old load. */
-export const cityCacheEpoch = () => epoch;
+export const cityCacheEpoch = () => generation.read();
 interface CacheRecord { format: number; geometry: { buffers: ArrayBuffer[]; ranks: Geometry['ranks']; coverage: Geometry['coverage']; bounds: Geometry['bounds']; origin: Geometry['origin']; source: Geometry['source']; segmentCount: number } }
-interface CacheMeta { key: string; bytes: number; lastUsed: number }
+interface CacheMeta { key: string; bytes: number; lastUsed: number; label?: string; downloadedAt?: string }
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -52,19 +54,22 @@ export async function getCity(key: string): Promise<Geometry | undefined> {
   finally { db?.close(); }
 }
 
-export async function putCity(key: string, geometry: Geometry, expectedEpoch = epoch): Promise<boolean> {
+export async function putCity(key: string, geometry: Geometry, expectedEpoch = cityCacheEpoch(), label?: string): Promise<boolean> {
   const bytes = geometry.buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-  if (expectedEpoch !== epoch || !geometry.source.complete || !bytes || bytes > MAX_CITY_BYTES) return false;
+  if (expectedEpoch !== cityCacheEpoch() || !geometry.source.complete || !bytes || bytes > MAX_CITY_BYTES) return false;
   let db: IDBDatabase | undefined;
   try {
     db = await open();
-    if (expectedEpoch !== epoch) return false;
+    if (expectedEpoch !== cityCacheEpoch()) return false;
     const transaction = db.transaction(['cities', 'metadata'], 'readwrite');
     const metadata = transaction.objectStore('metadata');
     const cities = transaction.objectStore('cities');
+    let written = false;
     const request = metadata.getAll();
     request.onsuccess = () => {
-      const records = (request.result as CacheMeta[]).filter(record => record.key !== key).sort((a, b) => a.lastUsed - b.lastUsed);
+      generation.observe(request.result.find((record: { key: string }) => record.key === GENERATION_KEY)?.generation);
+      if (expectedEpoch !== cityCacheEpoch()) return;
+      const records = (request.result as CacheMeta[]).filter(record => record.key !== GENERATION_KEY && record.key !== key).sort((a, b) => a.lastUsed - b.lastUsed);
       let total = records.reduce((sum, record) => sum + record.bytes, 0) + bytes;
       for (const record of records) {
         if (total <= MAX_TOTAL_BYTES) break;
@@ -72,7 +77,28 @@ export async function putCity(key: string, geometry: Geometry, expectedEpoch = e
       }
       const record: CacheRecord = { format: FORMAT, geometry: { ...geometry, source: { ...geometry.source, local: false }, buffers: geometry.buffers.map(buffer => buffer.byteOffset === 0 && buffer.byteLength === buffer.buffer.byteLength ? buffer.buffer as ArrayBuffer : buffer.slice().buffer as ArrayBuffer) } };
       cities.put(record, key);
-      metadata.put({ key, bytes, lastUsed: Date.now() });
+      metadata.put({ key, bytes, lastUsed: Date.now(), label: label?.slice(0, 256), downloadedAt: geometry.source.downloadedAt });
+      written = true;
+    };
+    await complete(transaction);
+    return written;
+  } catch { return false; }
+  finally { db?.close(); }
+}
+
+export async function clearCityCache(key?: string): Promise<boolean> {
+  generation.invalidate();
+  let db: IDBDatabase | undefined;
+  try {
+    db = await open();
+    const transaction = db.transaction(['cities', 'metadata'], 'readwrite');
+    const cities = transaction.objectStore('cities'), metadata = transaction.objectStore('metadata');
+    const marker = metadata.get(GENERATION_KEY);
+    marker.onsuccess = () => {
+      if (marker.result?.generation >= generation.read()) { generation.observe(marker.result.generation + 1); generation.publish(); }
+      if (key === undefined) { cities.clear(); metadata.clear(); }
+      else { cities.delete(key); metadata.delete(key); }
+      metadata.put({ key: GENERATION_KEY, generation: generation.read() });
     };
     await complete(transaction);
     return true;
@@ -80,17 +106,15 @@ export async function putCity(key: string, geometry: Geometry, expectedEpoch = e
   finally { db?.close(); }
 }
 
-export async function clearCityCache(): Promise<boolean> {
-  epoch++;
+/** Reads only small metadata records, never geometry buffers. */
+export async function listCityCache(): Promise<LocalCacheEntry[] | undefined> {
   let db: IDBDatabase | undefined;
   try {
     db = await open();
-    const transaction = db.transaction(['cities', 'metadata'], 'readwrite');
-    transaction.objectStore('cities').clear(); transaction.objectStore('metadata').clear();
+    const transaction = db.transaction('metadata'), request = transaction.objectStore('metadata').getAll();
     await complete(transaction);
-    return true;
-  } catch { return false; }
-  finally { db?.close(); }
+    return (request.result as CacheMeta[]).filter(record => record.key !== GENERATION_KEY).map(record => ({ key: record.key, label: record.label || record.key.split('@')[0], bytes: record.bytes, savedAt: Date.parse(record.downloadedAt || '') || record.lastUsed, detail: record.key.includes('@') ? `Revision ${record.key.split('@')[1].slice(0, 12)}` : undefined }));
+  } catch { return; } finally { db?.close(); }
 }
 
 export interface SavedDesign { id: string; name: string; boundary: Boundary; design: Design; savedAt: string }

@@ -64,6 +64,8 @@ export interface LiveSettings {
   budgetBytes: number;
   /** Browser cell cache; omitted when caching is off. */
   cache?: CellCache;
+  /** Display hint only: fragments can be shared by several nearby cities. */
+  cacheLabel?: string;
   /** Skip cache reads (still refreshing the cache). */
   forceNetwork?: boolean;
   /** Log sanitized provider failures to the console. */
@@ -481,9 +483,9 @@ export class LiveViewport {
     const cache = this.settings.cache;
     if (cache) {
       // A complete leaf is useful even if its parent is interrupted before all quarters arrive.
-      if (!cached) void cache.defer(this.cacheKey(jobKey(task.rank, task.tile), result.provider), this.origin, [result.positions], { fetchedAt: result.fetchedAt, snapshotAt: result.snapshotAt }, result.cacheEpoch);
+      if (!cached) void cache.defer(this.cacheKey(jobKey(task.rank, task.tile), result.provider), this.origin, [result.positions], { fetchedAt: result.fetchedAt, snapshotAt: result.snapshotAt, label: this.settings.cacheLabel }, result.cacheEpoch);
       // Aggregate only after every child is ready, including when the last child was cached.
-      if (task.depth > 0 && region.providers.size === 1 && this.scheduler.status(task.job) === 'ready') void cache.defer(this.cacheKey(task.job, result.provider), this.origin, [...region.buffers], { fetchedAt: region.fetchedAt, snapshotAt: region.snapshotAt }, region.cacheEpoch);
+      if (task.depth > 0 && region.providers.size === 1 && this.scheduler.status(task.job) === 'ready') void cache.defer(this.cacheKey(task.job, result.provider), this.origin, [...region.buffers], { fetchedAt: region.fetchedAt, snapshotAt: region.snapshotAt, label: this.settings.cacheLabel }, region.cacheEpoch);
     }
     this.evict();
   };

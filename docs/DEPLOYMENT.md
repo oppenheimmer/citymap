@@ -51,7 +51,9 @@ The R2 client selects region `auto` automatically. See
 [R2 authentication and bucket-scoped permissions](https://developers.cloudflare.com/r2/api/tokens/).
 
 The Vercel search function needs only the `citymap-search` credential. It does
-not upload city datasets. Keep publisher credentials out of Vercel and all
+not upload city datasets. Optional [cache administration](CACHE_MANAGEMENT.md)
+uses an additional, separately scoped dataset credential and administrator key.
+Keep publisher credentials out of Vercel and all
 credentials out of `VITE_*` variables. Only public delivery URLs belong there.
 
 ## 3. Give `citymap-data` a public delivery domain
@@ -115,7 +117,7 @@ Leave `VITE_SEARCH_URL` blank to use same-origin `/api/search`. Leave
 `VITE_OVERPASS_URL`, `VITE_OVERPASS_FALLBACK_URL`, `VITE_OVERPASS_CONCURRENCY`, `VITE_AREA_SERVER` and
 `SEARCH_PROVIDER_API_KEY` blank for this setup. Do not set `VITE_TEST_FIXTURES`: it enables synthetic sample maps
 meant only for tests, and the normal build ships none. `R2_DATA_BUCKET` is a local publisher
-setting and is not required by Vercel.
+setting and is required by Vercel only when enabling cache administration.
 
 Apply the search settings to **Production and Preview**, using the same private
 bucket so both environments share the Nominatim limit. Set each environment's

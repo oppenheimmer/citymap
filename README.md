@@ -54,6 +54,19 @@ can be released under a separate budget while keeping their coordinates for
 reuse, so revisiting retained roads needs no road-service request. Workers share
 projection across cells and wait behind drawing queues. Clearing the cache also
 cancels delayed saves from older loads.
+
+**Manage cached maps** is available before or after opening a city. It lists local
+city datasets and road fragments with their size, download date and area, supports
+individual removal, and clears all local roads with one button. Saved designs and
+road-service wait limits are preserved. Old downloads in other tabs cannot restore
+cleared records; open a new map load to start caching again.
+
+The same manager can list and remove prepared R2 cities, or clear local and R2 maps
+together. Cloud deletion requires an administrator key and dedicated server-only
+R2 credentials; see [cache administration setup](docs/CACHE_MANAGEMENT.md). R2
+deletion affects all users and removes every revision of the chosen city. Bundled
+Monaco assets, CDN copies and other devices' browser caches remain separate.
+
 Maps default to street-level road detail; footpaths, sidewalks and service ways
 are optional, and live loads download only the classes shown. A minimal compass
 rose and a railway-style scale bar (whole kilometres or metres above, miles or feet

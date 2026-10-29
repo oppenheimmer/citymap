@@ -1,17 +1,20 @@
 import type { Origin } from '../domain.ts';
 import { mercator, RAD, SCALE, wrapLongitude } from '../view.ts';
+import { CacheGeneration, GENERATION_KEY } from '../cache-generation.ts';
+import type { LocalCacheEntry } from '../cache-generation.ts';
+import { tileBBox } from './grid.ts';
 
 const DATABASE = 'citymap-cells';
 const FORMAT = 1;
-let epoch = 0;
-export const cellCacheEpoch = () => epoch;
+const generation = new CacheGeneration('cells');
+export const cellCacheEpoch = () => generation.read();
 /**
  * Short-lived, bounded browser copies of live cells. They spare the road service repeat
  * requests; they are not a map archive and may be dropped at any time.
  */
 export const CELL_CACHE = { maxBytes: 96 * 1024 * 1024, maxRecordBytes: 16 * 1024 * 1024, ttlMs: 72 * 60 * 60 * 1000, fallbackAgeMs: 30 * 24 * 60 * 60 * 1000 };
 interface CellRecord { format: number; origin: Origin; positions: ArrayBuffer; segments: number; fetchedAt: number; snapshotAt?: string }
-interface CellMeta { key: string; bytes: number; lastUsed: number; fetchedAt: number }
+interface CellMeta { key: string; bytes: number; lastUsed: number; fetchedAt: number; label?: string }
 export interface CachedCell { positions: Float32Array; fetchedAt: number; snapshotAt?: string; stale: boolean }
 
 /**
@@ -47,6 +50,7 @@ export class CellCache {
   private closed = false;
   private writes = 0;
   private readonly now: () => number;
+  private readonly generation = cellCacheEpoch();
   constructor(now = Date.now) { this.now = now; }
   private connection() { return this.database ??= opened(); }
   private open() { return this.closed ? Promise.resolve(undefined) : this.connection(); }
@@ -82,7 +86,7 @@ export class CellCache {
   }
 
   /** Stores a complete cell, evicting the least recently used cells beyond the size limit. */
-  async put(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch = epoch): Promise<boolean> {
+  async put(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string; label?: string }, expectedEpoch = cellCacheEpoch()): Promise<boolean> {
     if (this.closed) return false;
     this.writes++;
     try { return await this.write(key, origin, buffers, meta, expectedEpoch); }
@@ -90,7 +94,7 @@ export class CellCache {
   }
 
   /** Registers a save now; closing this session drains registered saves before closing its connection. */
-  defer(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch = epoch): Promise<boolean> {
+  defer(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string; label?: string }, expectedEpoch = cellCacheEpoch()): Promise<boolean> {
     if (this.closed) return Promise.resolve(false);
     this.writes++;
     return new Promise(resolve => {
@@ -102,21 +106,24 @@ export class CellCache {
     });
   }
 
-  private async write(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch: number): Promise<boolean> {
+  private async write(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string; label?: string }, expectedEpoch: number): Promise<boolean> {
     const bytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-    if (expectedEpoch !== epoch || bytes > CELL_CACHE.maxRecordBytes) return false;
+    if (expectedEpoch !== this.generation || expectedEpoch !== cellCacheEpoch() || bytes > CELL_CACHE.maxRecordBytes) return false;
     const positions = new Float32Array(bytes / 4);
     let offset = 0;
     for (const buffer of buffers) { positions.set(buffer, offset); offset += buffer.length; }
     try {
       const db = await this.connection();
-      if (!db || expectedEpoch !== epoch) return false;
+      if (!db || expectedEpoch !== cellCacheEpoch()) return false;
       const transaction = db.transaction(['cells', 'metadata'], 'readwrite');
       const cells = transaction.objectStore('cells'), metadata = transaction.objectStore('metadata');
+      let written = false;
       const all = metadata.getAll();
       all.onsuccess = () => {
         const now = this.now();
-        const records = (all.result as CellMeta[]).filter(record => record.key !== key).sort((a, b) => a.lastUsed - b.lastUsed);
+        generation.observe(all.result.find((record: { key: string }) => record.key === GENERATION_KEY)?.generation);
+        if (expectedEpoch !== cellCacheEpoch()) return;
+        const records = (all.result as CellMeta[]).filter(record => record.key !== GENERATION_KEY && record.key !== key).sort((a, b) => a.lastUsed - b.lastUsed);
         let total = records.reduce((sum, record) => sum + record.bytes, 0) + bytes;
         for (const record of records) {
           if (total <= CELL_CACHE.maxBytes && now - record.fetchedAt < CELL_CACHE.fallbackAgeMs) continue;
@@ -124,10 +131,11 @@ export class CellCache {
         }
         const record: CellRecord = { format: FORMAT, origin: [origin[0], origin[1]], positions: positions.buffer, segments: bytes / 16, fetchedAt: meta.fetchedAt, snapshotAt: meta.snapshotAt };
         cells.put(record, key);
-        metadata.put({ key, bytes, lastUsed: now, fetchedAt: meta.fetchedAt } satisfies CellMeta);
+        metadata.put({ key, bytes, lastUsed: now, fetchedAt: meta.fetchedAt, label: meta.label?.slice(0, 256) } satisfies CellMeta);
+        written = true;
       };
       await complete(transaction);
-      return true;
+      return written;
     } catch { return false; }
   }
 
@@ -139,14 +147,42 @@ export class CellCache {
   close() { this.closed = true; this.closeWhenDrained(); }
 }
 
-export async function clearCellCache(): Promise<boolean> {
-  epoch++;
+export async function clearCellCache(key?: string): Promise<boolean> {
+  generation.invalidate();
   const db = await opened();
   if (!db) return false;
   try {
     const transaction = db.transaction(['cells', 'metadata'], 'readwrite');
-    transaction.objectStore('cells').clear(); transaction.objectStore('metadata').clear();
+    const cells = transaction.objectStore('cells'), metadata = transaction.objectStore('metadata');
+    const marker = metadata.get(GENERATION_KEY);
+    marker.onsuccess = () => {
+      if (marker.result?.generation >= generation.read()) { generation.observe(marker.result.generation + 1); generation.publish(); }
+      if (key === undefined) { cells.clear(); metadata.clear(); }
+      else { cells.delete(key); metadata.delete(key); }
+      metadata.put({ key: GENERATION_KEY, generation: generation.read() });
+    };
     await complete(transaction);
     return true;
   } catch { return false; } finally { db.close(); }
+}
+
+export async function listCellCache(): Promise<LocalCacheEntry[] | undefined> {
+  const db = await opened();
+  if (!db) return;
+  try {
+    const transaction = db.transaction('metadata'), request = transaction.objectStore('metadata').getAll();
+    await complete(transaction);
+    return (request.result as CellMeta[]).filter(record => record.key !== GENERATION_KEY).map(record => {
+      const match = /\|([012]):(\d+)\/(\d+)\/(\d+)$/.exec(record.key);
+      let detail = 'Older road fragment';
+      if (match) {
+        const [rank, z, x, y] = match.slice(1).map(Number);
+        if (z <= 24 && x < 2 ** z && y < 2 ** z) {
+          const [south, west, north, east] = tileBBox({ z, x, y });
+          detail = `${['Major roads', 'Streets', 'Other ways'][rank]} · ${z}/${x}/${y} · ${south.toFixed(3)}, ${west.toFixed(3)} to ${north.toFixed(3)}, ${east.toFixed(3)}`;
+        }
+      }
+      return { key: record.key, label: record.label || 'Road fragment', bytes: record.bytes, savedAt: record.fetchedAt, detail };
+    });
+  } catch { return; } finally { db.close(); }
 }
