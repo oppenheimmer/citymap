@@ -56,7 +56,7 @@ interface Job { spec: JobSpec; leaves: Map<string, Leaf> }
 interface Request { controller: AbortController; leaves: Set<Leaf> }
 interface Entry { job: Job; leaf: Leaf }
 /** Failures of a combined request that say nothing about its cells, which then load one by one. */
-const ALONE: ReadonlySet<FailureCode> = new Set(['timeout_or_resource_limit', 'response_too_large', 'provider_unavailable', 'invalid_request', 'decode_failure']);
+const ALONE: ReadonlySet<FailureCode> = new Set(['timeout_or_resource_limit', 'response_too_large', 'invalid_request', 'decode_failure']);
 
 const RATE_LIMIT_BACKOFF = 5_000, BUSY_BACKOFF = 10_000, RETRY_BACKOFF = 2_000, MAX_BACKOFF = 60_000;
 /** Shorter waits are lengthened; a provider asking for longer pauses the session instead. */
@@ -287,13 +287,20 @@ export class CellScheduler<T> {
         if (shared) break;
         const wait = failure.retryAfter ?? this.backoff(this.failures, failure.code === 'rate_limited' ? RATE_LIMIT_BACKOFF : BUSY_BACKOFF);
         if (wait > MAX_COOLDOWN) { this.paused = true; this.pauseReason = failure.code; }
-        else { this.cooldownUntil = now + Math.max(MIN_COOLDOWN, wait); this.cooldownReason = failure.code; }
+        else { this.cooldownUntil = Math.max(this.cooldownUntil, now + Math.max(MIN_COOLDOWN, wait)); this.cooldownReason = failure.code; }
         break;
       }
       case 'provider_unavailable': case 'unreachable':
         count(); leaf.attempts++;
         if (leaf.attempts > this.options.retries) failed();
-        else { leaf.state = 'queued'; leaf.notBefore = now + this.backoff(leaf.attempts, RETRY_BACKOFF); outcome = 'retry'; }
+        else { leaf.state = 'queued'; outcome = 'retry'; }
+        // An outage affects the provider, including untouched cells. Keep combined cells
+        // together and wait even when this cell has spent its retry allowance.
+        if (!shared) {
+          const wait = failure.retryAfter ?? this.backoff(this.failures, RETRY_BACKOFF);
+          if (wait > MAX_COOLDOWN) { this.paused = true; this.pauseReason = failure.code; }
+          else { this.cooldownUntil = Math.max(this.cooldownUntil, now + Math.max(MIN_COOLDOWN, wait)); this.cooldownReason = failure.code; }
+        }
         break;
       case 'timeout_or_resource_limit': case 'response_too_large':
         count();

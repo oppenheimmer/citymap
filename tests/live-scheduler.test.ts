@@ -136,7 +136,7 @@ test('a busy provider makes every request wait 10, 20, 40 then 60 s, never faili
 test('repeated provider failures pause the session until an explicit retry', async () => {
   const h = harness({ concurrency: 1, pauseAfter: 3, retries: 0 });
   h.scheduler.want([job('a', 1), job('b', 2), job('c', 3), job('d', 4)]);
-  for (let i = 0; i < 2; i++) { h.calls[i].reject(fail('provider_unavailable')); await flush(); }
+  for (let i = 0; i < 2; i++) { h.calls[i].reject(fail('provider_unavailable')); await flush(); await h.clock.advance(2000 * 2 ** i); }
   h.calls[2].reject(fail('rate_limited', 500_000)); await flush();
   assert.equal(h.scheduler.paused, true); assert.equal(h.calls.length, 3);
   // The failure that paused loading is kept to explain it.
@@ -149,6 +149,8 @@ test('repeated provider failures pause the session until an explicit retry', asy
   blocked.scheduler.want([job('a', 1), job('b', 2)]);
   blocked.calls[0].reject(fail('unreachable')); await flush();
   assert.deepEqual(blocked.outcomes, ['13/1/10:unreachable:retry']);
+  assert.equal(blocked.calls.length, 1);
+  await blocked.clock.advance(2000);
   blocked.calls[1].reject(fail('unreachable')); await flush();
   assert.deepEqual([blocked.scheduler.paused, blocked.scheduler.pauseReason], [true, 'unreachable']);
 });
@@ -157,6 +159,7 @@ test('an explicit retry resumes a paused session but waits out an active rate-li
   const h = harness({ concurrency: 1, pauseAfter: 2, retries: 0 });
   h.scheduler.want([job('a', 1), job('b', 2)]);
   h.calls[0].reject(fail('provider_unavailable')); await flush();
+  await h.clock.advance(2000);
   h.calls[1].reject(fail('rate_limited', 30_000)); await flush();
   assert.equal(h.scheduler.paused, true);
   h.scheduler.retry();
@@ -173,7 +176,8 @@ test('a transiently unavailable provider is retried once with backoff, then the 
   await h.clock.advance(1999); assert.equal(h.calls.length, 1);
   await h.clock.advance(1); assert.equal(h.calls.length, 2);
   h.calls[1].reject(fail('provider_unavailable')); await flush();
-  assert.equal(h.scheduler.status('a'), 'failed'); assert.equal(h.clock.pending(), 0);
+  assert.equal(h.scheduler.status('a'), 'failed');
+  await h.clock.advance(4000); assert.equal(h.clock.pending(), 0);
   // Invalid requests and decode failures are not retried.
   const other = harness();
   other.scheduler.want([job('a', 1), job('b', 2)]);
@@ -229,6 +233,31 @@ test('a rate limit on a combined request counts once and repeats the same reques
   assert.equal(h.scheduler.paused, false); assert.deepEqual(h.outcomes, ['13/1/10:rate_limited:cooldown']);
   await h.clock.advance(5000);
   assert.deepEqual(h.calls[1].tasks.map(task => task.job), ['a', 'b']);
+});
+
+test('a server outage retries the same batch after a global wait without fanning out into untouched cells', async () => {
+  const h = harness({ batch: 2, retries: 1, pauseAfter: 5 });
+  h.scheduler.want([job('a', 1), job('b', 2), job('c', 3)]);
+  h.calls[0].reject(new CellFailure('provider_unavailable', { status: 500 })); await flush();
+  assert.deepEqual(h.outcomes, ['13/1/10:provider_unavailable:retry']);
+  await h.clock.advance(1999); assert.equal(h.calls.length, 1);
+  await h.clock.advance(1); assert.deepEqual(h.calls[1].tasks.map(task => task.job), ['a', 'b']);
+  h.calls[1].reject(fail('provider_unavailable', 8000)); await flush();
+  assert.equal(h.scheduler.status('a'), 'failed'); assert.equal(h.scheduler.status('b'), 'failed');
+  await h.clock.advance(7999); assert.equal(h.calls.length, 2, 'Untouched cells respect the provider wait too');
+  h.scheduler.retry(); assert.equal(h.calls.length, 2, 'Explicit retry keeps the cooldown');
+  await h.clock.advance(1); assert.deepEqual(h.calls[2].tasks.map(task => task.job), ['a', 'b']);
+  h.calls[2].resolve(['A', 'B']); await flush();
+  assert.deepEqual(h.calls[3].tasks.map(task => task.job), ['c']);
+});
+
+test('a later failure cannot shorten a cooldown already requested by another in-flight query', async () => {
+  const h = harness({ concurrency: 2 });
+  h.scheduler.want([job('a', 1), job('b', 2), job('c', 3)]);
+  h.calls[0].reject(fail('rate_limited', 30_000)); await flush();
+  h.calls[1].reject(fail('provider_busy', 1000)); await flush();
+  await h.clock.advance(29_999); assert.equal(h.calls.length, 2);
+  await h.clock.advance(1); assert.equal(h.calls.length, 4);
 });
 
 test('a combined request runs on while any of its cells is wanted or retained, and is aborted when none is', async () => {

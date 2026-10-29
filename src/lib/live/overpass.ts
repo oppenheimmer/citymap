@@ -70,11 +70,13 @@ export class CellFailure extends Error {
   readonly status?: number;
   /** Milliseconds the provider asked to wait. */
   readonly retryAfter?: number;
+  /** Time from dispatch to failure, including transport and background processing. */
+  readonly elapsedMs?: number;
   /** Sanitized provider remark, for development diagnostics only. */
   readonly remark?: string;
-  constructor(code: FailureCode, detail: { status?: number; retryAfter?: number; remark?: string; message?: string } = {}) {
+  constructor(code: FailureCode, detail: { status?: number; retryAfter?: number; elapsedMs?: number; remark?: string; message?: string } = {}) {
     super(detail.message || code);
-    this.name = 'CellFailure'; this.code = code; this.status = detail.status; this.retryAfter = detail.retryAfter; this.remark = detail.remark;
+    this.name = 'CellFailure'; this.code = code; this.status = detail.status; this.retryAfter = detail.retryAfter; this.elapsedMs = detail.elapsedMs; this.remark = detail.remark;
   }
 }
 

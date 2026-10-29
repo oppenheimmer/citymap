@@ -12,6 +12,11 @@ revisit with no new road requests. `tests/visibility.test.ts` checks rotated
 culling against independent polygon intersection. Browser regressions cover GPU
 release/re-upload with retained coordinates and held idle saves around cache
 clearing. Exact pre-optimization Monaco coordinate hashes guard road coverage.
+Scheduler regressions also check that HTTP 500 failures keep batches together,
+all queued cells respect outage waits, and overlapping failures cannot shorten a
+cooldown. Load reports retain 20 failures and lifetime request totals across
+retries, with URL credentials, queries and provider text omitted. A real browser
+downloads a report after HTTP 500 and verifies recovery without request fan-out.
 
 ## Run the suite
 

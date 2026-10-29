@@ -301,6 +301,32 @@ test('an export is complete only once every loaded region of its frame is drawn'
   } finally { viewport.dispose(); }
 });
 
+test('load reports retain bounded failure history and actual request totals across retries without provider secrets', async () => {
+  const cell = tileRect(originTile(cellLevel(0, origin[1])), origin), cx = (cell.left + cell.right) / 2, cy = (cell.bottom + cell.top) / 2;
+  const camera: Camera = { left: cx - 10, right: cx + 10, bottom: cy - 10, top: cy + 10 };
+  const requests: CellRequest[] = [];
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController;
+  const viewport = new LiveViewport(scene, origin, 'major', { overpass: 'https://alice:secret@example.com/private-path?token=hidden', concurrency: 1, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
+  try {
+    for (let i = 0; i < 23; i++) {
+      if (i) viewport.retry();
+      const request = requests.at(-1)!;
+      worker.onmessage!({ data: { type: 'failure', id: request.id, code: 'invalid_request', status: 400, remark: 'private provider text' } });
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    const report = viewport.report();
+    assert.equal(report.requests, 23); assert.equal(report.failures.invalid_request, 23);
+    assert.equal(report.recentFailures.length, 20);
+    assert.ok(report.recentFailures.every(failure => failure.status === 400 && failure.elapsedMs! >= 0 && failure.outcome === 'failed'));
+    assert.equal(report.provider, 'https://example.com');
+    assert.doesNotMatch(JSON.stringify(report), /alice|secret|private|hidden|token|query|coordinate|85\.8245/);
+    // A consumer cannot mutate later diagnostics through a previous report.
+    report.recentFailures[0].status = 999;
+    assert.equal(viewport.report().recentFailures[0].status, 400);
+  } finally { viewport.dispose(); }
+});
+
 for (const cancel of [false, true]) test(`a large upload queue delays further requests and ${cancel ? 'cancels cleanly' : 'resumes after drawing'}`, async () => {
   const tile = tileRect(originTile(cellLevel(0, origin[1])), origin);
   const cx = (tile.left + tile.right) / 2, cy = (tile.bottom + tile.top) / 2, half = (tile.right - tile.left) * 1.1;

@@ -19,6 +19,7 @@
   import type { FailureCode } from './lib/live/overpass.ts';
   import { isPublicOverpass } from './lib/live/overpass.ts';
   import { clearCellCache } from './lib/live/cell-cache.ts';
+  import { failureLabel } from './lib/live/report.ts';
   import { fitCamera } from './lib/view.ts';
   import { edgeRange, linkedSize } from './lib/export-size.ts';
 
@@ -294,6 +295,9 @@
       status = 'Design settings exported. Open the link in the file to restore this map.';
     } catch { error = 'This saved design could not be exported. You can remove it and save a new one.'; controlsOpen = true; }
   }
+  function exportLoadReport() {
+    if (live) download(new Blob([JSON.stringify(live.report(), null, 2)], { type: 'application/json;charset=utf-8' }), 'citymap-load-report.json');
+  }
   async function clear() {
     const [cities] = await Promise.all([clearCityCache(), clearCellCache()]);
     status = cities ? 'Saved city geometry cleared. Designs are preserved.' : 'Local cache is unavailable in this browser.';
@@ -376,7 +380,7 @@
         {:else if source}<p>{source.local ? 'Local cache' : source.bundled ? 'Built-in city data' : ({ r2: 'R2 cache', legacy: 'Legacy cache', live: 'Live OpenStreetMap data', fixture: 'Synthetic sample' }[source.kind])}<br>Source date: {date(source.snapshotAt)}<br>Downloaded: {date(source.downloadedAt)}</p>{/if}
         <label for="bbox">Bounding box: south, west, north, east</label><input id="bbox" bind:value={bboxText} placeholder="35.6,139.6,35.8,139.8"><button onclick={boxLoad}>Load bounding box</button>
       </details>
-      {#if liveCoverage}{@const stats = liveCoverage.stats}<details><summary>Load timings</summary><p>{stats.regions.toLocaleString()} map regions · {stats.segments.toLocaleString()} segments{stats.firstRoadMs !== undefined ? ` · first road frame ${stats.firstRoadMs.toFixed(1)} ms` : ''}</p><p>{stats.requests.toLocaleString()} road requests · {stats.cached.toLocaleString()} from the browser cache · {formatBytes(stats.bytes)} downloaded{stats.medianFetchMs !== undefined ? ` · median request ${stats.medianFetchMs.toFixed(0)} ms` : ''}{stats.splits ? ` · ${stats.splits} dense regions split` : ''}</p></details>{/if}
+      {#if liveCoverage}{@const stats = liveCoverage.stats}<details><summary>Load timings</summary><p>{stats.regions.toLocaleString()} map regions · {stats.segments.toLocaleString()} segments{stats.firstRoadMs !== undefined ? ` · first road frame ${stats.firstRoadMs.toFixed(1)} ms` : ''}</p><p>{stats.requests.toLocaleString()} road requests · {stats.cached.toLocaleString()} from the browser cache · {formatBytes(stats.bytes)} downloaded{stats.medianFetchMs !== undefined ? ` · median request ${stats.medianFetchMs.toFixed(0)} ms` : ''}{stats.splits ? ` · ${stats.splits} dense regions split` : ''}</p>{#if stats.recentFailures.at(-1)}{@const failure = stats.recentFailures.at(-1)!}<p>Last request failure: {failureLabel(failure.code)}{failure.status ? ` (HTTP ${failure.status})` : ''}.</p>{/if}<button onclick={exportLoadReport}>Download load report</button><p class="hint">Includes timings and errors. Queries and map coordinates are omitted.</p></details>{/if}
       {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p>{#if metrics.preparation}<p>Download {metrics.preparation.downloadMs.toFixed(1)} ms · decode {metrics.preparation.decodeMs.toFixed(1)} ms · index {metrics.preparation.indexMs.toFixed(1)} ms · projection {metrics.preparation.projectMs.toFixed(1)} ms</p><p class="hint">Download time includes delivery waits; parallel request times can overlap.</p>{/if}</details>{/if}
     {/if}
     {#if saved.length}<details><summary>Saved designs</summary>{#each saved as record (record.id)}<div class="saved"><button onclick={() => restore(record)}>{record.name}</button><button aria-label={`Export settings ${record.name}`} onclick={() => exportDesign(record)}>Export JSON</button><button aria-label={`Delete design ${record.name}`} onclick={() => { removeDesign(record.id); saved = designs(); }}>Delete</button></div>{/each}</details>{/if}

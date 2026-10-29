@@ -251,6 +251,28 @@ test('failed regions in the centre leave loaded roads visible and keep Export un
   expect((await svg(page)).xml.match(/<path d="M/g)!.length).toBeGreaterThan(0);
 });
 
+test('a transient HTTP 500 waits and retries the same batch, and its load report explains the failure', async ({ page, request }) => {
+  await control(request, { roads: { status: 500, failures: 1 } });
+  await choose(page, 'Reported city', '&cache=0');
+  await detail(page, 'Load timings');
+  await expect(page.locator('aside')).toContainText('Last request failure: Road service not responding (HTTP 500)');
+  expect(await cellQueries(request)).toHaveLength(1);
+  const pending = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download load report' }).click();
+  const download = await pending;
+  expect(download.suggestedFilename()).toBe('citymap-load-report.json');
+  const report = JSON.parse(await readFile((await download.path())!, 'utf8'));
+  expect(report.requests).toBe(1); expect(report.failures.provider_unavailable).toBe(1);
+  expect(report.recentFailures[0]).toMatchObject({ code: 'provider_unavailable', status: 500, outcome: 'retry' });
+  expect(report.recentFailures[0].elapsedMs).toBeGreaterThanOrEqual(0);
+  expect(report.loading.waitMs).toBeGreaterThan(0);
+  expect(report.provider).toBe('http://127.0.0.1:8091');
+  expect(JSON.stringify(report)).not.toMatch(/Reported city|motorway|\bout geom\b|139\.05/);
+  await expect(status(page)).toContainText('Reported city, Japan ready', { timeout: 15_000 });
+  const queries = await cellQueries(request);
+  expect(queries[1]).toBe(queries[0]);
+});
+
 test('Export waits only for the centre of the map, then exports the map available around it', async ({ page, request }) => {
   const exportButton = page.getByRole('button', { name: 'Export', exact: true });
   // Slow responses show Export unavailable until the centre has loaded.
@@ -376,9 +398,10 @@ test('revisits use the browser cell cache; refresh fetches again and clearing re
 });
 
 test('an unreachable road service pauses loading with that reason, and retry recovers', async ({ page, request }) => {
+  test.setTimeout(90_000);
   await control(request, { roads: { blocked: true } });
   await choose(page, 'Unreachable city');
-  await expect(status(page)).toContainText('The road service cannot be reached from this network');
+  await expect(status(page)).toContainText('The road service cannot be reached from this network', { timeout: 45_000 });
   await expect(page.locator('canvas')).toBeVisible();
   // Five consecutive failures pause loading; nothing more is requested until retried.
   const count = (await cellQueries(request)).length;
@@ -386,7 +409,7 @@ test('an unreachable road service pauses loading with that reason, and retry rec
   expect(await cellQueries(request)).toHaveLength(count);
   await control(request, { roads: {} });
   await page.getByRole('button', { name: 'Retry loading roads', exact: true }).click();
-  await expect(status(page)).toContainText('Unreachable city, Japan ready');
+  await expect(status(page)).toContainText('Unreachable city, Japan ready', { timeout: 45_000 });
 });
 
 test('live roads load only within about 50 km of where the map started', async ({ page, request }) => {

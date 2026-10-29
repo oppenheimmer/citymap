@@ -12,6 +12,8 @@ import { CellScheduler } from './scheduler.ts';
 import type { Clock, JobSpec, LeafTask } from './scheduler.ts';
 import type { CellCache } from './cell-cache.ts';
 import { cellCacheEpoch } from './cell-cache.ts';
+import { loadReport } from './report.ts';
+import type { LoadFailure } from './report.ts';
 
 /** Initial live-loading limits, to tune with measurements; not hardware or provider guarantees. */
 export const LIVE_LIMITS = {
@@ -75,6 +77,8 @@ export interface LiveStats {
   segments: number;
   splits: number;
   failures: Partial<Record<FailureCode, number>>;
+  /** Most recent 20 request failures, without queries or provider text. */
+  recentFailures: LoadFailure[];
   firstRoadMs?: number;
   medianFetchMs?: number;
   snapshotAt?: string;
@@ -127,7 +131,7 @@ const jobKey = (rank: RoadRank, tile: Tile) => `${rank}:${tileKey(tile)}`;
 export class LiveViewport {
   private readonly scheduler: CellScheduler<CellResult>;
   private readonly worker: Worker;
-  private readonly pending = new Map<number, { count: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
+  private readonly pending = new Map<number, { count: number; started: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
   private readonly regions = new Map<string, Region>();
   private readonly scene: SceneController;
   private readonly origin: Origin;
@@ -152,7 +156,7 @@ export class LiveViewport {
   private disposed = false;
   private readonly started = performance.now();
   private readonly fetchTimes: number[] = [];
-  private readonly stats: LiveStats = { requests: 0, cached: 0, bytes: 0, regions: 0, segments: 0, splits: 0, failures: {} };
+  private readonly stats: LiveStats = { requests: 0, cached: 0, bytes: 0, regions: 0, segments: 0, splits: 0, failures: {}, recentFailures: [] };
 
   constructor(scene: SceneController, origin: Origin, detail: RoadDetail, settings: LiveSettings, onChange: (coverage: LiveCoverage) => void) {
     this.scene = scene; this.origin = origin; this.detail = detail; this.settings = settings; this.onChange = onChange;
@@ -171,6 +175,8 @@ export class LiveViewport {
       changed: () => this.emit(),
       failed: (task, failure, outcome) => {
         this.stats.failures[failure.code] = (this.stats.failures[failure.code] || 0) + 1;
+        this.stats.recentFailures.push({ atMs: Math.round(performance.now() - this.started), code: failure.code, status: failure.status, retryAfterMs: failure.retryAfter, elapsedMs: failure.elapsedMs, outcome });
+        if (this.stats.recentFailures.length > 20) this.stats.recentFailures.shift();
         if (outcome === 'split') this.stats.splits++;
         // Development diagnostics: provider remarks are sanitized and never shown in the page.
         if (settings.debug) console.warn(`[citymap] cell ${task.job} (${task.leaf}): ${failure.code}${failure.status ? ` HTTP ${failure.status}` : ''} → ${outcome}`, failure.remark || '');
@@ -198,6 +204,8 @@ export class LiveViewport {
   /** Requeues failed regions and resumes a paused session. */
   retry() { this.scheduler.retry(); this.update(); }
 
+  report() { return loadReport(this.settings.overpass, this.coverage()); }
+
   coverage(): LiveCoverage {
     let ready = 0, failed = 0;
     for (const key of this.required) {
@@ -205,7 +213,6 @@ export class LiveViewport {
       if (this.drawn(key)) ready++; else if (status === 'failed') failed++;
     }
     const loading = this.required.length - ready - failed;
-    this.stats.requests = this.scheduler.requests;
     this.stats.regions = this.regions.size;
     this.stats.segments = [...this.regions.values()].reduce((sum, region) => sum + region.segments, 0);
     const sorted = [...this.fetchTimes].sort((a, b) => a - b);
@@ -218,7 +225,7 @@ export class LiveViewport {
       beyond: this.beyond, radius: LIVE_LIMITS.radiusMetres,
       paused: this.scheduler.paused, pauseReason: this.scheduler.pauseReason, exhausted: this.scheduler.exhausted,
       cooldown: Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now()), waiting: this.scheduler.cooldownReason,
-      stats: { ...this.stats, failures: { ...this.stats.failures } },
+      stats: { ...this.stats, failures: { ...this.stats.failures }, recentFailures: this.stats.recentFailures.map(failure => ({ ...failure })) },
     };
   }
 
@@ -322,12 +329,13 @@ export class LiveViewport {
     return new Promise<CellResult[]>((resolve, reject) => {
       if (signal.aborted) { reject(new CellFailure('cancelled')); return; }
       const id = ++this.nextId;
-      this.pending.set(id, { count: tasks.length, resolve, reject });
+      this.pending.set(id, { count: tasks.length, started: performance.now(), resolve, reject });
       signal.addEventListener('abort', () => {
         if (!this.pending.delete(id)) return;
         this.post({ type: 'abort', id });
         reject(new CellFailure('cancelled'));
       }, { once: true });
+      this.stats.requests++;
       this.post({ type: 'fetch', id, cells: tasks.map(task => ({ tile: task.tile, rank: task.rank })), origin: this.origin, overpass: this.settings.overpass });
     });
   };
@@ -353,7 +361,7 @@ export class LiveViewport {
       this.fetchTimes.push(message.fetchMs); if (this.fetchTimes.length > 200) this.fetchTimes.shift();
       this.stats.bytes += message.bytes;
       entry.resolve(results);
-    } else entry.reject(new CellFailure(message.code, { status: message.status, retryAfter: message.retryAfter, remark: message.remark, message: message.message }));
+    } else entry.reject(new CellFailure(message.code, { status: message.status, retryAfter: message.retryAfter, elapsedMs: Math.round(performance.now() - entry.started), remark: message.remark, message: message.message }));
   };
 
   private rejectAll(error: CellFailure) {

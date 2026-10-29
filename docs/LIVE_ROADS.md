@@ -102,7 +102,17 @@ not become an open relay. Keep OpenStreetMap attribution as the app does today.
 Development builds log sanitized provider remarks, HTTP status and the
 split/retry decision for each failed cell to the browser console as warnings. Raw provider
 text never reaches the page. *Load timings* shows regions, segments, first
-road time, requests, cache hits, bytes and the median request time.
+road time, requests, cache hits, bytes and the median request time. Its last
+failure includes a plain-language reason and HTTP status when available.
+*Download load report* saves these counters and the most recent 20 failures as
+JSON. Request totals include attempts before an explicit retry. Reports omit
+queries, map coordinates, provider URL paths/credentials and response text.
+
+HTTP 500 responses and connection failures keep combined cells together and make
+all queued requests wait, including cells not yet attempted. They back off from
+2 seconds, doubling to 60 seconds with jitter, or honour a readable Retry-After.
+An individual cell still gets only one extra attempt. This prevents one outage
+from immediately expanding into separate requests for every cell.
 
 ## When loading pauses
 
