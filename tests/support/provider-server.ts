@@ -18,6 +18,7 @@ let corruptData = false;
 // Dataset pointer failure: an HTTP status, or a 404 without CORS headers (a browser network error).
 let pointerFailure: number | 'cors' | undefined;
 let searches: SearchCall[] = [], roads: string[] = [], aborted = 0, blocked: string[] = [], datasets: string[] = [], statusChecks = 0;
+let roadTimes: number[] = [];
 const proxy = providerProxy(['http://127.0.0.1:8082', 'http://127.0.0.1:8091'], target => blocked.push(target));
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:8082');
@@ -26,9 +27,9 @@ const server = createServer(async (req, res) => {
   try {
     let input = ''; for await (const bytes of req) { input += bytes; if (input.length > 2 * 1024 * 1024) throw new Error('Control input too large'); }
     if (url.pathname === '/health') { res.end('{}'); return; }
-    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; datasets = []; aborted = 0; blocked = []; statusChecks = 0; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
+    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; roadTimes = []; datasets = []; aborted = 0; blocked = []; statusChecks = 0; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
     if (url.pathname === '/__control' && req.method === 'POST') { const next = JSON.parse(input); scenarios = { ...scenarios, ...next }; if (typeof next.corruptData === 'boolean') corruptData = next.corruptData; if ('pointerFailure' in next) pointerFailure = next.pointerFailure ?? undefined; res.end('{}'); return; }
-    if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, aborted, blocked, datasets, statusChecks })); return; }
+    if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, roadTimes, aborted, blocked, datasets, statusChecks })); return; }
     if (url.pathname === '/status') {
       statusChecks++; res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       const wait = scenarios.roads.slotWait;
@@ -52,7 +53,7 @@ const server = createServer(async (req, res) => {
     if (!kind) { res.statusCode = 404; res.end('{}'); return; }
     if (kind === 'search') searches.push({ query: url.searchParams.get('q') || '', userAgent: req.headers['user-agent'], format: url.searchParams.get('format'), limit: url.searchParams.get('limit') });
     const query = kind === 'roads' ? new URLSearchParams(input).get('data') || '' : '';
-    if (kind === 'roads') roads.push(query);
+    if (kind === 'roads') { roads.push(query); roadTimes.push(Date.now()); }
     // Live viewport cells get synthetic roads for their own box; other road queries the small grid.
     const cells = parseCellQueries(query);
     const applies = !scenarios[kind].match || query.includes(scenarios[kind].match!);

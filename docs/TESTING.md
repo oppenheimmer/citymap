@@ -17,6 +17,13 @@ all queued cells respect outage waits, and overlapping failures cannot shorten a
 cooldown. Load reports retain 20 failures and lifetime request totals across
 retries, with URL credentials, queries and provider text omitted. A real browser
 downloads a report after HTTP 500 and verifies recovery without request fan-out.
+`tests/live-provider-pacer.test.ts` uses a controlled clock and simulated shared
+locks/storage to cover success pacing, shared outage waits, cancellation before
+and after dispatch, persisted reservations, missing/denied locks, denied storage,
+and provider isolation. Browser cases exercise actual Web Locks across tabs,
+cache hits during a held network request, cooldown persistence after navigation,
+and request spacing when local storage is denied. Only test builds accept
+`livePacing=1` to opt the local private mock endpoint into public-style pacing.
 
 ## Run the suite
 

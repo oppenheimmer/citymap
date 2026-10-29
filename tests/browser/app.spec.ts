@@ -102,9 +102,11 @@ test('default loading uses bounded viewport queries and restores the view entire
   await page.getByLabel('Find a city').fill('Viewport city'); await page.getByRole('button', { name: 'Search', exact: true }).click();
   await page.getByRole('button', { name: /Viewport city.*city/ }).click();
   const status = page.locator('aside [role=status]');
-  await expect(status).toContainText('ready'); await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+  await expect(status).toContainText('ready', { timeout: 20_000 }); await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
   let previous = -1;
-  await expect.poll(() => { const settled = queries.length === previous; previous = queries.length; return settled; }, { intervals: [700] }).toBe(true);
+  // Fast fixture responses now have a 1–1.25 s provider pause. Wait beyond it
+  // before treating the padding around the visible view as finished.
+  await expect.poll(() => { const settled = queries.length === previous; previous = queries.length; return settled; }, { intervals: [1700], timeout: 15_000 }).toBe(true);
   expect(queries.length).toBeGreaterThan(0); expect(queries.length).toBeLessThanOrEqual(16);
   queries.forEach(query => { expect(query).toContain('out geom'); expect(query).not.toContain('area('); });
   const cells = queries.reduce((sum, query) => sum + [...query.matchAll(/way\[/g)].length, 0);

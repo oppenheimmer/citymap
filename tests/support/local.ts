@@ -1,7 +1,7 @@
 import { test as base, expect } from '@playwright/test';
 import type { Page, APIRequestContext } from '@playwright/test';
 export const provider = 'http://127.0.0.1:8091';
-export interface Stats { searches: { query: string; userAgent: string; format: string; limit: string }[]; roads: string[]; aborted: number; blocked: string[]; datasets: string[]; statusChecks: number }
+export interface Stats { searches: { query: string; userAgent: string; format: string; limit: string }[]; roads: string[]; roadTimes: number[]; aborted: number; blocked: string[]; datasets: string[]; statusChecks: number }
 export async function stats(request: APIRequestContext): Promise<Stats> { return (await request.get(`${provider}/__stats`)).json(); }
 export async function control(request: APIRequestContext, scenario: unknown) { expect((await request.post(`${provider}/__control`, { data: scenario })).ok()).toBe(true); }
 export const status = (page: Page) => page.locator('aside [role=status]');
@@ -36,6 +36,7 @@ export const test = base.extend<{ localGuard: void }>({
       if (['http:', 'https:'].includes(url.protocol) && !['http://127.0.0.1:8082',provider].includes(url.origin)) external.push(url.origin);
     });
     page.on('pageerror', error => errors.push(error.message));
+    context.on('page', opened => opened.on('pageerror', error => errors.push(error.message)));
     await use();
     expect(external, 'The application must never request external services').toEqual([]);
     expect(errors, 'Unhandled browser exceptions').toEqual([]);

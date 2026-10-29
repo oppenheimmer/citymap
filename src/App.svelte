@@ -151,7 +151,7 @@
     options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined, ...(viewport ? { viewport } : {}) };
     // Smaller devices keep less road geometry before unseen regions are evicted.
     const small = matchMedia('(max-width: 750px)').matches || ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
-    liveSettings = viewport ? { overpass: providers.overpass, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV } : undefined;
+    liveSettings = viewport ? { overpass: providers.overpass, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV, pace: testing.get('livePacing') === '1' } : undefined;
     mounted = true;
   }
   function sample(size: 'small' | 'medium' | 'large') { choose({ key: `fixture-${size}`, fixture: size, name: `${size[0].toUpperCase()}${size.slice(1)} synthetic grid`, kind: 'synthetic' }); }
@@ -207,6 +207,8 @@
     // Phase changes only, so the live region announces little while loading.
     if (value.exhausted) status = 'This session has made many road requests. Retry loading roads to continue.';
     else if (value.paused) status = PAUSED[value.pauseReason || 'provider_unavailable'] || PAUSED.provider_unavailable!;
+    else if (value.loading && value.waiting === 'another_map') status = 'Another map is using the road service. Loading resumes automatically…';
+    else if (value.loading && value.cooldown > 0 && (value.waiting === 'pacing' || value.waiting === 'previous_request')) status = 'Giving the road service time between requests. Loading resumes shortly…';
     else if (value.loading && value.cooldown > 0) status = value.waiting === 'provider_busy' ? 'The road service is busy. Loading resumes by itself shortly…' : 'The road service asked to wait. Loading resumes shortly…';
     else if (value.loading) status = 'Loading roads in view…';
     else if (value.failed) status = 'Some roads in view could not be loaded.';
@@ -357,7 +359,7 @@
     {#if liveCoverage && ready && (!liveCoverage.complete || liveCoverage.beyond !== 'none')}
       <div class="load-status live-status">
         {#if liveCoverage.loading}<progress aria-label="Roads in view" max={liveCoverage.required} value={liveCoverage.ready}></progress>{/if}
-        {#if waitSeconds > 0}<p class="hint">{liveCoverage.waiting === 'provider_busy' ? 'The road service is busy' : 'The road service asked to wait'}: retrying in {waitSeconds} s.</p>{/if}
+        {#if waitSeconds > 0}<p class="hint">{liveCoverage.waiting === 'provider_busy' ? 'The road service is busy' : liveCoverage.waiting === 'pacing' || liveCoverage.waiting === 'previous_request' ? 'Giving the road service time between requests' : 'The road service asked to wait'}: retrying in {waitSeconds} s.</p>{/if}
         <p class="hint">{liveCoverage.ready} of {liveCoverage.required} map regions in view loaded{liveCoverage.failed ? ` · ${liveCoverage.failed} failed` : ''}{liveCoverage.limited.length ? ' · zoom in for more road detail' : ''}</p>
         {#if liveCoverage.beyond !== 'none'}<p class="hint">Roads load only within {liveCoverage.radius / 1000} km of where this map started.</p>{/if}
         {#if !liveCoverage.exportable}<p class="hint">Export is available once the centre of the map has loaded.</p>{/if}

@@ -6,7 +6,7 @@ import { frameCorners, viewFromCamera } from '../view.ts';
 import { metresPerSceneUnit } from '../scale-bar.ts';
 import { cellLevel, coverTiles, GRID_VERSION, groundDistance, intersects, tileDistance, tileKey, tileRect } from './grid.ts';
 import type { Tile } from './grid.ts';
-import { CellFailure, QUERY_SCHEMA } from './overpass.ts';
+import { CellFailure, QUERY_SCHEMA, queryTimeout } from './overpass.ts';
 import type { FailureCode } from './overpass.ts';
 import { CellScheduler } from './scheduler.ts';
 import type { Clock, JobSpec, LeafTask } from './scheduler.ts';
@@ -14,6 +14,8 @@ import type { CellCache } from './cell-cache.ts';
 import { cellCacheEpoch } from './cell-cache.ts';
 import { loadReport } from './report.ts';
 import type { LoadFailure } from './report.ts';
+import { providerPacer } from './provider-pacer.ts';
+import type { ProviderPacer, ProviderWait, ProviderWaitReason } from './provider-pacer.ts';
 
 /** Initial live-loading limits, to tune with measurements; not hardware or provider guarantees. */
 export const LIVE_LIMITS = {
@@ -63,6 +65,8 @@ export interface LiveSettings {
   forceNetwork?: boolean;
   /** Log sanitized provider failures to the console. */
   debug?: boolean;
+  /** Opt a private endpoint into public-style shared pacing. Public endpoints always use it. */
+  pace?: boolean;
   createWorker?: () => Worker;
   clock?: Clock;
 }
@@ -79,6 +83,8 @@ export interface LiveStats {
   failures: Partial<Record<FailureCode, number>>;
   /** Most recent 20 request failures, without queries or provider text. */
   recentFailures: LoadFailure[];
+  /** Time spent waiting for the shared provider queue, excluding network/worker time. */
+  providerWaitMs: number;
   firstRoadMs?: number;
   medianFetchMs?: number;
   snapshotAt?: string;
@@ -111,8 +117,8 @@ export interface LiveCoverage {
   exhausted: boolean;
   /** Milliseconds until a provider cooldown ends. */
   cooldown: number;
-  /** Why requests wait during a cooldown: a rate limit or a busy provider. */
-  waiting?: FailureCode;
+  /** Why requests wait: provider feedback, pacing or another map's request. */
+  waiting?: ProviderWaitReason;
   stats: LiveStats;
 }
 
@@ -131,6 +137,9 @@ const jobKey = (rank: RoadRank, tile: Tile) => `${rank}:${tileKey(tile)}`;
 export class LiveViewport {
   private readonly scheduler: CellScheduler<CellResult>;
   private readonly worker: Worker;
+  private readonly pacer?: ProviderPacer;
+  private providerWait?: ProviderWait;
+  private waitId = 0;
   private readonly pending = new Map<number, { count: number; started: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
   private readonly regions = new Map<string, Region>();
   private readonly scene: SceneController;
@@ -156,15 +165,16 @@ export class LiveViewport {
   private disposed = false;
   private readonly started = performance.now();
   private readonly fetchTimes: number[] = [];
-  private readonly stats: LiveStats = { requests: 0, cached: 0, bytes: 0, regions: 0, segments: 0, splits: 0, failures: {}, recentFailures: [] };
+  private readonly stats: LiveStats = { requests: 0, cached: 0, bytes: 0, regions: 0, segments: 0, splits: 0, failures: {}, recentFailures: [], providerWaitMs: 0 };
 
   constructor(scene: SceneController, origin: Origin, detail: RoadDetail, settings: LiveSettings, onChange: (coverage: LiveCoverage) => void) {
     this.scene = scene; this.origin = origin; this.detail = detail; this.settings = settings; this.onChange = onChange;
+    this.pacer = providerPacer(settings.overpass, settings.pace);
     this.worker = settings.createWorker?.() || new Worker(new URL('../../workers/cells.worker.ts', import.meta.url), { type: 'module' });
     this.worker.onmessage = this.reply;
     this.worker.onerror = () => this.rejectAll(new CellFailure('provider_unavailable', { message: 'Background road processing failed' }));
     const cache = settings.cache;
-    this.scheduler = new CellScheduler<CellResult>({ concurrency: settings.concurrency, maxDepth: LIVE_LIMITS.maxDepth, retries: LIVE_LIMITS.retries, maxRequests: LIVE_LIMITS.maxRequests, pauseAfter: LIVE_LIMITS.pauseAfter, batch: LIVE_LIMITS.batch, clock: settings.clock }, {
+    this.scheduler = new CellScheduler<CellResult>({ concurrency: this.pacer ? 1 : settings.concurrency, maxDepth: LIVE_LIMITS.maxDepth, retries: LIVE_LIMITS.retries, maxRequests: LIVE_LIMITS.maxRequests, pauseAfter: LIVE_LIMITS.pauseAfter, batch: LIVE_LIMITS.batch, clock: settings.clock }, {
       execute: this.execute,
       lookup: cache && !settings.forceNetwork ? async (task, signal) => {
         const hit = await cache.get(this.cacheKey(task.job), this.origin);
@@ -218,13 +228,15 @@ export class LiveViewport {
     const sorted = [...this.fetchTimes].sort((a, b) => a - b);
     this.stats.medianFetchMs = sorted.length ? sorted[Math.floor(sorted.length / 2)] : undefined;
     this.stats.oldestFetch = [...this.regions.values()].reduce<number | undefined>((oldest, region) => oldest === undefined || region.fetchedAt < oldest ? region.fetchedAt : oldest, undefined);
+    const cooldown = Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now());
+    const sharedCooldown = Math.max(0, (this.providerWait?.until || 0) - Date.now());
     return {
       required: this.required.length, ready, loading, failed, limited: [...this.limited],
       complete: !this.limited.length && ready === this.required.length,
       exportable: !!this.centre?.every(key => this.drawn(key)),
       beyond: this.beyond, radius: LIVE_LIMITS.radiusMetres,
       paused: this.scheduler.paused, pauseReason: this.scheduler.pauseReason, exhausted: this.scheduler.exhausted,
-      cooldown: Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now()), waiting: this.scheduler.cooldownReason,
+      cooldown: Math.max(cooldown, sharedCooldown), waiting: this.providerWait?.reason || (cooldown > 0 ? this.scheduler.cooldownReason : undefined),
       stats: { ...this.stats, failures: { ...this.stats.failures }, recentFailures: this.stats.recentFailures.map(failure => ({ ...failure })) },
     };
   }
@@ -326,6 +338,20 @@ export class LiveViewport {
         if (signal.aborted) cancel();
       });
     }
+    if (!this.pacer) return this.fetch(tasks, signal);
+    const id = ++this.waitId, started = performance.now();
+    // Includes the worker's header deadline and idle-body allowance. Cancelling a
+    // browser download cannot establish that its upstream slot has been released.
+    return this.pacer.run(signal, (queryTimeout(tasks.length) + 50) * 1000, () => {
+      this.stats.providerWaitMs += performance.now() - started;
+      return this.fetch(tasks, signal);
+    }, state => {
+      if (id !== this.waitId || this.disposed) return;
+      this.providerWait = state; this.emit();
+    });
+  };
+
+  private fetch(tasks: LeafTask[], signal: AbortSignal) {
     return new Promise<CellResult[]>((resolve, reject) => {
       if (signal.aborted) { reject(new CellFailure('cancelled')); return; }
       const id = ++this.nextId;
@@ -338,7 +364,7 @@ export class LiveViewport {
       this.stats.requests++;
       this.post({ type: 'fetch', id, cells: tasks.map(task => ({ tile: task.tile, rank: task.rank })), origin: this.origin, overpass: this.settings.overpass });
     });
-  };
+  }
 
   private post(command: CellCommand) {
     try { this.worker.postMessage(command); }

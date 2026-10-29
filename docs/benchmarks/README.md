@@ -4,6 +4,10 @@ The [October 29 rendering measurements](20261029-rendering.md) record geometry
 parity, batch preparation timing, and browser latency before/after culling and
 bounded preparation.
 
+The [October 29 request-protection checks](20261029-api.md) record shared provider
+pacing, outage retries and failure-report evidence from local mocks. They do not
+measure real Overpass latency or rejection rates.
+
 The [Monaco format comparison](20261009-monaco.md) records real-city stored
 size, decode time and memory for the version-1 and version-2 data formats. The
 browser benchmark below measures the current application only.

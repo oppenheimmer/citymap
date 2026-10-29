@@ -94,6 +94,10 @@ The centre of the map loads first. Export becomes available once it has loaded, 
 once when the map is zoomed out too far for any roads to load, and writes exactly the
 roads drawn on screen, without waiting for regions still loading.
 Only explicitly published favourite cities live in R2.
+Public-provider viewport requests share pacing and cooldowns across map sessions
+and browser tabs. Cached roads stay available during those waits. Transient server
+errors retry a batch after a delay, and **Load timings → Download load report**
+records HTTP errors and timings for troubleshooting.
 [How it works, limits, rollout and rollback](docs/LIVE_ROADS.md).
 Set `VITE_LIVE_VIEWPORT=0` to restore whole-area live loading.
 

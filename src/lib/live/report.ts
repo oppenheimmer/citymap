@@ -31,6 +31,7 @@ export function loadReport(provider: string, coverage: LiveCoverage) {
     requests: s.requests, cachedRegions: s.cached, downloadedBytes: s.bytes,
     loadedRegions: s.regions, segments: s.segments, splits: s.splits,
     firstRoadMs: s.firstRoadMs, medianFetchMs: s.medianFetchMs,
+    providerWaitMs: s.providerWaitMs,
     failures: { ...s.failures }, recentFailures: s.recentFailures.map(({ atMs, code, status, retryAfterMs, elapsedMs, outcome }) => ({ atMs, code, status, retryAfterMs, elapsedMs, outcome })),
     coverage: { required: coverage.required, ready: coverage.ready, failed: coverage.failed, complete: coverage.complete },
     loading: { paused: coverage.paused, reason: coverage.pauseReason, requestBudgetSpent: coverage.exhausted, waitMs: coverage.cooldown, waiting: coverage.waiting },

@@ -451,3 +451,56 @@ test('switching cities aborts live requests and never draws a previous city\'s c
   await expect(status(page)).toContainText('Small synthetic grid ready');
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText('512 segments');
 });
+
+test('shared provider pacing serializes tabs, cancels queued maps and leaves cached views available', async ({ page, context, request }) => {
+  await liveCity(page, 'Warm city'); await idle(request);
+  const link = await share(page), cells = (await requestedCells(request)).length;
+  await expect.poll(() => page.evaluate(() => new Promise<number>((resolve, reject) => {
+    const open = indexedDB.open('citymap-cells', 1);
+    open.onsuccess = () => { const db = open.result, count = db.transaction('cells').objectStore('cells').count(); count.onsuccess = () => { db.close(); resolve(count.result); }; count.onerror = () => reject(count.error); };
+    open.onerror = () => reject(open.error);
+  }))).toBe(cells);
+  const before = (await cellQueries(request)).length;
+  await control(request, { roads: { hold: true } });
+  const active = await context.newPage();
+  await choose(active, 'Held paced city', '&livePacing=1&cache=0');
+  await expect.poll(async () => (await cellQueries(request)).length).toBe(before + 1);
+  const queued = await context.newPage();
+  await choose(queued, 'Queued paced city', '&livePacing=1&cache=0');
+  await expect(status(queued)).toContainText('Another map is using the road service');
+  expect(await cellQueries(request)).toHaveLength(before + 1);
+  await queued.close();
+  // A fully cached view never joins the held network queue, even in a fresh tab.
+  const cached = await context.newPage();
+  await cached.goto(`${link.href}&${LIVE}&livePacing=1`);
+  await expect(status(cached)).toContainText('Warm city, Japan ready');
+  expect(await cellQueries(request)).toHaveLength(before + 1);
+  await cached.close(); await active.close();
+});
+
+test('a provider cooldown survives reload and selecting another city instead of restarting requests early', async ({ page, request }) => {
+  await control(request, { roads: { status: 429, failures: 1, slotWait: 5 } });
+  await choose(page, 'First paced city', '&livePacing=1&cache=0');
+  await expect(status(page)).toContainText('The road service asked to wait');
+  expect(await cellQueries(request)).toHaveLength(1);
+  // choose() navigates, releasing the old tab's lock; the stored wait must remain.
+  await choose(page, 'Second paced city', '&livePacing=1&cache=0');
+  await expect(status(page)).toContainText('The road service asked to wait');
+  expect(await cellQueries(request)).toHaveLength(1);
+  await expect(status(page)).toContainText('Second paced city, Japan ready', { timeout: 20_000 });
+  const times = (await stats(request)).roadTimes;
+  expect(times.length).toBeGreaterThan(1);
+  expect(times[1] - times[0], 'Reload respects the five-second provider wait').toBeGreaterThanOrEqual(4950);
+});
+
+test('shared provider pacing still separates requests when browser storage is denied', async ({ page, request }) => {
+  await page.addInitScript(() => {
+    Storage.prototype.getItem = () => { throw new DOMException('Denied', 'SecurityError'); };
+    Storage.prototype.setItem = () => { throw new DOMException('Denied', 'SecurityError'); };
+  });
+  await choose(page, 'Storage denied paced city', '&livePacing=1&cache=0');
+  await expect(status(page)).toContainText('Storage denied paced city, Japan ready', { timeout: 20_000 });
+  const times = (await stats(request)).roadTimes;
+  expect(times.length).toBeGreaterThan(1);
+  for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1], 'Responses remain paced without local storage').toBeGreaterThanOrEqual(1000);
+});
