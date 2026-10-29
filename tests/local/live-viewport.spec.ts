@@ -44,6 +44,7 @@ async function idle(request: APIRequestContext) {
  */
 async function svg(page: Page, message = 'SVG exported.') {
   await page.getByRole('button', { name: 'Export', exact: true }).click();
+  if (message === 'Exported available map.') await expect(page.getByRole('dialog').locator('.export-coverage')).toContainText('Only roads currently drawn are included');
   const width = Number(await page.getByLabel('Width in pixels').inputValue()), height = Number(await page.getByLabel('Height in pixels').inputValue());
   const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download SVG', exact: true }).click();
   const xml = (await readFile((await (await pending).path())!)).toString('utf8');
@@ -281,6 +282,7 @@ test('a fully loaded view exports every road, and roads cross cell seams once wi
   }
   const png = await (async () => {
     await page.getByRole('button', { name: 'Export', exact: true }).click();
+    await expect(page.getByRole('dialog').locator('.export-coverage')).toHaveCount(0);
     await page.getByLabel('Width in pixels').fill(String(width)); await page.getByLabel('Height in pixels').fill(String(height));
     const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download PNG', exact: true }).click();
     const bytes = await readFile((await (await pending).path())!); await page.getByRole('button', { name: 'Close', exact: true }).click(); return bytes;

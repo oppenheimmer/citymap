@@ -82,7 +82,8 @@
   let exportError = $state('');
   // What the last export wrote, shown in the export dialog.
   let exported = $state('');
-  let shareText = $state(''), bboxText = $state('');
+  let shareVisible = $state(false), bboxText = $state('');
+  const shareText = $derived(shareVisible && ready ? url() : '');
   let controller: SceneController | null = null;
   let exportDialog: HTMLDialogElement;
   let exportAbort: AbortController | undefined;
@@ -124,7 +125,7 @@
     if (!ready || !selected) return;
     historyTimer = setTimeout(() => { window.history.replaceState(null, '', url()); }, 250);
   }
-  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.label.bold, design.label.italic, design.detail, design.font, design.north, design.northAt.x, design.northAt.y, design.scaleBar, design.scaleBarAt?.x, design.scaleBarAt?.y, design.rotation]; history(); });
+  $effect(() => { void [design.roadColor, design.roadOpacity, design.backgroundColor, design.backgroundOpacity, design.label.text, design.label.x, design.label.y, design.label.size, design.label.color, design.label.opacity, design.label.bold, design.label.italic, design.detail, design.font, design.north, design.northAt.x, design.northAt.y, design.scaleBar, design.scaleBarAt?.x, design.scaleBarAt?.y, design.rotation, useCache]; history(); });
   function cancel() {
     generation++; mounted = false; loading = false; ready = false; controller = null; live = null; liveCoverage = null;
     confirmation = null; progress = null; transfer = null; status = 'Load cancelled.';
@@ -143,6 +144,7 @@
     return () => clearInterval(timer);
   });
   function choose(boundary: Boundary, allowLarge = true, forceNetwork = false, restore?: Design) {
+    shareVisible = false;
     generation++; mounted = false; ready = false; controller = null; live = null; liveCoverage = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
     progress = null; transfer = null; startedAt = lastActivityAt = clock = performance.now();
@@ -281,7 +283,7 @@
     finally { exporting = false; }
   }
   async function share() {
-    shareText = url();
+    shareVisible = true;
     try { await navigator.clipboard.writeText(shareText); status = 'Design link copied.'; }
     catch { status = 'Select the link below to copy it.'; }
   }
@@ -401,7 +403,13 @@
     {:else}<div class="empty"><h2>A city, in lines.</h2><p>{loading ? 'Preparing your map…' : 'Find a city, choose its roads, and make it yours.'}</p></div>{/if}
   </section>
 </main>
-<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}><h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p><label for="export-width">Width in pixels</label><input id="export-width" type="number" min={widthRange[0]} max={widthRange[1]} bind:value={() => exportWidth, value => sizeExport('width', value)} onchange={() => sizeExport('width', exportWidth, true)}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min={heightRange[0]} max={heightRange[1]} bind:value={() => exportHeight, value => sizeExport('height', value)} onchange={() => sizeExport('height', exportHeight, true)}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{:else if exported}<p role="status">{exported}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}</dialog>
+<dialog bind:this={exportDialog} class="export-dialog" aria-labelledby="export-title" onclose={() => { exportAbort?.abort(); }}>
+  <h2 id="export-title">Export your map</h2><p>The current camera and design are preserved.</p>
+  {#if source?.viewport && liveCoverage && (!liveCoverage.complete || liveCoverage.beyond !== 'none')}
+    <p class="notice export-coverage">This view may have missing roads. Only roads currently drawn are included in the export. Wait for loading to finish, or zoom in to load more detail.</p>
+  {/if}
+  <label for="export-width">Width in pixels</label><input id="export-width" type="number" min={widthRange[0]} max={widthRange[1]} bind:value={() => exportWidth, value => sizeExport('width', value)} onchange={() => sizeExport('width', exportWidth, true)}><label for="export-height">Height in pixels</label><input id="export-height" type="number" min={heightRange[0]} max={heightRange[1]} bind:value={() => exportHeight, value => sizeExport('height', value)} onchange={() => sizeExport('height', exportHeight, true)}><label class="checkbox"><input type="checkbox" bind:checked={transparent}> Transparent background</label><fieldset class="grid-options"><legend>Coordinate grid</legend><label class="checkbox"><input type="radio" name="grid" value="none" bind:group={gridMode}> None</label><label class="checkbox"><input type="radio" name="grid" value="ticks" bind:group={gridMode}> Ticks on the border</label><label class="checkbox"><input type="radio" name="grid" value="lines" bind:group={gridMode}> Light grid lines</label>{#if gridMode === 'lines'}<div class="slider-label"><label for="grid-opacity">Grid line opacity</label><output for="grid-opacity">{percent(gridOpacity)}</output></div><input id="grid-opacity" type="range" min="0.05" max="1" step="0.05" bind:value={gridOpacity} aria-valuetext={percent(gridOpacity)}>{/if}</fieldset><p class="hint">Up to 16 megapixels. Map data © OpenStreetMap contributors (ODbL): credit it wherever you share the image.</p><div class="buttons"><button disabled={exporting} onclick={() => exportFile('png')}>Download PNG</button><button disabled={exporting} onclick={() => exportFile('svg')}>Download SVG</button><button onclick={() => { exportAbort?.abort(); exportDialog.close(); }}>{exporting ? 'Cancel export' : 'Close'}</button></div>{#if exporting}<p role="status">Preparing export…</p>{:else if exported}<p role="status">{exported}</p>{/if}{#if exportError}<p role="alert">{exportError}</p>{/if}
+</dialog>
 
 <style>
 /* The map fills the layout; the settings open over it and never resize it. */
@@ -450,12 +458,12 @@ details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
   header { margin-bottom: 16px; }
   .sheet-toolbar { display: flex; align-items: center; gap: 8px; position: sticky; top: 0; padding: 12px 0; background: var(--ui-surface); z-index: 1; }
   button { min-height: 44px; }
-  .saved { flex-wrap: wrap; }.saved button:first-child { flex-basis: 100%; }
 }
 .search-row { display: flex; gap: 6px; }.search-row input { min-width: 0; }
 .checkbox { display: flex; align-items: center; gap: 8px; font-weight: 400; }.checkbox input { width: auto !important; }
 .notice { border-left: 3px solid #507e5c; padding: 12px; background: #edf1e7; font-size: 14px; }.notice button { display: block; margin-top: 10px; }
-.saved { display: flex; gap: 6px; margin-top: 8px; }.saved button:first-child { flex: 1; }
+.saved { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.saved button:first-child { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
 .export-dialog { border: 0; background: var(--ui-surface); padding: 24px; border-radius: 10px; max-width: 440px; width: calc(100% - 40px); max-height: 90dvh; overflow: auto; }
 .export-dialog::backdrop { background: #20282080; }
 .export-dialog h2 { margin-top: 0; }

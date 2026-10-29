@@ -16,6 +16,26 @@ test('presets, all colors/opacity and label settings are reflected in DOM and a 
   await page.goto(link.href); await expect(status(page)).toContainText('ready'); await expect(label(page)).toHaveText('東京 & <Map>'); await expect(label(page)).toHaveCSS('font-size', '48px'); await expect(page.getByLabel('Background opacity')).toHaveValue('0.5');
 });
 
+test('the visible share link follows edits, camera changes and cache settings, and resets for a new map', async ({ page }) => {
+  await page.goto('/'); await sample(page);
+  const first = await share(page), field = page.getByLabel('Share link');
+  const current = async () => new URL(await field.inputValue()).searchParams;
+  await page.getByLabel('Label text').fill('Updated 東京 map');
+  await expect.poll(async () => (await current()).get('label')).toBe('Updated 東京 map');
+  await page.getByRole('button', { name: 'Night', exact: true }).click();
+  await expect.poll(async () => (await current()).get('roads')).toBe('e1e7d9');
+  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect.poll(async () => Number((await current()).get('view')!.split(',')[2])).toBeLessThan(Number(first.searchParams.get('view')!.split(',')[2]));
+  await detail(page, 'Data and source'); await page.getByLabel('Use cached city data').uncheck();
+  await expect.poll(async () => (await current()).get('cache')).toBe('0');
+  const latest = await share(page);
+  await sample(page, 'Medium'); await expect(field).toHaveCount(0);
+  await page.goto(latest.href); await expect(status(page)).toContainText('ready');
+  await expect(label(page)).toHaveText('Updated 東京 map');
+  await expect(page.getByLabel('Road color')).toHaveValue('#e1e7d9');
+  await expect(page.getByLabel('Use cached city data')).not.toBeChecked();
+});
+
 test('label pointer dragging, fine/coarse arrows and edge clamps affect normalized position', async ({ page }) => {
   await page.goto('/'); await sample(page);
   const box = (await label(page).boundingBox())!; await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); await page.mouse.down(); await page.mouse.move(570, 400, { steps: 6 }); await page.mouse.up();

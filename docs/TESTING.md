@@ -45,6 +45,13 @@ providers locally in Playwright and verifies the compiled setting, one delayed
 switch and report provenance. The normal build must exclude this test URL;
 offline deployment validation checks that explicitly.
 
+UI regressions check that long saved-design names and their actions stay inside
+the settings at desktop and 320-pixel phone widths. Export cases check that the
+dialog explains missing roads before a partial download and omits that notice
+for a fully loaded view; limited-detail exports still preserve all drawn roads.
+The displayed share link follows design edits, zoom and cache settings, resets
+when a different map is selected, and restores the latest map when opened.
+
 ## Run the suite
 
 Use Node 24 (`nvm use`) and the locked dependencies (`npm ci` if needed). The

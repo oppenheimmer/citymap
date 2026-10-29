@@ -1,6 +1,27 @@
 import { readFile } from 'node:fs/promises';
 import { test, expect, sample, detail, label, slider, share, status, control, stats } from '../support/local.ts';
 
+for (const width of [1000, 320]) test(`saved design names and actions stay inside the settings at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 844 });
+  await page.goto('/'); await sample(page);
+  const name = 'Saved' + 'x'.repeat(251);
+  await page.getByLabel('Label text').fill(name);
+  await page.getByRole('button', { name: 'Save design', exact: true }).click();
+  await detail(page, 'Saved designs');
+  const row = page.locator('.saved'); await row.scrollIntoViewIfNeeded();
+  await testInfo.attach('saved-design-layout.png', { body: await page.screenshot(), contentType: 'image/png' });
+  await expect(row.getByRole('button', { name, exact: true })).toHaveText(name);
+  const aside = (await page.locator('aside').boundingBox())!;
+  for (const button of await row.getByRole('button').all()) {
+    const box = (await button.boundingBox())!;
+    expect(box.x).toBeGreaterThanOrEqual(aside.x);
+    expect(box.x + box.width).toBeLessThanOrEqual(aside.x + aside.width);
+  }
+  expect(await page.locator('aside').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+  await row.getByRole('button', { name: `Delete design ${name}`, exact: true }).click();
+  await expect(page.getByText('Saved designs', { exact: true })).toHaveCount(0);
+});
+
 test('saved settings download preserves the design and its portable restore link', async ({ page }) => {
   await page.goto('/'); await sample(page);
   await page.getByLabel('Label text').fill('Saved 東京 & <Map>'); await page.getByRole('button',{name:'Night',exact:true}).click();
