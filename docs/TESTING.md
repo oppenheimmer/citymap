@@ -59,6 +59,15 @@ batches spend no network budget or provider reservation, partial hits survive
 remaining failures, cooldown state remains intact, and cancellation during
 preflight cannot dispatch a request.
 
+`tests/import-design.test.ts` checks bounded files, supported versions, exact
+large identifiers, settings validation, optional defaults and ignoring external
+restore URLs. `tests/saved-designs.test.ts` checks rename/update identity and
+storage failures. `tests/local/design-files.spec.ts` exercises downloaded files,
+import cancellation, malformed/oversized files, renaming, updating and failed
+deletion. Monaco's entry action and shared pinned link load from app assets with
+no search, R2-origin lookup or Overpass request, including when browser caching
+is disabled; broken bundled data fails visibly without provider fallback.
+
 ## Run the suite
 
 Use Node 24 (`nvm use`) and the locked dependencies (`npm ci` if needed). The

@@ -55,6 +55,26 @@ export async function writeDataset(root: string, dataset: BuiltDataset) {
   return planKey;
 }
 
+/** Static hosts serve decoded chunks; retain older immutable revisions for pinned links. */
+export async function writeStaticBundle(root: string, dataset: BuiltDataset) {
+  validateManifest(dataset.manifest);
+  for (const object of dataset.objects) {
+    const file = localPath(root, object.key);
+    const bytes = object.headers['Content-Encoding'] === 'gzip' ? gunzipSync(object.bytes) : Buffer.from(object.bytes);
+    await mkdir(path.dirname(file), { recursive: true });
+    if (object.immutable) {
+      try { await writeFile(file, bytes, { flag: 'wx' }); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        assert((await readObject(root, object.key)).equals(bytes), `Refusing to overwrite immutable bundled object ${object.key}`);
+      }
+    } else {
+      const temp = `${file}.${randomUUID()}.tmp`;
+      await writeFile(temp, bytes, { flag: 'wx' }); await rename(temp, file);
+    }
+  }
+}
+
 export async function validateDataset(root: string, manifestObjectKey: string): Promise<{ manifest: CityManifest; chunks: CityRoadChunk[] }> {
   const value: unknown = JSON.parse((await readObject(root, manifestObjectKey)).toString('utf8'));
   validateManifest(value);

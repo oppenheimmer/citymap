@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { gunzipSync } from 'node:zlib';
 import { readFile } from 'node:fs/promises';
 import { buildDataset } from '../tools/city-data/build.ts';
+import { BUNDLED_MAPS } from '../src/lib/bundled-maps.ts';
 import type { WorkerLoad, WorkerResult } from '../src/lib/worker-protocol.ts';
 
 const metadata = {
@@ -149,6 +150,8 @@ test('a bundled-only data origin serves its own cities and is never probed for o
   const done = monaco.messages.at(-1)!;
   assert.ok(done.type === 'done' && done.source.kind === 'r2' && done.source.bundled === true && done.segmentCount === 15369);
   assert.ok(!monaco.requests.includes(overpass));
+  const uncached = await run(t, { boundary: BUNDLED_MAPS[0], providers, useCache: false }, fromShipped);
+  assert.ok(uncached.messages.at(-1)?.type === 'done'); assert.ok(!uncached.requests.includes(overpass));
   const other = await run(t, { boundary: { key: 'osm-relation-77', name: 'Elsewhere', kind: 'city', areaId: '3600000077' }, providers }, fromShipped);
   assert.deepEqual(other.requests, [overpass]);
   assert.equal(other.messages.at(-1)!.type, 'done');

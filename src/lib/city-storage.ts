@@ -103,3 +103,11 @@ export function saveDesign(boundary: Boundary, design: Design): boolean {
   return write(DESIGNS, [record, ...designs()].slice(0, 20));
 }
 export function removeDesign(id: string): boolean { return write(DESIGNS, designs().filter(design => design.id !== id)); }
+export function renameDesign(id: string, name: string): boolean {
+  const records = designs(), trimmed = name.trim();
+  return !!trimmed && trimmed.length <= 256 && records.some(record => record.id === id) && write(DESIGNS, records.map(record => record.id === id ? { ...record, name: trimmed } : record));
+}
+export function updateDesign(id: string, boundary: Boundary, design: Design): boolean {
+  const records = designs();
+  return records.some(record => record.id === id) && write(DESIGNS, records.map(record => record.id === id ? { ...record, boundary, design, savedAt: new Date().toISOString() } : record));
+}

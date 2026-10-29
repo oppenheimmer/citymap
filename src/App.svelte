@@ -1,5 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import DesignImport from './DesignImport.svelte';
+  import SavedDesigns from './SavedDesigns.svelte';
+  import { BUNDLED_MAPS } from './lib/bundled-maps.ts';
   import MapCanvas from './MapCanvas.svelte';
   import { bbox, boundaryFromNominatim, covers, hasLocation, publicUrl } from './lib/domain.ts';
   import type { Boundary, Design, GeoView, Geometry, LoadProgress, MarkPosition, PreparationTimings, Providers, RoadDetail, SourceInfo } from './lib/domain.ts';
@@ -8,7 +11,7 @@
   import { request } from './lib/request.ts';
   import { parseUrl, shareUrl } from './lib/url-state.ts';
   import { responseJson } from './lib/data/response-body.ts';
-  import { clearCityCache, designs, removeDesign, saveDesign } from './lib/city-storage.ts';
+  import { clearCityCache, designs, removeDesign, renameDesign, saveDesign, updateDesign } from './lib/city-storage.ts';
   import type { SavedDesign } from './lib/city-storage.ts';
   import { designFile } from './lib/design-file.ts';
   import { download } from './lib/download.ts';
@@ -37,6 +40,7 @@
   let query = $state(link.query);
   let results = $state.raw<Boundary[]>([]);
   let saved = $state.raw<SavedDesign[]>(designs());
+  let savedId = $state<string | null>(null);
   let selected = $state.raw<Boundary | null>(linked || null);
   let design = $state<Design>(link.design);
   let useCache = $state(link.cache);
@@ -144,15 +148,18 @@
     return () => clearInterval(timer);
   });
   function choose(boundary: Boundary, allowLarge = true, forceNetwork = false, restore?: Design) {
-    shareVisible = false;
+    shareVisible = false; savedId = null;
     generation++; mounted = false; ready = false; controller = null; live = null; liveCoverage = null; source = null; coverage = null; metrics = null; error = ''; confirmation = null;
     selected = boundary; loading = true; status = `Loading ${boundary.name}…`;
     progress = null; transfer = null; startedAt = lastActivityAt = clock = performance.now();
     if (restore) design = { ...restore, label: { ...restore.label }, northAt: { ...restore.northAt }, scaleBarAt: restore.scaleBarAt ? { ...restore.scaleBarAt } : undefined };
     else { design.view = undefined; design.rotation = 0; turnLeft = false; design.label.text = boundary.name.split(',')[0].slice(0, 256); }
     bboxText = boundary.bbox?.join(',') || '';
+    // The shipped revision stays local even when a separate R2 delivery origin is configured.
+    const bundled = BUNDLED_MAPS.some(map => map.key === boundary.key && map.revision === boundary.revision && map.manifestSha256 === boundary.manifestSha256);
+    const mapProviders = bundled ? { ...providers, cityDataBase: publicUrl(new URL(`${import.meta.env.BASE_URL}data`, location.origin).href), cityDataBundled: true } : providers;
     const viewport = LIVE_VIEWPORT && !boundary.fixture && hasLocation(boundary, design.view);
-    options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined, ...(viewport ? { viewport } : {}) };
+    options = { boundary, providers: mapProviders, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined, ...(viewport ? { viewport } : {}) };
     // Smaller devices keep less road geometry before unseen regions are evicted.
     const small = matchMedia('(max-width: 750px)').matches || ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
     liveSettings = viewport ? { overpass: providers.overpass, fallback: testing.get('liveMirror') === '1' ? new URL('/mirror-roads', providers.overpass).href : overpassFallback, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV, pace: testing.get('livePacing') === '1' } : undefined;
@@ -289,11 +296,16 @@
   }
   function save() {
     if (!selected) return;
-    if (saveDesign(boundaryForShare(), copy())) { saved = designs(); status = 'Design saved in this browser.'; }
+    if (saveDesign(boundaryForShare(), copy())) { saved = designs(); savedId = saved[0]?.id || null; status = 'Design saved in this browser.'; }
     else status = 'Local storage is unavailable. Use a share link to keep this design.';
   }
+  function updateSaved() {
+    if (!selected || !savedId) return;
+    if (updateDesign(savedId, boundaryForShare(), copy())) { saved = designs(); status = 'Saved design updated in this browser.'; }
+    else status = 'This design could not be updated. Use Save design or a share link to keep it.';
+  }
   function restore(record: SavedDesign) {
-    try { const parsed = parseUrl(new URL(shareUrl(location.origin, location.pathname, record.boundary, record.design)).search); if (!parsed.boundary || parsed.warning || parsed.boundary.fixture && !SAMPLES) throw new Error('Invalid saved design'); choose(parsed.boundary, true, false, parsed.design); }
+    try { const parsed = parseUrl(new URL(shareUrl(location.origin, location.pathname, record.boundary, record.design)).search); if (!parsed.boundary || parsed.warning || parsed.boundary.fixture && !SAMPLES) throw new Error('Invalid saved design'); choose(parsed.boundary, true, false, parsed.design); savedId = record.id; }
     catch { error = 'This saved design could not be restored. You can remove it and create a new one.'; }
   }
   function exportDesign(record: SavedDesign) {
@@ -348,6 +360,7 @@
     {#if mobile && !controlsOpen}<p class="sheet-status" role="status" aria-live="polite">{status}</p>{/if}
     <div id="settings-content" hidden={mobile && !controlsOpen}>
     <header>{#if !mobile}<button class="menu-toggle hide-options" bind:this={hideOptions} aria-label="Hide options" aria-expanded="true" aria-controls="options" onclick={() => toggleSidebar(false)}>{@render hamburger()}</button>{/if}<p class="eyebrow">CITYMAP</p><h1>Make a map.</h1><p>Your city, drawn in roads.</p></header>
+    {#if !selected}<div class="quick-start">{#each BUNDLED_MAPS as map (map.key)}<button onclick={() => { query = map.name; choose(map); }}>Open {map.name}</button>{/each}<p class="hint">Start with a built-in map, without waiting for the road service.</p></div>{/if}
     <form onsubmit={event => { event.preventDefault(); void search(); }}>
       <label for="search">Find a city</label><div class="search-row"><input id="search" type="search" bind:value={query} oninput={editQuery} placeholder="Tokyo, Japan" autocomplete="off" maxlength="256"><button type="submit" disabled={searching || !query.trim()}>Search</button></div>
       <div class="results">{#each results as city (city.key)}<button type="button" onclick={() => choose(city)}>{city.name}<small>{city.kind}{city.osmType ? ` · ${city.osmType}` : ''}</small></button>{/each}</div>
@@ -384,7 +397,7 @@
         <fieldset><legend>Colors</legend><label>Road color <input type="color" bind:value={design.roadColor}></label><div class="slider-label"><label for="road-opacity">Road opacity</label><output for="road-opacity">{percent(design.roadOpacity)}</output></div><input id="road-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.roadOpacity} aria-valuetext={percent(design.roadOpacity)}><label>Background color <input type="color" bind:value={design.backgroundColor}></label><div class="slider-label"><label for="background-opacity">Background opacity</label><output for="background-opacity">{percent(design.backgroundOpacity)}</output></div><input id="background-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.backgroundOpacity} aria-valuetext={percent(design.backgroundOpacity)}></fieldset>
         <fieldset><legend>Label</legend><label for="label">Label text</label><input id="label" bind:value={design.label.text} maxlength="256"><label for="font">Typeface</label><select id="font" bind:value={design.font}><option value="serif">Serif (Computer Modern)</option><option value="mono">Monospace (Fira Code)</option><option value="sans">Sans-serif</option></select><div class="choices"><label class="checkbox"><input type="checkbox" bind:checked={design.label.bold}> Bold</label><label class="checkbox"><input type="checkbox" bind:checked={design.label.italic}> Italic</label></div><p class="hint">The typeface is used for the label, north arrow, scale bar and coordinate grid; bold and italic style the label.</p><label>Label color <input type="color" bind:value={design.label.color}></label><div class="slider-label"><label for="label-opacity">Label opacity</label><output for="label-opacity">{percent(design.label.opacity)}</output></div><input id="label-opacity" type="range" min="0" max="1" step="0.05" bind:value={design.label.opacity} aria-valuetext={percent(design.label.opacity)}><div class="slider-label"><label for="size">Label size</label><output for="size">{design.label.size} px</output></div><input id="size" type="range" min="10" max="128" bind:value={design.label.size} aria-valuetext={`${design.label.size} pixels`}><label class="checkbox"><input type="checkbox" bind:checked={design.north}> Show north arrow</label><label class="checkbox"><input type="checkbox" bind:checked={design.scaleBar}> Show scale bar</label><p class="hint">Drag the label, north arrow or scale bar on the map, or focus one and use arrow keys.</p></fieldset>
       </details>
-      <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button></div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
+      <fieldset disabled={!ready}><legend>Keep this design</legend><div class="buttons"><button onclick={share}>Copy share link</button><button onclick={save}>Save design</button>{#if savedId}<button onclick={updateSaved}>Update saved design</button>{/if}</div>{#if shareText}<label for="share">Share link</label><input id="share" readonly value={shareText} onclick={event => event.currentTarget.select()}>{/if}</fieldset>
       <details><summary>Data and source</summary><label class="checkbox"><input type="checkbox" bind:checked={useCache}> Use cached city data</label><button disabled={loading} onclick={() => choose({ ...selected!, revision: undefined, manifestSha256: undefined }, true, true, copy())}>Refresh city data</button><button onclick={clear}>Clear city cache</button>
         {#if source?.viewport}<p>Live OpenStreetMap data, loaded by map view<br>Source date: {date(liveCoverage?.stats.snapshotAt)}<br>Downloaded: {date(liveCoverage?.stats.oldestFetch ? new Date(liveCoverage.stats.oldestFetch).toISOString() : source.downloadedAt)}</p>
         {:else if source}<p>{source.local ? 'Local cache' : source.bundled ? 'Built-in city data' : ({ r2: 'R2 cache', legacy: 'Legacy cache', live: 'Live OpenStreetMap data', fixture: 'Synthetic sample' }[source.kind])}<br>Source date: {date(source.snapshotAt)}<br>Downloaded: {date(source.downloadedAt)}</p>{/if}
@@ -393,7 +406,8 @@
       {#if liveCoverage}{@const stats = liveCoverage.stats}<details><summary>Load timings</summary><p>{stats.regions.toLocaleString()} map regions · {stats.segments.toLocaleString()} segments{stats.firstRoadMs !== undefined ? ` · first road frame ${stats.firstRoadMs.toFixed(1)} ms` : ''}</p><p>{stats.requests.toLocaleString()} road requests · {stats.cached.toLocaleString()} from the browser cache · {formatBytes(stats.bytes)} downloaded{stats.medianFetchMs !== undefined ? ` · median request ${stats.medianFetchMs.toFixed(0)} ms` : ''}{stats.splits ? ` · ${stats.splits} dense regions split` : ''}</p>{#if stats.recentFailures.at(-1)}{@const failure = stats.recentFailures.at(-1)!}<p>Last request failure: {failureLabel(failure.code)}{failure.status ? ` (HTTP ${failure.status})` : ''}.</p>{/if}<button onclick={exportLoadReport}>Download load report</button><p class="hint">Includes timings and errors. Queries and map coordinates are omitted.</p></details>{/if}
       {#if metrics}<details><summary>Load timings</summary><p>{metrics.segments.toLocaleString()} segments · first road frame {metrics.first.toFixed(1)} ms · complete {metrics.total.toFixed(1)} ms</p>{#if metrics.preparation}<p>Download {metrics.preparation.downloadMs.toFixed(1)} ms · decode {metrics.preparation.decodeMs.toFixed(1)} ms · index {metrics.preparation.indexMs.toFixed(1)} ms · projection {metrics.preparation.projectMs.toFixed(1)} ms</p><p class="hint">Download time includes delivery waits; parallel request times can overlap.</p>{/if}</details>{/if}
     {/if}
-    {#if saved.length}<details><summary>Saved designs</summary>{#each saved as record (record.id)}<div class="saved"><button onclick={() => restore(record)}>{record.name}</button><button aria-label={`Export settings ${record.name}`} onclick={() => exportDesign(record)}>Export JSON</button><button aria-label={`Delete design ${record.name}`} onclick={() => { removeDesign(record.id); saved = designs(); }}>Delete</button></div>{/each}</details>{/if}
+    <DesignImport {generation} allowFixtures={SAMPLES} onimport={value => choose(value.boundary, true, false, value.design)} />
+    <SavedDesigns records={saved} onrestore={restore} onexport={exportDesign} ondelete={record => { const removed = removeDesign(record.id); if (removed) { saved = designs(); if (savedId === record.id) savedId = null; status = 'Saved design deleted.'; } return removed; }} onrename={(record, name) => { const renamed = renameDesign(record.id, name); if (renamed) { saved = designs(); status = 'Saved design renamed.'; } return renamed; }} />
     <footer>Map data <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors, ODbL</a>.</footer>
     </div>
   </aside>
@@ -462,8 +476,6 @@ details { margin-top: 18px; font-size: 12px; line-height: 1.6; }
 .search-row { display: flex; gap: 6px; }.search-row input { min-width: 0; }
 .checkbox { display: flex; align-items: center; gap: 8px; font-weight: 400; }.checkbox input { width: auto !important; }
 .notice { border-left: 3px solid #507e5c; padding: 12px; background: #edf1e7; font-size: 14px; }.notice button { display: block; margin-top: 10px; }
-.saved { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.saved button:first-child { flex: 1 1 100%; min-width: 0; overflow-wrap: anywhere; }
 .export-dialog { border: 0; background: var(--ui-surface); padding: 24px; border-radius: 10px; max-width: 440px; width: calc(100% - 40px); max-height: 90dvh; overflow: auto; }
 .export-dialog::backdrop { background: #20282080; }
 .export-dialog h2 { margin-top: 0; }

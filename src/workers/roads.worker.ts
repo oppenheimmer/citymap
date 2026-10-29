@@ -201,7 +201,8 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo | 'viewport'> {
   }
   // The app's bundled `/data` holds only listed cities; skip the lookup for every other city.
   const datasets = load.providers.cityDataBase && (!load.providers.cityDataBundled || BUNDLED_CITIES.includes(load.boundary.key));
-  if (load.useCache && datasets && /^osm-/.test(load.boundary.key)) {
+  // An explicitly pinned bundled map is an app asset, even when browser caching is off.
+  if ((load.useCache || load.providers.cityDataBundled && load.boundary.revision) && datasets && /^osm-/.test(load.boundary.key)) {
     try { return await r2(load); }
     catch (error) {
       // Before a revision is selected no cached geometry exists, so any pointer failure

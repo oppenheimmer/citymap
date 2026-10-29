@@ -4,12 +4,14 @@ import { createHash } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { decodeChunk, manifestKey, validateManifest } from '../src/lib/data/city-cache.ts';
 import { BUNDLED_CITIES } from '../src/lib/bundled-cities.ts';
+import { BUNDLED_MAPS } from '../src/lib/bundled-maps.ts';
 
 const root = new URL('../public/data/', import.meta.url);
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 test('the shipped data directory holds exactly the bundled cities', async () => {
   assert.deepEqual((await readdir(new URL('v2/cities/', root))).sort(), [...BUNDLED_CITIES].sort());
+  assert.deepEqual(BUNDLED_MAPS.map(map => map.key), [...BUNDLED_CITIES]);
 });
 
 for (const key of BUNDLED_CITIES) test(`bundled ${key} is a complete, verifiable real-city dataset`, async () => {
@@ -21,6 +23,11 @@ for (const key of BUNDLED_CITIES) test(`bundled ${key} is a complete, verifiable
   const manifest: unknown = JSON.parse(manifestBytes.toString('utf8'));
   validateManifest(manifest);
   assert.equal(manifest.source.kind, 'osm-extract');
+  const map = BUNDLED_MAPS.find(map => map.key === key)!;
+  assert.equal(map.name, manifest.name); assert.equal(map.osmId, manifest.boundary.osm_id);
+  assert.equal(map.osmType, manifest.boundary.osm_type); assert.equal(map.areaId, manifest.area_ids[0]);
+  assert.equal(map.revision, pointer.dataset_revision); assert.equal(map.manifestSha256, pointer.manifest_sha256);
+  assert.deepEqual(map.bbox, [manifest.bounds[1], manifest.bounds[0], manifest.bounds[3], manifest.bounds[2]]);
   let segments = 0;
   for (const descriptor of manifest.chunks) {
     // Chunks ship decoded, as a browser receives a gzip-encoded R2 object.

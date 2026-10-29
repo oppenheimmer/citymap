@@ -41,6 +41,10 @@ The renderer and exports load on demand. Workers prepare road geometry and SVG
 output. Map and PNG geometry uploads use 1 MiB batches with cancellation between
 frames. Complete IndexedDB geometry has size limits and LRU eviction; saved
 local designs are stored separately and export as JSON with a restore link.
+Saved designs show their date, can be renamed, and can be updated in place.
+**Import design** restores exported Citymap JSON files up to 64 KB; it validates
+their settings and does not open URLs supplied by the file. Road data loads
+separately from design settings.
 On phones, controls use a collapsible sheet with accessible cancellation.
 Loading shows a progress bar: exact for cached city data, and for any download
 that reports its size. Otherwise it shows bytes received, elapsed time and a
@@ -188,6 +192,15 @@ Monaco ships with the app as a same-origin version-2 dataset in `public/data`, s
 loads in a fraction of a second without R2 or Overpass. Without
 `VITE_CITY_DATA_BASE_URL` the app only looks there for bundled cities; every other
 city loads live. `npm run data:bundle` regenerates the shipped files.
+The starting screen's **Open Monaco** action opens that exact bundled revision,
+including when another R2 origin is configured. Its share links also select the
+bundled revision; disabling browser caching skips stored browser geometry while
+still loading the selected app asset. Missing or invalid bundled data fails
+visibly instead of switching that action to live roads. The bundle command also
+generates `src/lib/bundled-maps.ts`; tests check its metadata against the dataset.
+Rebundling retains older immutable revisions for existing pinned links and rejects
+changes to their bytes. Removing a city from the bundled list requires explicitly
+removing its shipped directory; the bundle command does not delete city data.
 
 The default pilot is synthetic; the [real Monaco pilot](docs/benchmarks/20261009-monaco.md)
 provides pinned source/selection and format evidence. Extraction is optional
