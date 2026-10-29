@@ -1,8 +1,24 @@
 # Performance measurements
 
+The [October 29 rendering measurements](20261029-rendering.md) record geometry
+parity, batch preparation timing, and browser latency before/after culling and
+bounded preparation.
+
 The [Monaco format comparison](20261009-monaco.md) records real-city stored
 size, decode time and memory for the version-1 and version-2 data formats. The
 browser benchmark below measures the current application only.
+
+Compare repeated single-cell preparation with shared batch preparation using the
+pinned real Monaco fixture, without a browser or network requests:
+
+```sh
+npm run benchmark:cells -- --runs 25 --output .benchmarks/cells.json
+```
+
+The report checks identical coordinate hashes and segment counts for six
+cell/rank combinations before timing them, alternates measurement order, and
+records median/p95 times, CPU, Node version and the source hash. It measures
+geometry preparation only, not provider or rendering latency.
 
 With Node 24, a production build and an already installed working Chromium:
 

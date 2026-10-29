@@ -1,4 +1,35 @@
-import { test, expect, sample, live, stats, status, cacheKeys } from '../support/local.ts';
+import { test, expect, sample, live, stats, status, cacheKeys, detail } from '../support/local.ts';
+
+for (const mode of ['city', 'cells']) test(`clearing ${mode} cache cancels deferred saves, and later loads can cache again`, async ({ page }) => {
+  await page.addInitScript(() => {
+    const callbacks: IdleRequestCallback[] = [];
+    Object.defineProperty(window, 'heldSaves', { value: callbacks });
+    window.requestIdleCallback = callback => { callbacks.push(callback); return callbacks.length; };
+  });
+  await page.goto(mode === 'city' ? '/' : '/?liveMode=viewport');
+  if (mode === 'city') await sample(page); else await live(page, 'Deferred cache');
+  const pending = () => page.evaluate(() => (window as unknown as { heldSaves: IdleRequestCallback[] }).heldSaves.length);
+  const release = () => page.evaluate(() => {
+    const callbacks = (window as unknown as { heldSaves: IdleRequestCallback[] }).heldSaves.splice(0);
+    callbacks.forEach(callback => callback({ didTimeout: false, timeRemaining: () => 50 }));
+  });
+  const keys = mode === 'city' ? () => cacheKeys(page) : () => page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+    const open = indexedDB.open('citymap-cells', 1);
+    open.onsuccess = () => {
+      const db = open.result, query = db.transaction('cells').objectStore('cells').getAllKeys();
+      query.onsuccess = () => { db.close(); resolve(query.result.map(String)); };
+      query.onerror = () => { db.close(); reject(query.error); };
+    };
+    open.onerror = () => reject(open.error);
+  }));
+  await expect.poll(pending).toBeGreaterThan(0);
+  await detail(page, 'Data and source'); await page.getByRole('button', { name: 'Clear city cache' }).click();
+  await expect(status(page)).toContainText('Saved city geometry cleared');
+  await release(); expect(await keys()).toEqual([]);
+  await page.getByRole('button', { name: 'Refresh city data' }).click();
+  await expect(status(page)).toContainText('ready'); await expect.poll(pending).toBeGreaterThan(0);
+  await release(); await expect.poll(async () => (await keys()).length).toBeGreaterThan(0);
+});
 
 test('storage denial and malformed saved JSON do not prevent online rendering', async ({ page }) => {
   await page.addInitScript(() => { localStorage.setItem('citymap:designs:v1', '{'); Object.defineProperty(window, 'indexedDB', { get() { throw new DOMException('Denied', 'SecurityError'); } }); });

@@ -1,5 +1,5 @@
 import { projector } from '../lib/geometry.ts';
-import { cellRoads } from '../lib/live/cell-roads.ts';
+import { batchCellRoads } from '../lib/live/cell-roads.ts';
 import { tileRect } from '../lib/live/grid.ts';
 import { CellFailure, cellsQuery, FAILURE_CODES, fetchCell, queryTimeout } from '../lib/live/overpass.ts';
 import type { CellCommand, CellReply, CellRequest } from '../lib/worker-protocol.ts';
@@ -24,7 +24,7 @@ async function load(request: CellRequest, signal: AbortSignal) {
   const fetched = performance.now();
   const [lon, lat] = request.origin, { project } = projector([lon, lat, lon, lat]);
   // Each cell keeps the ways of its rank, clipped to it, as if it had been fetched alone.
-  const cells = request.cells.map(cell => cellRoads(data, project, tileRect(cell.tile, request.origin), cell.rank));
+  const cells = batchCellRoads(data, project, request.cells.map(cell => ({ box: tileRect(cell.tile, request.origin), rank: cell.rank })));
   return { cells, bytes, fetchMs: fetched - started, decodeMs: performance.now() - fetched };
 }
 

@@ -68,7 +68,7 @@ test('live search, Overpass loading, share restoration and local cache', async (
   let roadRequests = 0;
   await page.route('**/api/search?**', route => route.fulfill({ json: [{ osm_type: 'relation', osm_id: 123, display_name: 'Test City, Japan', type: 'city', boundingbox: ['35', '35.1', '139', '139.1'] }] }));
   await page.route('https://overpass-api.de/api/interpreter', route => { roadRequests++; return route.fulfill({ contentType: 'application/json', body: fixture }); });
-  await page.goto('/');
+  await page.goto('/?liveMode=area');
   await page.getByLabel('Find a city').fill('Test City');
   await page.getByRole('button', { name: 'Search', exact: true }).click();
   await page.getByRole('button', { name: /Test City, Japan/ }).click();
@@ -78,12 +78,51 @@ test('live search, Overpass loading, share restoration and local cache', async (
   await page.getByRole('button', { name: 'Copy share link', exact: true }).click();
   const url = await page.getByLabel('Share link').inputValue();
   await expect.poll(() => page.evaluate(async () => new Promise<number>(resolve => { const req = indexedDB.open('citymap-geometry', 1); req.onsuccess = () => { const count = req.result.transaction('cities').objectStore('cities').count(); count.onsuccess = () => { resolve(count.result); req.result.close(); }; }; }))).toBe(1);
-  await page.goto(url);
+  const legacy = new URL(url); legacy.searchParams.set('liveMode', 'area');
+  await page.goto(legacy.href);
   await expect(page.locator('aside [role=status]')).toContainText('ready');
   await expect(page.getByLabel('Label text')).toHaveValue('Shared city');
   expect(roadRequests).toBe(1);
   await page.getByText('Data and source', { exact: true }).click();
   await expect(page.locator('aside')).toContainText('Local cache');
+});
+
+test('default loading uses bounded viewport queries and restores the view entirely from cached cells', async ({ page }) => {
+  const fixture = await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8');
+  const data = JSON.parse(fixture) as { elements: { type: string; lon: number; lat: number }[] };
+  const nodes = data.elements.filter(element => element.type === 'node');
+  const lon = nodes[0].lon, lat = nodes[0].lat;
+  const queries: string[] = [];
+  await page.route('**/api/search?**', route => route.fulfill({ json: [{ osm_type: 'relation', osm_id: 123, display_name: 'Viewport city', type: 'city', lon, lat, boundingbox: [lat - 0.05, lat + 0.05, lon - 0.05, lon + 0.05].map(String) }] }));
+  await page.route('https://overpass-api.de/api/interpreter', route => {
+    queries.push(new URLSearchParams(route.request().postData()!).get('data')!);
+    return route.fulfill({ contentType: 'application/json', body: fixture });
+  });
+  await page.goto('/');
+  await page.getByLabel('Find a city').fill('Viewport city'); await page.getByRole('button', { name: 'Search', exact: true }).click();
+  await page.getByRole('button', { name: /Viewport city.*city/ }).click();
+  const status = page.locator('aside [role=status]');
+  await expect(status).toContainText('ready'); await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+  let previous = -1;
+  await expect.poll(() => { const settled = queries.length === previous; previous = queries.length; return settled; }, { intervals: [700] }).toBe(true);
+  expect(queries.length).toBeGreaterThan(0); expect(queries.length).toBeLessThanOrEqual(16);
+  queries.forEach(query => { expect(query).toContain('out geom'); expect(query).not.toContain('area('); });
+  const cells = queries.reduce((sum, query) => sum + [...query.matchAll(/way\[/g)].length, 0);
+  await expect.poll(() => page.evaluate(() => new Promise<number>((resolve, reject) => {
+    const open = indexedDB.open('citymap-cells', 1);
+    open.onsuccess = () => {
+      const db = open.result, count = db.transaction('cells').objectStore('cells').count();
+      count.onsuccess = () => { db.close(); resolve(count.result); }; count.onerror = () => { db.close(); reject(count.error); };
+    };
+    open.onerror = () => reject(open.error);
+  }))).toBe(cells);
+  const before = queries.length;
+  await page.getByRole('button', { name: 'Copy share link', exact: true }).click();
+  const url = await page.getByLabel('Share link').inputValue();
+  await page.goto(url); await expect(status).toContainText('ready');
+  expect(queries).toHaveLength(before);
+  await page.getByText('Load timings', { exact: true }).click();
+  await expect(page.locator('aside')).toContainText(`${cells} from the browser cache`);
 });
 
 test('cancellation rejects stale work and repeated switching releases resources', async ({ page }) => {

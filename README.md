@@ -45,6 +45,11 @@ On phones, controls use a collapsible sheet with accessible cancellation.
 Loading shows a progress bar: exact for cached city data, and for any download
 that reports its size. Otherwise it shows bytes received, elapsed time and a
 warning when the service goes quiet.
+Offscreen road collections skip drawing and upload only when visible. GPU buffers
+can be released under a separate budget while keeping their coordinates for
+reuse, so revisiting retained roads needs no road-service request. Workers share
+projection across cells and wait behind drawing queues. Clearing the cache also
+cancels delayed saves from older loads.
 Maps default to street-level road detail; footpaths, sidewalks and service ways
 are optional, and live loads download only the classes shown. A minimal compass
 rose and a railway-style scale bar (whole kilometres or metres above, miles or feet
@@ -78,7 +83,7 @@ links remain supported as data compatibility, without Vue code or dependencies.
 
 ## Live roads by map view
 
-With `VITE_LIVE_VIEWPORT=1`, cities without a stored dataset load live roads for
+By default, cities without a stored dataset load live roads for
 the area on screen instead of one whole-city query, which public Overpass may be
 unable to complete for large cities at street detail. A search opens a bounded view
 of the city centre; panning and zooming load neighbouring map regions within 50 km
@@ -89,8 +94,8 @@ The centre of the map loads first. Export becomes available once it has loaded, 
 once when the map is zoomed out too far for any roads to load, and writes exactly the
 roads drawn on screen, without waiting for regions still loading.
 Only explicitly published favourite cities live in R2.
-[How it works, limits, rollout and rollback](docs/LIVE_ROADS.md). The feature is off
-by default.
+[How it works, limits, rollout and rollback](docs/LIVE_ROADS.md).
+Set `VITE_LIVE_VIEWPORT=0` to restore whole-area live loading.
 
 ## Local tests without deployed services
 
@@ -154,6 +159,8 @@ static/unit/build checks; the browser matrix is requested manually through
 
 `npm run benchmark:browser` measures the current build with an installed browser,
 defaulting to one small fixture. See [benchmark instructions](docs/benchmarks/README.md).
+`npm run benchmark:cells` compares exact road coverage and preparation latency
+using the local real Monaco fixture, without a browser or provider requests.
 
 ## City datasets
 

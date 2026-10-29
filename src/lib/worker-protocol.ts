@@ -13,11 +13,11 @@ export interface WorkerLoad {
   /** Without a stored dataset, hand over to live loading by map view instead of one area query. */
   viewport?: boolean;
 }
-export type WorkerCommand = WorkerLoad | { type: 'cancel' };
+export type WorkerCommand = WorkerLoad | { type: 'cancel' } | { type: 'ack'; id: number };
 export type WorkerResult =
   | { type: 'cancelled' }
   | { type: 'progress'; progress: LoadProgress }
-  | { type: 'chunk'; positions: ArrayBuffer; bounds: Camera; origin: Origin; index: number; rank: RoadRank }
+  | { type: 'chunk'; positions: ArrayBuffer; bounds: Camera; origin: Origin; index: number; rank: RoadRank; id?: number }
   | { type: 'done'; source: SourceInfo; segmentCount: number; coverage: RoadDetail; preparation?: PreparationTimings }
   | { type: 'large'; bytes: number }
   /** No stored dataset applies: the map loads live roads by view. */

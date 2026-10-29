@@ -33,6 +33,7 @@ function coordinate(lon: unknown, lat: unknown): [number, number] {
 }
 
 export interface CellRoads { positions: Float32Array; segments: number; ways: number; snapshotAt?: string }
+export interface RoadCell { box: Camera; rank: RoadRank }
 
 /**
  * Projected segments of one road rank inside a cell. Accepts inline way geometry
@@ -40,6 +41,11 @@ export interface CellRoads { positions: Float32Array; segments: number; ways: nu
  * separate queries never overlap. A cell without roads is valid and empty.
  */
 export function cellRoads(value: unknown, project: Project, cell: Camera, rank: RoadRank): CellRoads {
+  return batchCellRoads(value, project, [{ box: cell, rank }])[0];
+}
+
+/** Scan, validate and project each selected way once, then clip it into its cells. */
+export function batchCellRoads(value: unknown, project: Project, cells: RoadCell[]): CellRoads[] {
   const elements = value && typeof value === 'object' ? (value as { elements?: unknown }).elements : undefined;
   if (!Array.isArray(elements)) throw invalid('The road service returned an invalid response');
   const nodes = new Map<string, [number, number]>();
@@ -48,15 +54,16 @@ export function cellRoads(value: unknown, project: Project, cell: Camera, rank: 
     const e = element as Record<string, unknown>;
     if (e.type === 'node') nodes.set(id(e.id), coordinate(e.lon, e.lat));
   }
-  const lines: [number, number][][] = [];
-  const seen = new Set<string>();
-  let capacity = 0;
+  const ranks = new Set(cells.map(cell => cell.rank));
+  const lines: { points: Float64Array; bounds: Camera }[][] = [[], [], []];
+  const seen = [new Set<string>(), new Set<string>(), new Set<string>()];
   for (const element of elements) {
     const e = element as Record<string, unknown>;
     if (e.type !== 'way') continue;
     const wayId = id(e.id);
-    if (seen.has(wayId) || roadRank((e.tags as Record<string, unknown> | undefined)?.highway) !== rank) continue;
-    seen.add(wayId);
+    const rank = roadRank((e.tags as Record<string, unknown> | undefined)?.highway);
+    if (!ranks.has(rank) || seen[rank].has(wayId)) continue;
+    seen[rank].add(wayId);
     let points: [number, number][];
     if (Array.isArray(e.geometry)) points = e.geometry.map(point => coordinate(point?.lon, point?.lat));
     else if (Array.isArray(e.nodes)) points = e.nodes.map(ref => {
@@ -67,21 +74,30 @@ export function cellRoads(value: unknown, project: Project, cell: Camera, rank: 
     else throw invalid('A road has no geometry');
     // A one-node way is a mapping defect with nothing to draw.
     if (points.length < 2) continue;
-    lines.push(points);
-    capacity += points.length - 1;
-  }
-  const positions = new Float32Array(capacity * 4);
-  let offset = 0;
-  for (const points of lines) {
-    let [px, py] = project(points[0][0], points[0][1]);
-    for (let i = 1; i < points.length; i++) {
-      const [nx, ny] = project(points[i][0], points[i][1]);
-      const piece = clipSegment(px, py, nx, ny, cell);
-      if (piece) { positions[offset++] = piece[0]; positions[offset++] = piece[1]; positions[offset++] = piece[2]; positions[offset++] = piece[3]; }
-      px = nx; py = ny;
+    // Keep double precision until clipping; neighbouring cells must compute identical seams.
+    const projected = new Float64Array(points.length * 2);
+    const bounds: Camera = { left: Infinity, right: -Infinity, bottom: Infinity, top: -Infinity };
+    for (let i = 0; i < points.length; i++) {
+      const [x, y] = project(points[i][0], points[i][1]);
+      projected[i * 2] = x; projected[i * 2 + 1] = y;
+      bounds.left = Math.min(bounds.left, x); bounds.right = Math.max(bounds.right, x);
+      bounds.bottom = Math.min(bounds.bottom, y); bounds.top = Math.max(bounds.top, y);
     }
+    lines[rank].push({ points: projected, bounds });
   }
   const timestamp = (value as { osm3s?: { timestamp_osm_base?: unknown } }).osm3s?.timestamp_osm_base;
-  // An exact-length copy, so the transferred buffer holds no unused tail.
-  return { positions: offset === positions.length ? positions : positions.slice(0, offset), segments: offset / 4, ways: lines.length, snapshotAt: typeof timestamp === 'string' ? timestamp.slice(0, 64) : undefined };
+  const snapshotAt = typeof timestamp === 'string' ? timestamp.slice(0, 64) : undefined;
+  return cells.map(({ box, rank }) => {
+    // Reject whole ways outside the cell before allocating or clipping individual segments.
+    const candidates = lines[rank].filter(({ bounds: b }) => b.left <= box.right && b.right >= box.left && b.bottom <= box.top && b.top >= box.bottom);
+    const capacity = candidates.reduce((sum, line) => sum + line.points.length / 2 - 1, 0);
+    const positions = new Float32Array(capacity * 4);
+    let offset = 0;
+    for (const { points } of candidates) for (let i = 2; i < points.length; i += 2) {
+      const piece = clipSegment(points[i - 2], points[i - 1], points[i], points[i + 1], box);
+      if (piece) { positions[offset++] = piece[0]; positions[offset++] = piece[1]; positions[offset++] = piece[2]; positions[offset++] = piece[3]; }
+    }
+    // An exact-length copy, so the transferred buffer holds no unused tail.
+    return { positions: offset === positions.length ? positions : positions.slice(0, offset), segments: offset / 4, ways: lines[rank].length, snapshotAt };
+  });
 }

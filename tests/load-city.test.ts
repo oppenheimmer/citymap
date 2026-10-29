@@ -15,7 +15,7 @@ const options: WorkerLoad = {
 };
 const bounds = { left: -1, bottom: -1, right: 2, top: 2 };
 const source = { kind: 'live' as const, complete: true, downloadedAt: '2026-10-08T00:00:00.000Z' };
-const chunk = (): WorkerResult => ({ type: 'chunk', positions: new Float32Array([0, 0, 1, 1]).buffer, bounds, origin: [139.7, 35.6], index: 0, rank: 1 });
+const chunk = (): Extract<WorkerResult, { type: 'chunk' }> => ({ type: 'chunk', positions: new Float32Array([0, 0, 1, 1]).buffer, bounds, origin: [139.7, 35.6], index: 0, rank: 1 });
 const done = (): WorkerResult => ({ type: 'done', source, segmentCount: 1, coverage: 'streets' });
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 function gate() {
@@ -32,13 +32,15 @@ function harness(t: TestContext, overrides: Partial<LoadCallbacks> = {}, acknowl
     sent?: WorkerLoad;
     terminated = 0;
     cancelRequests = 0;
+    acknowledgements: number[] = [];
     readonly url: URL;
     readonly workerOptions: WorkerOptions;
     constructor(url: URL, workerOptions: WorkerOptions) {
       this.url = url; this.workerOptions = workerOptions; workers.push(this);
     }
     postMessage(value: WorkerCommand) {
-      if ('type' in value) {
+      if ('type' in value && value.type === 'ack') this.acknowledgements.push(value.id);
+      else if ('type' in value) {
         this.cancelRequests++;
         if (acknowledge) this.emit({ type: 'cancelled' });
       } else this.sent = value;
@@ -89,6 +91,18 @@ test('worker preparation timings reach the completed geometry without changing b
   h.worker.emit(chunk());h.worker.emit({type:'done',source,segmentCount:1,coverage:'streets',preparation});await flush();
   assert.deepEqual(h.geometries[0].preparation,preparation);
   assert.equal(h.geometries[0].buffers[0].byteLength,16);
+});
+
+test('prepared buffers are acknowledged only after drawing, and never after cancellation', async t => {
+  let drawing = gate();
+  const h = harness(t, { chunk: () => drawing.promise });
+  h.worker.emit({ ...chunk(), id: 7 });
+  await flush(); assert.deepEqual(h.worker.acknowledgements, []);
+  drawing.resolve(); await flush(); assert.deepEqual(h.worker.acknowledgements, [7]);
+  drawing = gate();
+  h.worker.emit({ ...chunk(), id: 8 });
+  await flush(); h.stop(); drawing.resolve(); await flush();
+  assert.deepEqual(h.worker.acknowledgements, [7]);
 });
 
 test('stopping a load rejects queued and late worker messages and is idempotent', async t => {

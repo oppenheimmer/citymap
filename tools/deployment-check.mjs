@@ -18,7 +18,7 @@ if (entry) {
   check(!source.includes('Small sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data'), 'Test sample controls/provider absent');
   const env = { ...loadEnv('production', process.cwd(), ''), ...process.env };
   for (const key of ['R2_SECRET_ACCESS_KEY', 'R2_ACCESS_KEY_ID', 'SEARCH_PROVIDER_API_KEY']) if (env[key]) check(!source.includes(env[key]), `${key} stays server-only`);
-  check(['', '0', '1'].includes(env.VITE_LIVE_VIEWPORT || ''), 'Live viewport flag is 1 or unset');
+  check(['', '0', '1'].includes(env.VITE_LIVE_VIEWPORT || ''), 'Live viewport flag is unset, 1, or explicit rollback 0');
   check(!env.VITE_OVERPASS_CONCURRENCY || /^[1-4]$/.test(env.VITE_OVERPASS_CONCURRENCY), 'Live road concurrency is 1–4');
   if (!values.offline) {
     const provider = new URL(env.SEARCH_PROVIDER_URL || 'https://nominatim.openstreetmap.org/search');

@@ -24,10 +24,10 @@
 
   // Synthetic sample maps exist only in test builds, for deterministic browser tests.
   const SAMPLES = import.meta.env.VITE_TEST_FIXTURES === '1';
-  // Live roads load by map view in bounded cells when enabled; otherwise one query per area.
+  // Live roads load by map view unless explicitly disabled for rollback.
   // Test builds may choose either mode per page, so both stay covered.
   const testing = new URLSearchParams(SAMPLES ? location.search : '');
-  const LIVE_VIEWPORT = testing.has('liveMode') ? testing.get('liveMode') === 'viewport' : import.meta.env.VITE_LIVE_VIEWPORT === '1';
+  const LIVE_VIEWPORT = testing.has('liveMode') ? testing.get('liveMode') === 'viewport' : import.meta.env.VITE_LIVE_VIEWPORT !== '0';
   // Test builds can shrink the live geometry budget to exercise eviction with small fixtures.
   const LIVE_BUDGET = Number(testing.get('liveBudget')) || undefined;
   const link = parseUrl(location.search);

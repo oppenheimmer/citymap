@@ -23,8 +23,8 @@ export default defineConfig({
         VITE_AREA_SERVER: '',
         VITE_SEARCH_URL: '',
         VITE_OVERPASS_URL: 'http://127.0.0.1:8091/roads',
-        // Whole-area live loading by default; viewport tests opt in with ?liveMode=viewport.
-        VITE_LIVE_VIEWPORT: '',
+        // Cover explicit whole-area rollback here; viewport cases opt in per page.
+        VITE_LIVE_VIEWPORT: '0',
         VITE_OVERPASS_CONCURRENCY: '',
         SEARCH_PROVIDER_URL: 'http://127.0.0.1:8091/search',
         SEARCH_PROVIDER_API_KEY: '',

@@ -1,5 +1,6 @@
 import { WireCollection } from 'w-gl';
-import type { RoadRank } from './domain.ts';
+import type { Camera, RoadRank } from './domain.ts';
+import { geometryBounds } from './visibility.ts';
 
 type Program = { dispose(): void; release?(): void };
 const program = (collection: WireCollection) => collection as unknown as { _program?: Program | null };
@@ -11,7 +12,10 @@ export class OwnedWireCollection extends WireCollection {
   readonly owner?: string;
   /** Hidden road classes are neither drawn nor uploaded until shown. */
   hidden = false;
-  constructor(positions: Float32Array, width = 1, rank: RoadRank = 0, owner?: string) {
+  readonly bounds: Camera;
+  lastSeen = 0;
+  private readonly visible?: (collection: OwnedWireCollection) => boolean;
+  constructor(positions: Float32Array, width = 1, rank: RoadRank = 0, owner?: string, visible?: (collection: OwnedWireCollection) => boolean) {
     super(0, { width, allowColors: false, is3D: false });
     this.positions = positions;
     this.buffer = positions.buffer as ArrayBuffer;
@@ -19,11 +23,15 @@ export class OwnedWireCollection extends WireCollection {
     this.isDirtyBuffer = true;
     this.rank = rank;
     this.owner = owner;
+    this.bounds = geometryBounds(positions);
+    this.visible = visible;
   }
 
   override draw(gl: WebGLRenderingContext, drawContext: unknown) {
-    if (!this.hidden) super.draw(gl, drawContext);
+    if (!this.hidden && (!this.visible || this.visible(this))) super.draw(gl, drawContext);
   }
+
+  get resident() { return !!program(this)._program; }
 
   override dispose() {
     // Its published dispose drops this program without calling the allocation disposer.
@@ -37,9 +45,15 @@ export class OwnedWireCollection extends WireCollection {
    * the shader program every other collection shares; renderer-compat adds release().
    */
   release() {
+    this.releaseGPU();
+    this.empty();
+  }
+
+  /** Drops only GPU residency; cached coordinates can be uploaded again without fetching. */
+  releaseGPU() {
     program(this)._program?.release?.();
     program(this)._program = null;
-    this.empty();
+    this.isDirtyBuffer = true;
   }
 
   private empty() {

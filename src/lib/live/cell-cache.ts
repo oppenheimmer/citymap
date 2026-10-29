@@ -3,6 +3,8 @@ import { mercator, RAD, SCALE, wrapLongitude } from '../view.ts';
 
 const DATABASE = 'citymap-cells';
 const FORMAT = 1;
+let epoch = 0;
+export const cellCacheEpoch = () => epoch;
 /**
  * Short-lived, bounded browser copies of live cells. They spare the road service repeat
  * requests; they are not a map archive and may be dropped at any time.
@@ -73,15 +75,15 @@ export class CellCache {
   }
 
   /** Stores a complete cell, evicting the least recently used cells beyond the size limit. */
-  async put(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }): Promise<boolean> {
+  async put(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch = epoch): Promise<boolean> {
     const bytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-    if (bytes > CELL_CACHE.maxRecordBytes) return false;
+    if (this.closed || expectedEpoch !== epoch || bytes > CELL_CACHE.maxRecordBytes) return false;
     const positions = new Float32Array(bytes / 4);
     let offset = 0;
     for (const buffer of buffers) { positions.set(buffer, offset); offset += buffer.length; }
     try {
       const db = await this.open();
-      if (!db) return false;
+      if (!db || expectedEpoch !== epoch) return false;
       const transaction = db.transaction(['cells', 'metadata'], 'readwrite');
       const cells = transaction.objectStore('cells'), metadata = transaction.objectStore('metadata');
       const all = metadata.getAll();
@@ -116,6 +118,7 @@ export class CellCache {
 }
 
 export async function clearCellCache(): Promise<boolean> {
+  epoch++;
   const db = await opened();
   if (!db) return false;
   try {

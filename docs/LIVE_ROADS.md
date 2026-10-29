@@ -6,8 +6,8 @@ centre; panning and zooming load the neighbouring area. The centre of the map lo
 first, and an export waits only for that: it contains exactly the roads drawn on screen. Nothing is stored on a server: only an explicit handful of
 favourite cities are published to R2, as before.
 
-The feature is off by default. Set `VITE_LIVE_VIEWPORT=1` at build time to enable
-it. Without it, live cities load with one area query as before.
+Viewport loading is the default. Set `VITE_LIVE_VIEWPORT=0` at build time to
+restore whole-area loading. Stored datasets remain preferred in either mode.
 
 ## Why
 
@@ -24,11 +24,23 @@ loading bounds both.
 | --- | --- | --- |
 | Cell grid | `src/lib/live/grid.ts` | Web Mercator tiles as query units. Each road rank has its own level: about 20 km for major roads, 5 km for streets, 2.4 km for every way, coarser towards the poles so ground size stays similar. Tile columns end at ±180°, so no cell crosses the antimeridian. |
 | Queries | `src/lib/live/overpass.ts` | One rank per cell, `way[filter](s,w,n,e)`. A request combines up to four cells in one union, `(…;…;);out geom qt;`, so a road several of them share downloads once; it allows `[timeout:30]` plus 10 s per added cell, and `[maxsize:64 MiB]`. The filters match `roadRank()` exactly, so ranks never overlap. Responses are capped at 32 MiB. Every failure is typed, including timeouts reported as a `remark` inside HTTP 200, and HTTP 502–504, Overpass's "too busy". After a 429 the worker reads the provider's status page (`…/api/status`, beside the interpreter), which browsers can read although they cannot read `Retry-After`, for when a slot frees. Only its slot lines are parsed; nothing else in it is kept. |
-| Geometry | `src/lib/live/cell-roads.ts`, `src/workers/cells.worker.ts` | A worker decodes, projects with the session's fixed origin and clips each road to every requested cell of its rank, exactly as if each cell had been fetched alone. Clipping is half-open: a road on a shared edge is drawn by exactly one cell, and roads crossing edges meet exactly. Cells without roads are valid. |
+| Geometry | `src/lib/live/cell-roads.ts`, `src/workers/cells.worker.ts` | A worker scans and projects each selected way once, then clips it to the requested cells of its rank. Whole-way bounds skip irrelevant clipping. The session uses one fixed origin. Clipping is half-open: a shared-edge road is drawn by exactly one cell and crossing roads meet exactly. Empty cells are valid. |
 | Scheduler | `src/lib/live/scheduler.ts` | Wanted cells load in priority order: first the centre of the map (cells touching the middle half of its width and height), major roads before streets; then the rest by distance from the centre, whatever their class. Requests combine the next four queued cells in that order. Queued work for cells that left the view is dropped; a request is aborted only when none of its cells is within two views. A combined request that times out, is too large or fails otherwise retries its cells one by one, and after running out of time or memory later requests combine half as many. Timeouts and oversized responses split only that cell, at most twice. A 429 makes every request wait until the status page says a slot frees (a jittered 5 s backoff when it cannot be read) and never splits. A busy provider (HTTP 502–504) makes every request wait 10, 20, 40 then 60 s, jittered, rather than failing regions. Waits of up to five minutes run by themselves, with a countdown under the map status; a longer one pauses loading. Other unavailable responses get one retry. Five consecutive provider failures, or 600 requests in a session, pause loading until the user retries; a retry still waits out a cooldown that is running. |
 | Viewport | `src/lib/live/viewport.ts` | Turns the rotated, padded camera frame into wanted cells (debounced 250 ms, at most once a second while panning). Each loaded cell owns its GPU collections. Beyond 160 MiB (64 MiB on small devices) regions are evicted, least recently seen first: those out of view go first, regions in view of classes too dense to load at this zoom only when nothing else is left, and regions loading in view never. Eviction deletes their buffers but keeps the shared shader program (see `tools/renderer-compat.ts`). |
 | Browser cache | `src/lib/live/cell-cache.ts` | Optional IndexedDB copies of complete cells: 96 MiB, 72 hours, least recently used first. Keys include the grid version, query schema, provider URL and cell. Stored geometry is translated to the session origin. *Use cached city data* turns it off; *Refresh city data* bypasses it and *Clear city cache* empties it. |
 | Start | `src/lib/live/start.ts` | Starts at the search result's centre: 5 km wide for Streets, 2.5 km for All, 30 km for Major, or less for a small place. *Fit map* frames the searched bounds and still loads by view. A drawn bounding box is shown whole. |
+
+The renderer skips collections outside the rotated frame, including stroke
+padding. It budgets estimated GPU road buffers separately: 80 MiB for desktop
+live scenes and 32 MiB on small devices, half the raw-geometry budget above.
+Offscreen GPU buffers are released least recently drawn first while their CPU
+coordinates remain available. Revisiting those coordinates re-uploads them
+without a request. Visible geometry stays protected, so these are soft budgets,
+not limits on total browser/driver memory. Other scenes default to 64 MiB for GPU
+road buffers. Pending live uploads above 8 MiB delay further requests until
+drawing catches up. Complete-city worker delivery is limited to two prepared
+buffers awaiting drawing. Clearing either browser cache invalidates old delayed
+saves within the page, so they cannot put cleared records back.
 
 Live roads load only within **50 km** of where the map started: the search result's
 centre, or the centre of a shared view. A cell whose nearest edge is within the radius
@@ -44,7 +56,7 @@ already loaded stay visible, and exports include them; when memory runs short, r
 out of view are evicted before them. Nothing requests hundreds of cells.
 
 **Export** stays unavailable until every cell in the centre of the map has
-loaded: the cells touching the middle half of the map's width and height, for
+loaded and been drawn: the cells touching the middle half of the map's width and height, for
 every road class shown that loads at this zoom (`LIVE_LIMITS.core`). The options
 open over the map without resizing it, so roads load for the whole map, including
 the part they cover. The map's status says so while it waits. Zoomed out too far
@@ -66,7 +78,7 @@ an `areaId`) still use the whole-area query.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `VITE_LIVE_VIEWPORT` | unset (off) | `1` loads live roads by map view. |
+| `VITE_LIVE_VIEWPORT` | unset (on) | Unset or `1` loads live roads by map view; `0` restores whole-area loading. |
 | `VITE_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass-compatible endpoint; must allow browser CORS. |
 | `VITE_OVERPASS_CONCURRENCY` | `1` | Requests in flight per browser session, 1–4, for a private provider. Known public instances (overpass-api.de, kumi.systems, private.coffee, maps.mail.ru) always get 1. |
 
@@ -115,7 +127,7 @@ After five consecutive provider failures, loading pauses until the user selects
 
 ## Rollout
 
-1. With `VITE_LIVE_VIEWPORT=1` in `.env.local`, run `npm run dev`. Then check
+1. With the default configuration, run `npm run dev`. Then check
    Bhubaneswar by hand against the public provider, using a few requests:
    - Streets: the first view loads, panning fills in neighbours, and Fit map
      asks to zoom in rather than requesting the whole city.
@@ -124,14 +136,14 @@ After five consecutive provider failures, loading pauses until the user selects
    - An export of a few square kilometres succeeds.
 
    Watch the console for classified remarks.
-2. Enable it in a Preview deployment, then Production. Set
-   `VITE_LIVE_VIEWPORT=1` and redeploy; `VITE_*` values are compiled into the
+2. Verify a Preview deployment before Production. Leave
+   `VITE_LIVE_VIEWPORT` unset or set `1`; `VITE_*` values are compiled into the
    build.
 3. Smoke-test a dense megacity, a sparse village, a coast, a city near ±180°,
    a slow mobile connection and a provider 429. Measure requests and errors per
    view before considering a private provider.
 
-**Rollback:** remove `VITE_LIVE_VIEWPORT` (or set `0`) and redeploy. Every city
+**Rollback:** set `VITE_LIVE_VIEWPORT=0` and redeploy. Every uncached city
 then loads with one area query again; links, designs and R2 datasets are
 unaffected. Keep the whole-area path for at least one release after enabling.
 

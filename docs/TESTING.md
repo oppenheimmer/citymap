@@ -5,6 +5,14 @@ development search handler, road/SVG workers, real WebGL drawing and browser
 storage. Search and road providers are deterministic HTTP fixtures on localhost.
 Vercel and R2 are not deployed and are not required or contacted by this suite.
 
+The local browser server explicitly selects `VITE_LIVE_VIEWPORT=0` to keep the
+whole-area rollback path covered; live-cell cases opt in per page. The built-app
+suite uses an empty flag to verify default viewport loading and a cached share-link
+revisit with no new road requests. `tests/visibility.test.ts` checks rotated
+culling against independent polygon intersection. Browser regressions cover GPU
+release/re-upload with retained coordinates and held idle saves around cache
+clearing. Exact pre-optimization Monaco coordinate hashes guard road coverage.
+
 ## Run the suite
 
 Use Node 24 (`nvm use`) and the locked dependencies (`npm ci` if needed). The

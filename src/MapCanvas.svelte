@@ -57,7 +57,7 @@
         const start = liveStart(options.boundary, design.view, design.detail);
         if (!start || !liveSettings) throw new Error('This map has no location to load live roads around. Search for the city again.');
         const geometry: Geometry = { buffers: [], ranks: [], coverage: 'all', bounds: start.bounds, origin: start.origin, segmentCount: 0, source: { kind: 'live', viewport: true, downloadedAt: new Date().toISOString(), complete: false } };
-        controller = new SceneController(canvas, geometry, design, { onView: view => { if (!disposed) { onview(view, id); live?.viewChanged(); } }, camera: design.view ? undefined : start.camera, fit: 'bounds' });
+        controller = new SceneController(canvas, geometry, design, { onView: view => { if (!disposed) { onview(view, id); live?.viewChanged(); } }, camera: design.view ? undefined : start.camera, fit: 'bounds', gpuBudgetBytes: liveSettings.budgetBytes / 2 });
         const { useCache, ...settings } = liveSettings;
         live = new LiveViewport(controller, start.origin, design.detail, { ...settings, cache: useCache ? new CellCache() : undefined }, coverage => { if (!disposed) oncoverage?.(coverage, id); });
         drawable = true;

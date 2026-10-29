@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cellRoads, clipSegment } from '../src/lib/live/cell-roads.ts';
+import { batchCellRoads, cellRoads, clipSegment } from '../src/lib/live/cell-roads.ts';
+import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
 import { tileBBox, tileRect } from '../src/lib/live/grid.ts';
 import type { Tile } from '../src/lib/live/grid.ts';
 import { projector } from '../src/lib/geometry.ts';
@@ -87,4 +90,34 @@ test('corrupt or incomplete responses fail as decode errors instead of drawing p
   assert.equal(decode({ elements: [null] }), 'decode_failure');
   // Other ranks are skipped before their geometry is read.
   assert.equal(decode({ elements: [{ type: 'way', id: 1, tags: { highway: 'footway' } }] }), undefined);
+});
+
+test('a combined response projects each selected way once, with identical cell seams and ranks', () => {
+  const a: [number, number] = [west + (east - west) * 0.2, south + (north - south) * 0.3];
+  const b: [number, number] = [east2 - (east2 - east) * 0.2, south2 + (south - south2) * 0.3];
+  const elements = [way(1, 'primary', [a, b]), way(2, 'residential', [a, b]), way(3, 'footway', [a, b])];
+  const cells = tiles.flatMap(tile => ([0, 1, 2] as const).map(rank => ({ box: tileRect(tile, origin), rank })));
+  let projected = 0;
+  const results = batchCellRoads({ elements }, (lon, lat) => { projected++; return project(lon, lat); }, cells);
+  assert.equal(projected, 6, 'The same way is not projected again for each cell');
+  cells.forEach((cell, index) => assert.deepEqual(results[index], cellRoads({ elements }, project, cell.box, cell.rank)));
+});
+
+test('real Monaco batch output preserves the exact pre-optimization coordinates at every rank', async () => {
+  const data = JSON.parse(gunzipSync(await readFile(new URL('./fixtures/real-city/monaco.json.gz', import.meta.url))).toString());
+  // Use the source bounds to reproduce the original projector, including its translation.
+  const nodes = data.elements.filter((element: { type: string }) => element.type === 'node');
+  const xs = nodes.map((node: { lon: number }) => node.lon), ys = nodes.map((node: { lat: number }) => node.lat);
+  const projection = projector([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
+  const cells = [5974, 5973].flatMap(y => ([0, 1, 2] as const).map(rank => ({ box: tileRect({ z: 14, x: 8529, y }, projection.origin), rank })));
+  const results = batchCellRoads(data, projection.project, cells);
+  assert.deepEqual(results.map(result => result.segments), [1886, 1803, 5800, 138, 149, 561]);
+  assert.deepEqual(results.map(result => createHash('sha256').update(new Uint8Array(result.positions.buffer)).digest('hex')), [
+    '785f82412cf64876a6df8e40ff356e32b2934e40f3068c34bc061378058aa514',
+    'fe069c3cda8a06f2b39884151c0bd782e284b5b373a9955c85ad2db03fb02a99',
+    '9281f8e1d5448e64e72511dba15323038d3b51703e69958d622bf5d59efc3198',
+    'e37ddbfeadd20c12c482739f365633eb448e3a3fabe7bb5a76851eee706f062e',
+    '3611f201c528f5041139e06d013fe41a5935d7c1fa36e111cc91557fae9e10ca',
+    'afa484ea912f13872d289769f60ea69126fb9c99ec3c87bea0621c3c6932d6ef',
+  ]);
 });

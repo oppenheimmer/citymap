@@ -22,6 +22,7 @@
     "src/lib/data/**/*.ts",
     "src/proto/*.d.*",
     "tools/city-data/**/*.ts",
+    "tools/cells-benchmark.ts",
     "tests/*.test.ts"
   ]
 }

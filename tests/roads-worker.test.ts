@@ -25,11 +25,15 @@ const overpass = 'http://localhost/roads';
 const liveRoads = { elements: [{ type: 'node', id: 1, lon: 7.42, lat: 43.73 }, { type: 'node', id: 2, lon: 7.43, lat: 43.74 }, { type: 'way', id: 3, nodes: [1, 2] }] };
 
 type Route = (url: string) => Response | Promise<Response>;
-async function run(t: TestContext, load: Partial<WorkerLoad>, route: Route) {
+async function run(t: TestContext, load: Partial<WorkerLoad>, route: Route, delivery = (_message: WorkerResult, acknowledge: () => void) => acknowledge()) {
   const messages: WorkerResult[] = [];
   let finish!: () => void;
   const finished = new Promise<void>(resolve => { finish = resolve; });
-  const scope = { onmessage: undefined as undefined | ((event: { data: unknown }) => void), postMessage(message: WorkerResult) { messages.push(message); if (message.type === 'done' || message.type === 'error' || message.type === 'viewport') finish(); } };
+  const scope = { onmessage: undefined as undefined | ((event: { data: unknown }) => void), postMessage(message: WorkerResult) {
+    messages.push(message);
+    if (message.type === 'chunk') delivery(message, () => scope.onmessage!({ data: { type: 'ack', id: message.id } }));
+    if (message.type === 'done' || message.type === 'error' || message.type === 'viewport' || message.type === 'cancelled') finish();
+  } };
   Object.defineProperty(globalThis, 'self', { value: scope, configurable: true });
   t.after(() => { Reflect.deleteProperty(globalThis, 'self'); });
   const requests: string[] = [];
@@ -79,6 +83,42 @@ test('chunk downloads overlap within a bounded window and stay in manifest order
   });
   assert.equal(messages.at(-1)!.type, 'done');
   assert.equal(peak, 3);
+});
+
+test('preparation stops at two unacknowledged buffers and resumes without losing roads', async t => {
+  const held: (() => void)[] = [];
+  let resume!: () => void, holding = true;
+  const full = new Promise<void>(resolve => { resume = resolve; });
+  const loading = run(t, {}, r2, (_message, acknowledge) => {
+    if (!holding) { acknowledge(); return; }
+    held.push(acknowledge);
+    if (held.length === 2) resume();
+  });
+  await full;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(held.length, 2, 'The worker waits for drawing instead of preparing the whole city');
+  holding = false;
+  held.forEach(acknowledge => acknowledge());
+  const { messages } = await loading;
+  const chunks = messages.filter(message => message.type === 'chunk');
+  assert.equal(new Set(chunks.map(chunk => chunk.id)).size, chunks.length);
+  const done = messages.at(-1)!;
+  assert.ok(done.type === 'done' && done.segmentCount === dataset.manifest.segment_count);
+});
+
+test('cancellation releases a worker blocked on drawing and never sends further geometry', async t => {
+  const held: (() => void)[] = [];
+  let full!: () => void;
+  const waiting = new Promise<void>(resolve => { full = resolve; });
+  const loading = run(t, {}, r2, (_message, acknowledge) => { held.push(acknowledge); if (held.length === 2) full(); });
+  await waiting;
+  (globalThis as unknown as { self: { onmessage(event: { data: unknown }): void } }).self.onmessage({ data: { type: 'cancel' } });
+  const { messages } = await loading;
+  held.forEach(acknowledge => acknowledge());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(messages.filter(message => message.type === 'chunk').length, 2);
+  assert.equal(messages.at(-1)!.type, 'cancelled');
+  assert.ok(!messages.some(message => message.type === 'done' || message.type === 'error'));
 });
 
 for (const [name, failure] of [

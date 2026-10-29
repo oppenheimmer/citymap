@@ -6,6 +6,9 @@ const DATABASE = 'citymap-geometry';
 const FORMAT = 3;
 const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_CITY_BYTES = 32 * 1024 * 1024;
+let epoch = 0;
+/** Deferred writes keep their generation so clearing cannot be undone by an old load. */
+export const cityCacheEpoch = () => epoch;
 interface CacheRecord { format: number; geometry: { buffers: ArrayBuffer[]; ranks: Geometry['ranks']; coverage: Geometry['coverage']; bounds: Geometry['bounds']; origin: Geometry['origin']; source: Geometry['source']; segmentCount: number } }
 interface CacheMeta { key: string; bytes: number; lastUsed: number }
 
@@ -49,12 +52,13 @@ export async function getCity(key: string): Promise<Geometry | undefined> {
   finally { db?.close(); }
 }
 
-export async function putCity(key: string, geometry: Geometry): Promise<boolean> {
+export async function putCity(key: string, geometry: Geometry, expectedEpoch = epoch): Promise<boolean> {
   const bytes = geometry.buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-  if (!geometry.source.complete || !bytes || bytes > MAX_CITY_BYTES) return false;
+  if (expectedEpoch !== epoch || !geometry.source.complete || !bytes || bytes > MAX_CITY_BYTES) return false;
   let db: IDBDatabase | undefined;
   try {
     db = await open();
+    if (expectedEpoch !== epoch) return false;
     const transaction = db.transaction(['cities', 'metadata'], 'readwrite');
     const metadata = transaction.objectStore('metadata');
     const cities = transaction.objectStore('cities');
@@ -77,6 +81,7 @@ export async function putCity(key: string, geometry: Geometry): Promise<boolean>
 }
 
 export async function clearCityCache(): Promise<boolean> {
+  epoch++;
   let db: IDBDatabase | undefined;
   try {
     db = await open();

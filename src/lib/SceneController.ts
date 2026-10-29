@@ -5,6 +5,8 @@ import { detailRank } from './domain.ts';
 import type { Camera, Design, GeoView, Geometry, RoadRank } from './domain.ts';
 import type { Size } from './marks.ts';
 import { cameraFromView, fitCamera, inscribedCamera, viewFromCamera } from './view.ts';
+import { visibilityFrame, withinFrame } from './visibility.ts';
+import type { VisibilityFrame } from './visibility.ts';
 
 export function color(hex: string, alpha = 1) {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) throw new Error('Invalid color');
@@ -29,6 +31,8 @@ export interface SceneOptions {
    * load by view, so their roads never describe the place to fit.
    */
   fit?: 'roads' | 'bounds';
+  /** Estimated road-buffer bytes; offscreen GPU buffers are released before cached geometry. */
+  gpuBudgetBytes?: number;
 }
 const UPLOAD_FLOATS = 262_144; // 1 MiB, aligned to complete four-float segments.
 
@@ -53,12 +57,16 @@ export class SceneController {
   private intent!: Camera;
   /** Set while the scene moves its own camera, so only user gestures move the frame. */
   private showing = false;
+  private visibility?: VisibilityFrame;
+  private readonly gpuBudgetBytes: number;
+  private seen = 0;
 
-  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera, fit = 'roads' }: SceneOptions = {}) {
+  constructor(canvas: HTMLCanvasElement, geometry: Geometry, settings: Design, { onView, fixedSize, lineWidth = 1, camera, fit = 'roads', gpuBudgetBytes = 64 * 1024 * 1024 }: SceneOptions = {}) {
     this.canvas = canvas;
     this.settings = copyDesign(settings);
     this.lineWidth = lineWidth;
     this.fitTo = fit;
+    this.gpuBudgetBytes = gpuBudgetBytes;
     this.area = fixedSize ? { ...fixedSize } : this.measure();
     this.geometry = { ...geometry, buffers: [], ranks: [] };
     if (!canvas.getContext('webgl', { alpha: true, antialias: true })) throw new Error('WebGL unavailable. Try a browser with hardware acceleration enabled.');
@@ -75,6 +83,7 @@ export class SceneController {
         const halfWidth = (this.intent.right - this.intent.left) * scale / 2, halfHeight = (this.intent.top - this.intent.bottom) * scale / 2;
         this.intent = { left: cx - halfWidth, right: cx + halfWidth, bottom: cy - halfHeight, top: cy + halfHeight };
       }
+      this.updateVisibility();
       onView?.(this.view());
     };
     this.renderer.on('transform', this.onTransform);
@@ -97,10 +106,40 @@ export class SceneController {
 
   private hidden(rank: RoadRank) { return rank > detailRank(this.settings.detail); }
 
+  private updateVisibility() {
+    const camera = this.composed;
+    // Include the stroke and antialiasing outside its centreline, also in large PNGs.
+    const margin = Math.max((camera.right - camera.left) / this.area.width, (camera.top - camera.bottom) / this.area.height) * (this.lineWidth + 2);
+    this.visibility = visibilityFrame(camera, this.rotation, margin);
+  }
+
+  private visible = (collection: OwnedWireCollection) => {
+    if (this.visibility && !withinFrame(collection.bounds, this.visibility)) return false;
+    collection.lastSeen = ++this.seen;
+    if (!collection.resident) this.trimGPU(collection.positions.byteLength);
+    return true;
+  };
+
+  private trimGPU(incoming = 0) {
+    let bytes = incoming;
+    const candidates: OwnedWireCollection[] = [];
+    for (const collection of this.collections) {
+      if (!collection.resident) continue;
+      bytes += collection.positions.byteLength;
+      if (collection.hidden || this.visibility && !withinFrame(collection.bounds, this.visibility)) candidates.push(collection);
+    }
+    if (bytes <= this.gpuBudgetBytes) return;
+    candidates.sort((a, b) => a.lastSeen - b.lastSeen);
+    for (const collection of candidates) {
+      collection.releaseGPU(); bytes -= collection.positions.byteLength;
+      if (bytes <= this.gpuBudgetBytes) break;
+    }
+  }
+
   /** `owner` names a live map region, so its roads can later be removed together. */
   append(positions: Float32Array, rank: RoadRank = 0, owner?: string) {
     if (this.disposed || !positions.length || positions.length % 4) throw new Error('Invalid geometry');
-    const collection = new OwnedWireCollection(positions, this.lineWidth, rank, owner);
+    const collection = new OwnedWireCollection(positions, this.lineWidth, rank, owner, this.visible);
     collection.color = color(this.settings.roadColor, this.settings.roadOpacity);
     collection.hidden = this.hidden(rank);
     this.collections.push(collection);
@@ -109,6 +148,7 @@ export class SceneController {
     this.geometry.segmentCount += positions.length / 4;
     this.renderer.appendChild(collection);
     this.renderer.renderFrame();
+    return collection;
   }
 
   async appendGeometry(positions: Float32Array, rank: RoadRank = 0, signal?: AbortSignal, owner?: string): Promise<number | undefined> {
@@ -118,13 +158,13 @@ export class SceneController {
     for (let offset = 0; offset < positions.length; offset += UPLOAD_FLOATS) {
       signal?.throwIfAborted();
       if (this.disposed) return firstFrameAt;
-      this.append(positions.subarray(offset, offset + UPLOAD_FLOATS), rank, owner);
+      const collection = this.append(positions.subarray(offset, offset + UPLOAD_FLOATS), rank, owner);
       // Hidden road classes upload only when shown, so they cost no frames now.
       if (hidden) continue;
       // Draw this batch before yielding, rather than accumulating one large upload.
       this.render();
       await this.nextFrame(signal);
-      firstFrameAt ??= performance.now();
+      if (collection.resident) firstFrameAt ??= performance.now();
     }
     signal?.throwIfAborted();
     return firstFrameAt;
@@ -181,6 +221,7 @@ export class SceneController {
     if (changed) this.applyColors(settings);
     if (detailChanged) {
       for (const collection of this.collections) collection.hidden = this.hidden(collection.rank);
+      this.trimGPU();
       this.renderer.renderFrame();
     }
   }
@@ -229,6 +270,7 @@ export class SceneController {
         controls.rotateByAngle(rotation, 0); controls.redraw();
       }
     } finally { this.showing = false; }
+    this.updateVisibility();
     this.renderer.renderFrame();
   }
   /** Fits the roads (or bounds); when rotated, fits their actual extent along the rotated screen axes. */

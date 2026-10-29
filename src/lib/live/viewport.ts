@@ -11,6 +11,7 @@ import type { FailureCode } from './overpass.ts';
 import { CellScheduler } from './scheduler.ts';
 import type { Clock, JobSpec, LeafTask } from './scheduler.ts';
 import type { CellCache } from './cell-cache.ts';
+import { cellCacheEpoch } from './cell-cache.ts';
 
 /** Initial live-loading limits, to tune with measurements; not hardware or provider guarantees. */
 export const LIVE_LIMITS = {
@@ -44,6 +45,8 @@ export const LIVE_LIMITS = {
   retries: 1,
   maxRequests: 600,
   pauseAfter: 5,
+  /** Pause new requests while more than this much prepared geometry waits for upload. */
+  pendingUploadBytes: 8 * 1024 * 1024,
 };
 
 export interface LiveSettings {
@@ -141,6 +144,7 @@ export class LiveViewport {
   private limited: RoadRank[] = [];
   private beyond: LiveCoverage['beyond'] = 'none';
   private uploads = Promise.resolve();
+  private pendingUploadBytes = 0;
   private nextId = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private firstChange?: number;
@@ -198,7 +202,7 @@ export class LiveViewport {
     let ready = 0, failed = 0;
     for (const key of this.required) {
       const status = this.scheduler.status(key);
-      if (status === 'ready') ready++; else if (status === 'failed') failed++;
+      if (this.drawn(key)) ready++; else if (status === 'failed') failed++;
     }
     const loading = this.required.length - ready - failed;
     this.stats.requests = this.scheduler.requests;
@@ -210,7 +214,7 @@ export class LiveViewport {
     return {
       required: this.required.length, ready, loading, failed, limited: [...this.limited],
       complete: !this.limited.length && ready === this.required.length,
-      exportable: !!this.centre?.every(key => this.scheduler.status(key) === 'ready'),
+      exportable: !!this.centre?.every(key => this.drawn(key)),
       beyond: this.beyond, radius: LIVE_LIMITS.radiusMetres,
       paused: this.scheduler.paused, pauseReason: this.scheduler.pauseReason, exhausted: this.scheduler.exhausted,
       cooldown: Math.max(0, this.scheduler.cooldownUntil - (this.settings.clock || performance).now()), waiting: this.scheduler.cooldownReason,
@@ -252,6 +256,7 @@ export class LiveViewport {
 
   private ranks(): RoadRank[] { return ([0, 1, 2] as const).filter(rank => rank <= detailRank(this.detail)); }
   private cacheKey(job: string) { return `${GRID_VERSION}|${QUERY_SCHEMA}|${this.settings.overpass}|${job}`; }
+  private drawn(key: string) { return this.scheduler.status(key) === 'ready' && this.regions.has(key) && !this.regions.get(key)!.drawing; }
   private near = (tile: Tile) => tileDistance(tile, this.origin) <= LIVE_LIMITS.radiusMetres;
 
   private update() {
@@ -305,17 +310,27 @@ export class LiveViewport {
     this.emit();
   }
 
-  private execute = (tasks: LeafTask[], signal: AbortSignal) => new Promise<CellResult[]>((resolve, reject) => {
-    if (signal.aborted) { reject(new CellFailure('cancelled')); return; }
-    const id = ++this.nextId;
-    this.pending.set(id, { count: tasks.length, resolve, reject });
-    signal.addEventListener('abort', () => {
-      if (!this.pending.delete(id)) return;
-      this.post({ type: 'abort', id });
-      reject(new CellFailure('cancelled'));
-    }, { once: true });
-    this.post({ type: 'fetch', id, cells: tasks.map(task => ({ tile: task.tile, rank: task.rank })), origin: this.origin, overpass: this.settings.overpass });
-  });
+  private execute = async (tasks: LeafTask[], signal: AbortSignal): Promise<CellResult[]> => {
+    if (this.pendingUploadBytes > LIVE_LIMITS.pendingUploadBytes) {
+      await new Promise<void>((resolve, reject) => {
+        const cancel = () => reject(new CellFailure('cancelled'));
+        signal.addEventListener('abort', cancel, { once: true });
+        void this.uploads.then(resolve, reject).finally(() => signal.removeEventListener('abort', cancel));
+        if (signal.aborted) cancel();
+      });
+    }
+    return new Promise<CellResult[]>((resolve, reject) => {
+      if (signal.aborted) { reject(new CellFailure('cancelled')); return; }
+      const id = ++this.nextId;
+      this.pending.set(id, { count: tasks.length, resolve, reject });
+      signal.addEventListener('abort', () => {
+        if (!this.pending.delete(id)) return;
+        this.post({ type: 'abort', id });
+        reject(new CellFailure('cancelled'));
+      }, { once: true });
+      this.post({ type: 'fetch', id, cells: tasks.map(task => ({ tile: task.tile, rank: task.rank })), origin: this.origin, overpass: this.settings.overpass });
+    });
+  };
 
   private post(command: CellCommand) {
     try { this.worker.postMessage(command); }
@@ -360,18 +375,23 @@ export class LiveViewport {
     const current = region;
     if (result.positions.length) {
       current.drawing++;
+      this.pendingUploadBytes += result.positions.byteLength;
       this.enqueue(async () => {
         try {
           if (this.regions.get(task.job) !== current) return;
           const drawn = await this.scene.appendGeometry(result.positions, task.rank, undefined, task.job);
           if (drawn !== undefined) this.stats.firstRoadMs ??= drawn - this.started;
-        } finally { current.drawing--; }
+        } finally {
+          current.drawing--; this.pendingUploadBytes -= result.positions.byteLength;
+          this.emit();
+        }
       });
     }
     // A complete region fetched from the road service is cached for later sessions.
     if (!cached && !region.cached && this.settings.cache && this.scheduler.status(task.job) === 'ready') {
       const cache = this.settings.cache, key = this.cacheKey(task.job), buffers = [...region.buffers], meta = { fetchedAt: region.fetchedAt, snapshotAt: region.snapshotAt };
-      const save = () => { void cache.put(key, this.origin, buffers, meta); };
+      const epoch = cellCacheEpoch();
+      const save = () => { void cache.put(key, this.origin, buffers, meta, epoch); };
       if ('requestIdleCallback' in globalThis) requestIdleCallback(save, { timeout: 2000 }); else setTimeout(save, 0);
     }
     this.evict();

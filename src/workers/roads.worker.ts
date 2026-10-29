@@ -19,12 +19,23 @@ let r2RevisionSelected = false;
 // Cached and fixture datasets contain every road class; live downloads only the requested ones.
 let coverage: RoadDetail = 'all';
 const progress = (progress: LoadProgress) => scope.postMessage({ type: 'progress', progress });
-const sendChunk = (positions: Float32Array, frame: Pick<ReturnType<typeof projector>, 'bounds' | 'origin'>, index: number, rank: RoadRank) => {
+// At most two prepared buffers may wait for drawing, regardless of dataset length.
+const deliveries = new Map<number, { ready: Promise<void>; release(): void }>();
+let deliveryId = 0;
+abort.signal.addEventListener('abort', () => { for (const delivery of deliveries.values()) delivery.release(); deliveries.clear(); }, { once: true });
+const sendChunk = async (positions: Float32Array, frame: Pick<ReturnType<typeof projector>, 'bounds' | 'origin'>, index: number, rank: RoadRank) => {
+  abort.signal.throwIfAborted();
+  const id = ++deliveryId;
+  let release!: () => void;
+  const ready = new Promise<void>(resolve => { release = resolve; });
+  deliveries.set(id, { ready, release });
   segmentCount += positions.length / 4;
-  scope.postMessage({ type: 'chunk', positions: positions.buffer as ArrayBuffer, bounds: frame.bounds, origin: frame.origin, index, rank }, [positions.buffer as ArrayBuffer]);
+  scope.postMessage({ type: 'chunk', id, positions: positions.buffer as ArrayBuffer, bounds: frame.bounds, origin: frame.origin, index, rank }, [positions.buffer as ArrayBuffer]);
+  if (deliveries.size >= 2) await deliveries.values().next().value!.ready;
+  abort.signal.throwIfAborted();
 };
 // Major roads first, so the first frames show the city's structure.
-const sendParts = (geometry: ReturnType<typeof osmGeometry>) => { for (const part of geometry.parts) sendChunk(part.positions, geometry, 0, part.rank); };
+const sendParts = async (geometry: ReturnType<typeof osmGeometry>) => { for (const part of geometry.parts) await sendChunk(part.positions, geometry, 0, part.rank); };
 const LARGE_BYTES = 8 * 1024 * 1024;
 const MAX_BYTES = 256 * 1024 * 1024;
 // A slow or unreachable dataset pointer falls back to live roads instead of holding the map.
@@ -117,21 +128,21 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
     assert(decoded.byteLength === descriptor.decoded_bytes && await checksum(decoded) === descriptor.decoded_sha256, 'Cached chunk checksum/size mismatch');
     return { descriptor, chunk: measure('decodeMs', () => decodeChunk(decoded)) };
   };
-  const pending: ReturnType<typeof fetchChunk>[] = [];
+  const pending = new Map<number, ReturnType<typeof fetchChunk>>();
   const prefetch = (index: number) => {
     if (index >= chunks.length) return;
     const download = fetchChunk(chunks[index]);
     // Failures surface when this chunk is awaited, in manifest order.
     download.catch(() => {});
-    pending.push(download);
+    pending.set(index, download);
   };
-  const draw = ({ descriptor, chunk, points }: ReceivedChunk) => {
+  const draw = async ({ descriptor, chunk, points }: ReceivedChunk) => {
     progress({ stage: 'project', message: 'Preparing road geometry…', completedChunks: descriptor.index, totalChunks: chunks.length });
     for (const rank of [0, 1, 2] as const) {
       const positions = measure('projectMs', () => polylineGeometry(chunk.roads, projection!.project, (_road, index) => points[index], road => roadRank(road.highway) === rank));
       if (!positions.length) continue;
       segments += positions.length / 4;
-      sendChunk(positions, projection!, descriptor.index, rank);
+      await sendChunk(positions, projection!, descriptor.index, rank);
     }
     completed = descriptor.index + 1;
     reportChunks(true);
@@ -139,7 +150,8 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
   for (let index = 0; index < CHUNK_WINDOW; index++) prefetch(index);
   // Chunks are consumed in manifest order for deterministic fragment validation.
   for (let index = 0; index < chunks.length; index++) {
-    const { descriptor, chunk } = await pending[index];
+    const { descriptor, chunk } = await pending.get(index)!;
+    pending.delete(index);
     prefetch(index + CHUNK_WINDOW);
     const indexingStarted = performance.now();
     assert(chunk.city_key === cityKey && chunk.dataset_revision === manifest.dataset_revision && chunk.chunk_index === descriptor.index && chunk.chunk_count === chunks.length && chunk.detail_level === 0, 'Cached chunks have mixed identity or detail');
@@ -157,11 +169,11 @@ async function r2(load: WorkerLoad): Promise<SourceInfo> {
     }
     preparation.indexMs += performance.now() - indexingStarted;
     const received = { descriptor, chunk, points: roadPointsList };
-    if (projection) draw(received); else deferred.push(received);
+    if (projection) await draw(received); else deferred.push(received);
   }
   if (!projection) {
     projection = projector(pointBounds(degrees(deferred)));
-    deferred.forEach(draw);
+    for (const received of deferred) await draw(received);
   }
   assert(segments === manifest.segment_count && fragments.size === manifest.unique_way_count, 'City dataset is incomplete');
   return { kind: 'r2', downloadedAt: new Date().toISOString(), snapshotAt: manifest.source.snapshot_at, revision: manifest.dataset_revision, manifestSha256: pointer.manifest_sha256, complete: true, bundled: load.providers.cityDataBundled || undefined };
@@ -184,7 +196,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo | 'viewport'> {
     progress({ stage: 'download', message: 'Loading sample roads…' });
     const data = json(await downloaded(load.fixtureUrl, { cache: load.forceNetwork ? 'reload' : 'default' }, MAX_BYTES, undefined, (bytes, total, final) => reportBytes('Loading sample roads…', bytes, total, {}, final)));
     progress({ stage: 'project', message: 'Preparing sample geometry…' });
-    sendParts(preparedJson(data));
+    await sendParts(preparedJson(data));
     return { kind: 'fixture', downloadedAt: new Date().toISOString(), snapshotAt: data.metadata?.source?.snapshot_at, complete: true };
   }
   // The app's bundled `/data` holds only listed cities; skip the lookup for every other city.
@@ -207,7 +219,7 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo | 'viewport'> {
       const data = measure('decodeMs', () => place.read(new Pbf(bytes)));
       assert(data.version === 1, 'Unsupported legacy cache version');
       const elements = [ ...data.nodes.map(node => ({ ...node, type: 'node' })), ...data.ways.map((way, index) => ({ ...way, id: String(index + 1), type: 'way' })) ];
-      sendParts(preparedJson({ elements }));
+      await sendParts(preparedJson({ elements }));
       return { kind: 'legacy', downloadedAt: new Date().toISOString(), snapshotAt: data.date || undefined, complete: true };
     } catch (error) {
       // Legacy geometry is sent only after a complete decode, so failures can use live roads.
@@ -239,11 +251,16 @@ async function loadRoads(load: WorkerLoad): Promise<SourceInfo | 'viewport'> {
     if (load.detail !== 'all' && error instanceof Error && error.message.startsWith('No roads')) throw new Error('No roads at this road detail were found here. Choose more road detail.', { cause: error });
     throw error;
   }
-  sendParts(geometry);
+  await sendParts(geometry);
   return { kind: 'live', downloadedAt: new Date().toISOString(), snapshotAt: data.osm3s?.timestamp_osm_base, complete: true };
 }
 
 scope.onmessage = async event => {
+  if ('type' in event.data && event.data.type === 'ack') {
+    deliveries.get(event.data.id)?.release();
+    deliveries.delete(event.data.id);
+    return;
+  }
   if ('type' in event.data && event.data.type === 'cancel') {
     abort.abort();
     // Let the fetch abort reach the browser's network process before termination.

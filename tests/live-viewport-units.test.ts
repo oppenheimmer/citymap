@@ -290,12 +290,38 @@ test('an export is complete only once every loaded region of its frame is drawn'
   try {
     for (const request of requests) worker.onmessage!({ data: { type: 'cells', id: request.id, cells: request.cells.map(() => ({ positions: new Float32Array([cx, cy, cx + 1, cy]).buffer, segments: 1 })), bytes: 16, fetchMs: 1, decodeMs: 0 } });
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(viewport.coverage().complete, true);
+    assert.equal(viewport.coverage().complete, false);
+    assert.equal(viewport.coverage().exportable, false, 'The centre must be drawn before Export is enabled');
     assert.equal(viewport.exportRegions(camera, 0).complete, false, 'A loaded region still being drawn is missing from the export');
     draw();
     await new Promise(resolve => setImmediate(resolve));
+    assert.equal(viewport.coverage().complete, true);
+    assert.equal(viewport.coverage().exportable, true);
     assert.equal(viewport.exportRegions(camera, 0).complete, true);
   } finally { viewport.dispose(); }
+});
+
+for (const cancel of [false, true]) test(`a large upload queue delays further requests and ${cancel ? 'cancels cleanly' : 'resumes after drawing'}`, async () => {
+  const tile = tileRect(originTile(cellLevel(0, origin[1])), origin);
+  const cx = (tile.left + tile.right) / 2, cy = (tile.bottom + tile.top) / 2, half = (tile.right - tile.left) * 1.1;
+  const camera: Camera = { left: cx - half, right: cx + half, bottom: cy - half, top: cy + half };
+  const requests: CellRequest[] = [];
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  let draw!: () => void;
+  const drawing = new Promise<void>(resolve => { draw = resolve; });
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: () => drawing, removeOwner: () => 0 } as unknown as SceneController;
+  const viewport = new LiveViewport(scene, origin, 'major', { overpass: 'http://localhost/roads', concurrency: 1, budgetBytes: 1e9, createWorker: () => worker as unknown as Worker }, () => {});
+  try {
+    assert.equal(requests.length, 1);
+    const request = requests[0];
+    const cells = request.cells.map(() => { const positions = new Float32Array(LIVE_LIMITS.pendingUploadBytes / 16 + 4); return { positions: positions.buffer, segments: positions.length / 4 }; });
+    worker.onmessage!({ data: { type: 'cells', id: request.id, cells, bytes: 0, fetchMs: 1, decodeMs: 0 } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests.length, 1, 'The provider is not asked to outrun a large drawing backlog');
+    if (cancel) viewport.dispose();
+    draw(); await new Promise(resolve => setImmediate(resolve));
+    if (cancel) assert.equal(requests.length, 1); else assert.ok(requests.length > 1);
+  } finally { draw(); viewport.dispose(); }
 });
 
 test('regions in view are evicted after those out of view, even at road classes too dense to load at this zoom', async () => {

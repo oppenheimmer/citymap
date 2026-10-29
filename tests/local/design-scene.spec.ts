@@ -75,6 +75,7 @@ test('a shared view reopens the same place after the road data extent changes', 
   const roads = JSON.parse(await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8'));
   roads.elements.push({ type: 'node', id: '900001', lon: -122.405, lat: 37.775 }, { type: 'node', id: '900002', lon: -122.398, lat: 37.781 }, { type: 'way', id: '900003', nodes: ['900001', '900002'], tags: { highway: 'primary' } });
   await control(request, { roads: { body: roads } }); await detail(page, 'Data and source'); await page.getByRole('button', { name: 'Clear city cache' }).click();
+  await expect(status(page)).toContainText('Saved city geometry cleared');
   await page.goto(link.href); await page.getByRole('button', { name: 'Load roads', exact: true }).click(); await expect(status(page)).toContainText('ready');
   expect((await stats(request)).roads).toHaveLength(2);
   const restored = await view(page);

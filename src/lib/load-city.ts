@@ -1,7 +1,7 @@
-import { getCity, putCity } from './city-storage.ts';
+import { cityCacheEpoch, getCity, putCity } from './city-storage.ts';
 import { covers, ROAD_DETAILS } from './domain.ts';
 import type { Geometry, LoadProgress, Origin, RoadRank } from './domain.ts';
-import type { WorkerLoad, WorkerResult } from './worker-protocol.ts';
+import type { WorkerCommand, WorkerLoad, WorkerResult } from './worker-protocol.ts';
 
 export interface LoadCallbacks {
   progress(progress: LoadProgress): void;
@@ -31,6 +31,7 @@ async function cachedCity(options: WorkerLoad): Promise<Geometry | undefined> {
 
 export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callbacks: LoadCallbacks): () => void {
   const cacheKey = options.boundary.revision ? `${options.boundary.key}@${options.boundary.revision}` : options.boundary.key;
+  const cacheEpoch = cityCacheEpoch();
   let disposed = false;
   let worker: Worker | undefined;
   const buffers: Float32Array[] = [];
@@ -76,13 +77,14 @@ export function loadCity(options: WorkerLoad & { forceNetwork?: boolean }, callb
           if (positions.length % 4 || !positions.length || ![0, 1, 2].includes(message.rank)) throw new Error('Invalid prepared geometry buffer');
           buffers.push(positions); ranks.push(message.rank); bounds = message.bounds; origin = message.origin;
           await callbacks.chunk(positions, bounds, origin, message.rank);
+          if (!disposed && message.id !== undefined) worker?.postMessage({ type: 'ack', id: message.id } satisfies WorkerCommand);
         } else if (message.type === 'done') {
           worker?.terminate(); worker = undefined;
           if (!bounds || !origin || !ROAD_DETAILS.includes(message.coverage) || buffers.reduce((sum, buffer) => sum + buffer.length / 4, 0) !== message.segmentCount || !message.source.complete) throw new Error('City loading finished with incomplete geometry');
           const geometry: Geometry = { buffers, ranks, coverage: message.coverage, bounds, origin, segmentCount: message.segmentCount, source: message.source, preparation: message.preparation };
           await callbacks.done(geometry);
           if (!disposed && options.useCache) {
-            const persist = () => { if (!disposed) void putCity(cacheKey, geometry); };
+            const persist = () => { if (!disposed) void putCity(cacheKey, geometry, cacheEpoch); };
             if ('requestIdleCallback' in window) window.requestIdleCallback(persist, { timeout: 2000 });
             else setTimeout(persist, 0);
           }

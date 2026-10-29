@@ -1,4 +1,4 @@
-import { test, expect, sample, detail, status } from '../support/local.ts';
+import { test, expect, sample, detail, status, stats, live } from '../support/local.ts';
 import type { Page } from '@playwright/test';
 
 interface RenderProbe {
@@ -49,6 +49,52 @@ const arm = (page: Page, kind: 'map' | 'png') => page.evaluate(value => { (windo
 const release = (page: Page) => page.evaluate(() => {
   const p = (window as unknown as { renderProbe: RenderProbe }).renderProbe;
   p.holding = false; const callback = p.held; p.held = undefined; callback?.(performance.now());
+});
+
+test('offscreen roads skip uploads and draws, while released GPU geometry returns without fetching', async ({ page, request }) => {
+  await installProbe(page); await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const scenePath = '/src/lib/SceneController.ts', domainPath = '/src/lib/domain.ts';
+    const { SceneController } = await import(scenePath) as typeof import('../../src/lib/SceneController.ts');
+    const { DEFAULT_DESIGN } = await import(domainPath) as typeof import('../../src/lib/domain.ts');
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:fixed;left:0;top:0;width:800px;height:600px'; document.body.append(canvas);
+    const left = { left: -10, right: 10, bottom: -7.5, top: 7.5 }, right = { ...left, left: 90, right: 110 };
+    const controller = new SceneController(canvas, { buffers: [], ranks: [], origin: [0, 0], bounds: left, segmentCount: 0, coverage: 'all', source: { kind: 'fixture', complete: true, downloadedAt: '' } }, DEFAULT_DESIGN, { camera: left, gpuBudgetBytes: 16 });
+    const gl = controller.renderer.getGL(), original = gl.deleteBuffer.bind(gl);
+    let deleted = 0;
+    gl.deleteBuffer = buffer => { deleted++; original(buffer); };
+    const probe = (window as unknown as { renderProbe: RenderProbe }).renderProbe;
+    const uploads = () => probe.uploads.map(upload => upload.bytes);
+    try {
+      await controller.appendGeometry(new Float32Array([-1, -1, 1, 1]), 0, undefined, 'left');
+      const unseen = await controller.appendGeometry(new Float32Array([99, -1, 101, 1]), 0, undefined, 'right');
+      const before = { uploads: uploads(), drawn: probe.frames.at(-1), unseen };
+      controller.setCamera(right); controller.render();
+      const moved = { uploads: uploads(), drawn: probe.frames.at(-1), deleted };
+      controller.setCamera(left); controller.render();
+      return { before, moved, returned: { uploads: uploads(), drawn: probe.frames.at(-1), deleted }, segments: controller.geometry.segmentCount, retained: controller.snapshot().buffers.length };
+    } finally { controller.dispose(); canvas.remove(); }
+  });
+  expect(result.before).toEqual({ uploads: [16], drawn: 1, unseen: undefined });
+  expect(result.moved).toEqual({ uploads: [16, 16], drawn: 1, deleted: 1 });
+  expect(result.returned).toEqual({ uploads: [16, 16, 16], drawn: 1, deleted: 2 });
+  expect(result.segments).toBe(2); expect(result.retained).toBe(2);
+  expect((await stats(request)).roads).toHaveLength(0);
+});
+
+test('zooming a live map draws fewer cached regions and restores them without road requests', async ({ page, request }) => {
+  await installProbe(page); await page.goto('/?liveMode=viewport'); await live(page, 'Culling city');
+  let last = -1;
+  await expect.poll(async () => { const count = (await stats(request)).roads.length, settled = count === last; last = count; return settled; }, { intervals: [700] }).toBe(true);
+  const drawn = async () => (await probe(page)).frames.at(-1)!;
+  const before = await drawn(), requests = (await stats(request)).roads.length;
+  expect(before).toBeGreaterThan(0);
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+  await expect.poll(drawn).toBeLessThan(before);
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
+  await expect.poll(drawn).toBe(before);
+  expect((await stats(request)).roads).toHaveLength(requests);
 });
 
 // The large sample has 32,768 primary (major) and 229,376 residential (street) segments,
