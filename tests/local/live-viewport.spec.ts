@@ -145,6 +145,54 @@ test('a provider outage shows dated older roads without retrying them, while ref
   await expect(status(page)).toContainText('Older roads ready'); await expect(page.locator('.older-roads')).toHaveCount(0);
 });
 
+test('one delayed backup retry recovers a failed load and a revisit reuses its source-specific cache', async ({ page, request }) => {
+  const link = `/?${LIVE}&liveMirror=1&livePacing=1&auto=1&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Mirror+roads`;
+  await control(request, { roads: { status: 500 } });
+  await page.goto(link); await expect(status(page)).toContainText('Mirror roads ready', { timeout: 10_000 });
+  await expect(page.locator('.backup-roads')).toContainText('Using the backup road service');
+  const result = await stats(request);
+  expect(result.roadProviders).toEqual(['primary', 'backup']); expect(result.roads[1]).toBe(result.roads[0]);
+  expect(result.roadTimes[1] - result.roadTimes[0]).toBeGreaterThanOrEqual(1450);
+  await expect.poll(() => storedCells(page)).toHaveLength(1);
+  expect((await storedCells(page))[0]).toContain('/mirror-roads|');
+  await detail(page, 'Load timings');
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download load report' }).click();
+  const report = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
+  expect(report.failovers).toBe(1); expect(report.requests).toBe(2);
+  expect(report.recentFailures[0].provider).toBe('http://127.0.0.1:8091');
+  await page.goto(link); await expect(status(page)).toContainText('Mirror roads ready');
+  expect((await stats(request)).roadProviders).toEqual(['primary', 'backup']);
+});
+
+test('a failed backup stops after the original retry allowance and explicit retry remains on the backup', async ({ page, request }) => {
+  const link = `/?${LIVE}&liveMirror=1&auto=1&cache=0&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Failed+mirror`;
+  await control(request, { roads: { status: 500 }, mirror: { status: 500 } });
+  await page.goto(link); await expect(status(page)).toContainText('Some roads in view could not be loaded', { timeout: 10_000 });
+  await page.waitForTimeout(5500); // Beyond the final outage cooldown, proving no endpoint loop.
+  expect((await stats(request)).roadProviders).toEqual(['primary', 'backup']);
+  await control(request, { mirror: {} });
+  await page.getByRole('button', { name: 'Retry loading roads', exact: true }).click();
+  await expect(status(page)).toContainText('Failed mirror ready');
+  expect((await stats(request)).roadProviders).toEqual(['primary', 'backup', 'backup']);
+});
+
+test('an unreachable primary can use the configured backup after the normal connection backoff', async ({ page, request }) => {
+  await control(request, { roads: { blocked: true } });
+  await page.goto(`/?${LIVE}&liveMirror=1&auto=1&cache=0&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Blocked+primary`);
+  await expect(status(page)).toContainText('Blocked primary ready', { timeout: 10_000 });
+  expect((await stats(request)).roadProviders).toEqual(['primary', 'backup']);
+});
+
+test('a configured backup does not bypass a primary rate-limit wait', async ({ page, request }) => {
+  await control(request, { roads: { status: 429, failures: 1, slotWait: 3 } });
+  await page.goto(`/?${LIVE}&liveMirror=1&auto=1&cache=0&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Limited+primary`);
+  await expect(status(page)).toContainText('The road service asked to wait');
+  expect((await stats(request)).roadProviders).toEqual(['primary']);
+  await expect(status(page)).toContainText('Limited primary ready', { timeout: 10_000 });
+  expect((await stats(request)).roadProviders).toEqual(['primary', 'primary']);
+  await expect(page.locator('.backup-roads')).toHaveCount(0);
+});
+
 test('panning loads only new neighbouring cells; panning back, zoom oscillation and restyling reuse loaded roads', async ({ page, request }) => {
   await liveCity(page); await idle(request);
   const initial = (await cellQueries(request)).length;

@@ -127,6 +127,26 @@ test('default loading uses bounded viewport queries and restores the view entire
   await expect(page.locator('aside')).toContainText(`${cells} from the browser cache`);
 });
 
+test('the compiled backup setting uses one delayed retry and reports its actual source', async ({ page }) => {
+  const fixture = await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8');
+  const data = JSON.parse(fixture) as { elements: { type: string; lon: number; lat: number }[] };
+  const node = data.elements.find(element => element.type === 'node')!;
+  let primary = 0, backup = 0;
+  await page.route('https://overpass-api.de/api/interpreter', route => { primary++; return route.fulfill({ status: 500, body: '' }); });
+  await page.route('https://backup.citymap.test/api/interpreter', route => { backup++; return route.fulfill({ contentType: 'application/json', body: fixture }); });
+  const params = new URLSearchParams({ auto: '1', q: 'Compiled backup', bbox: [node.lat - 0.05, node.lon - 0.05, node.lat + 0.05, node.lon + 0.05].join(','), view: [node.lon, node.lat, 300, 300].join(',') });
+  await page.goto(`/?${params}`);
+  await expect(page.locator('aside [role=status]')).toContainText('Compiled backup ready', { timeout: 20_000 });
+  await expect(page.locator('.backup-roads')).toContainText('https://backup.citymap.test');
+  expect(primary).toBe(1); expect(backup).toBeGreaterThan(0);
+  await page.getByText('Load timings', { exact: true }).click();
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download load report' }).click();
+  const report = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
+  expect(report.failovers).toBe(1); expect(report.provider).toBe('https://backup.citymap.test');
+  expect(report.requestsByProvider['https://overpass-api.de']).toBe(1);
+  expect(report.requestsByProvider['https://backup.citymap.test']).toBeGreaterThan(0);
+});
+
 test('cancellation rejects stale work and repeated switching releases resources', async ({ page }) => {
   await page.addInitScript(() => {
     const original = HTMLCanvasElement.prototype.getContext;

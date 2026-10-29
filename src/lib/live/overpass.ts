@@ -65,7 +65,7 @@ export const isOutage = (code?: FailureCode) => code === 'rate_limited' || code 
  * Shared public Overpass instances: one request at a time, whatever the configured
  * concurrency, because aborted queries keep occupying the per-address slots there.
  */
-const PUBLIC_OVERPASS = /(^|\.)(overpass-api\.de|overpass\.kumi\.systems|overpass\.private\.coffee|maps\.mail\.ru|overpass\.openstreetmap\.(fr|ru))$/;
+const PUBLIC_OVERPASS = /(^|\.)(overpass-api\.de|overpass\.kumi\.systems|overpass\.private\.coffee|maps\.mail\.ru|overpass\.openstreetmap\.(fr|ru)|gall\.openstreetmap\.de|lambert\.openstreetmap\.de)$/;
 export const isPublicOverpass = (url: string) => { try { return PUBLIC_OVERPASS.test(new URL(url).hostname); } catch { return false; } };
 export class CellFailure extends Error {
   readonly code: FailureCode;
@@ -74,11 +74,13 @@ export class CellFailure extends Error {
   readonly retryAfter?: number;
   /** Time from dispatch to failure, including transport and background processing. */
   readonly elapsedMs?: number;
+  /** Sanitized origin of the provider that failed, when known. */
+  readonly provider?: string;
   /** Sanitized provider remark, for development diagnostics only. */
   readonly remark?: string;
-  constructor(code: FailureCode, detail: { status?: number; retryAfter?: number; elapsedMs?: number; remark?: string; message?: string } = {}) {
+  constructor(code: FailureCode, detail: { status?: number; retryAfter?: number; elapsedMs?: number; provider?: string; remark?: string; message?: string } = {}) {
     super(detail.message || code);
-    this.name = 'CellFailure'; this.code = code; this.status = detail.status; this.retryAfter = detail.retryAfter; this.elapsedMs = detail.elapsedMs; this.remark = detail.remark;
+    this.name = 'CellFailure'; this.code = code; this.status = detail.status; this.retryAfter = detail.retryAfter; this.elapsedMs = detail.elapsedMs; this.provider = detail.provider; this.remark = detail.remark;
   }
 }
 

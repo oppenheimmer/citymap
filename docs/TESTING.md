@@ -32,6 +32,18 @@ eligible older records, reject future/expired records, show dated older roads
 during HTTP 500 without another request, and require network success on refresh.
 Scheduler tests cover per-cell outage recovery, misses retaining retry limits,
 rate-limit waits remaining intact, and cancellation of pending recovery.
+`tests/live-providers.test.ts` checks optional-backup validation, alias rejection,
+retry eligibility, per-provider cache keys, mixed-source split cells and original
+retry limits. Real worker/browser cases cover paced HTTP 500 failover, CORS-level
+connection failure, a failed backup, a cache-only revisit and no switching around
+429. Test builds use `liveMirror=1` for a second local fixture path; the normal
+app reads only the configured backup. The mock logs actual endpoint choices and
+timestamps. Public status probes are separate from automated tests.
+`npm run build:test` also compiles the reserved mock backup URL
+`https://backup.citymap.test/api/interpreter`. A built-app case routes both
+providers locally in Playwright and verifies the compiled setting, one delayed
+switch and report provenance. The normal build must exclude this test URL;
+offline deployment validation checks that explicitly.
 
 ## Run the suite
 

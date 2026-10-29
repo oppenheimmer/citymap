@@ -101,6 +101,9 @@ records HTTP errors and timings for troubleshooting.
 Completed split regions are cached across interrupted loads. During an outage,
 roads downloaded within the last 30 days can be shown with their download date;
 an explicit refresh still requires fresh data.
+An optional `VITE_OVERPASS_FALLBACK_URL` enables one delayed backup attempt for
+connection failures or HTTP 500/501. It stays off by default; see the
+[candidate mirrors and retry rules](docs/LIVE_ROADS.md#optional-backup-provider).
 [How it works, limits, rollout and rollback](docs/LIVE_ROADS.md).
 Set `VITE_LIVE_VIEWPORT=0` to restore whole-area live loading.
 

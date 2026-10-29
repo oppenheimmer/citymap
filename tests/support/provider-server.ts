@@ -11,7 +11,7 @@ import { parseCellQueries, syntheticCells } from './live-roads.ts';
 // `slotWait`: the Overpass-style status page (/status) says a slot frees in this many seconds; otherwise slots are free.
 interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; holdAfter?: number; trickle?: number; failures?: number; retryAfter?: string; dense?: number; match?: string; blocked?: boolean; slotWait?: number }
 interface SearchCall { query: string; userAgent?: string; format: string | null; limit: string | null }
-let scenarios: { search: Scenario; roads: Scenario } = { search: {}, roads: {} };
+let scenarios: { search: Scenario; roads: Scenario; mirror: Scenario } = { search: {}, roads: {}, mirror: {} };
 const realCity = buildDataset(JSON.parse(gunzipSync(await readFile(new URL('../fixtures/real-city/monaco.json.gz', import.meta.url))).toString('utf8')), 2048);
 const dataObjects = new Map(realCity.objects.map(object => [object.key, object]));
 let corruptData = false;
@@ -19,6 +19,7 @@ let corruptData = false;
 let pointerFailure: number | 'cors' | undefined;
 let searches: SearchCall[] = [], roads: string[] = [], aborted = 0, blocked: string[] = [], datasets: string[] = [], statusChecks = 0;
 let roadTimes: number[] = [];
+let roadProviders: string[] = [];
 const proxy = providerProxy(['http://127.0.0.1:8082', 'http://127.0.0.1:8091'], target => blocked.push(target));
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:8082');
@@ -27,9 +28,9 @@ const server = createServer(async (req, res) => {
   try {
     let input = ''; for await (const bytes of req) { input += bytes; if (input.length > 2 * 1024 * 1024) throw new Error('Control input too large'); }
     if (url.pathname === '/health') { res.end('{}'); return; }
-    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {} }; searches = []; roads = []; roadTimes = []; datasets = []; aborted = 0; blocked = []; statusChecks = 0; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
+    if (url.pathname === '/__reset') { scenarios = { search: {}, roads: {}, mirror: {} }; searches = []; roads = []; roadTimes = []; roadProviders = []; datasets = []; aborted = 0; blocked = []; statusChecks = 0; corruptData = false; pointerFailure = undefined; res.end('{}'); return; }
     if (url.pathname === '/__control' && req.method === 'POST') { const next = JSON.parse(input); scenarios = { ...scenarios, ...next }; if (typeof next.corruptData === 'boolean') corruptData = next.corruptData; if ('pointerFailure' in next) pointerFailure = next.pointerFailure ?? undefined; res.end('{}'); return; }
-    if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, roadTimes, aborted, blocked, datasets, statusChecks })); return; }
+    if (url.pathname === '/__stats') { res.end(JSON.stringify({ searches, roads, roadTimes, roadProviders, aborted, blocked, datasets, statusChecks })); return; }
     if (url.pathname === '/status') {
       statusChecks++; res.setHeader('Content-Type', 'text/plain; charset=utf-8');
       const wait = scenarios.roads.slotWait;
@@ -49,16 +50,16 @@ const server = createServer(async (req, res) => {
       for (const [name,value] of Object.entries(object.headers)) res.setHeader(name,value);
       res.setHeader('Content-Length',bytes.byteLength); res.end(bytes); return;
     }
-    const kind = url.pathname === '/search' ? 'search' : url.pathname === '/roads' ? 'roads' : undefined;
+    const kind = url.pathname === '/search' ? 'search' : url.pathname === '/roads' ? 'roads' : url.pathname === '/mirror-roads' ? 'mirror' : undefined;
     if (!kind) { res.statusCode = 404; res.end('{}'); return; }
     if (kind === 'search') searches.push({ query: url.searchParams.get('q') || '', userAgent: req.headers['user-agent'], format: url.searchParams.get('format'), limit: url.searchParams.get('limit') });
-    const query = kind === 'roads' ? new URLSearchParams(input).get('data') || '' : '';
-    if (kind === 'roads') { roads.push(query); roadTimes.push(Date.now()); }
+    const query = kind !== 'search' ? new URLSearchParams(input).get('data') || '' : '';
+    if (kind !== 'search') { roads.push(query); roadTimes.push(Date.now()); roadProviders.push(kind === 'roads' ? 'primary' : 'backup'); }
     // Live viewport cells get synthetic roads for their own box; other road queries the small grid.
     const cells = parseCellQueries(query);
     const applies = !scenarios[kind].match || query.includes(scenarios[kind].match!);
     const scenario = applies ? { ...scenarios[kind] } : {};
-    if (kind === 'roads' && scenario.holdAfter !== undefined && roads.length > scenario.holdAfter) scenario.hold = true;
+    if (kind !== 'search' && scenario.holdAfter !== undefined && roads.length > scenario.holdAfter) scenario.hold = true;
     if (applies && scenarios[kind].failures) scenarios[kind].failures = scenarios[kind].failures! - 1;
     if (scenario.delay || scenario.hold) {
       const finished = await new Promise<boolean>(resolve => {
@@ -71,7 +72,7 @@ const server = createServer(async (req, res) => {
     res.statusCode = scenario.failures ? scenario.status || 503 : scenario.status && scenario.failures === undefined ? scenario.status : 200;
     if (scenario.retryAfter) res.setHeader('Retry-After', scenario.retryAfter);
     const normal = kind === 'search' ? [{ osm_type: 'relation', osm_id: '101', display_name: `${url.searchParams.get('q')}, Japan`, type: 'city', boundingbox: ['35', '35.1', '139', '139.1'] }] : cells.length ? syntheticCells(cells) : JSON.parse(await readFile(new URL('../../public/fixtures/small.json', import.meta.url), 'utf8'));
-    if (kind === 'roads' && !cells.length) normal.osm3s = { timestamp_osm_base: '2026-10-07T00:00:00.000Z' };
+    if (kind !== 'search' && !cells.length) normal.osm3s = { timestamp_osm_base: '2026-10-07T00:00:00.000Z' };
     // A query with any cell wider than `dense` times out as a whole, as Overpass would.
     const dense = scenario.dense && cells.some(cell => cell.box[3] - cell.box[1] > scenario.dense!) ? { remark: 'runtime error: Query timed out in "query" at line 1 after 30 seconds.' } : undefined;
     const text = typeof scenario.body === 'string' ? scenario.body : JSON.stringify(scenario.body ?? dense ?? normal);

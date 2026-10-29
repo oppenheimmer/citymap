@@ -20,6 +20,7 @@
   import { isPublicOverpass } from './lib/live/overpass.ts';
   import { clearCellCache } from './lib/live/cell-cache.ts';
   import { failureLabel } from './lib/live/report.ts';
+  import { backupProvider } from './lib/live/providers.ts';
   import { fitCamera } from './lib/view.ts';
   import { edgeRange, linkedSize } from './lib/export-size.ts';
 
@@ -90,6 +91,7 @@
   let historyTimer: ReturnType<typeof setTimeout> | undefined;
   let providers: Providers;
   let overpassConcurrency = 1;
+  let overpassFallback: string | undefined;
   let mobile = $state(false), controlsOpen = $state(true);
   // Height of the collapsed settings sheet on phones; the map takes the rest. The settings open
   // over the map, never resizing it, so the map always shows exactly what exports draw.
@@ -151,7 +153,7 @@
     options = { boundary, providers, useCache, allowLarge, forceNetwork, detail: design.detail, fixtureUrl: boundary.fixture ? new URL(`${import.meta.env.BASE_URL}fixtures/${boundary.fixture}.json`, location.origin).href : undefined, ...(viewport ? { viewport } : {}) };
     // Smaller devices keep less road geometry before unseen regions are evicted.
     const small = matchMedia('(max-width: 750px)').matches || ((navigator as { deviceMemory?: number }).deviceMemory ?? 8) <= 4;
-    liveSettings = viewport ? { overpass: providers.overpass, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV, pace: testing.get('livePacing') === '1' } : undefined;
+    liveSettings = viewport ? { overpass: providers.overpass, fallback: testing.get('liveMirror') === '1' ? new URL('/mirror-roads', providers.overpass).href : overpassFallback, concurrency: overpassConcurrency, budgetBytes: LIVE_BUDGET ?? (small ? 64 : 160) * 1024 * 1024, useCache, forceNetwork, debug: import.meta.env.DEV, pace: testing.get('livePacing') === '1' } : undefined;
     mounted = true;
   }
   function sample(size: 'small' | 'medium' | 'large') { choose({ key: `fixture-${size}`, fixture: size, name: `${size[0].toUpperCase()}${size.slice(1)} synthetic grid`, kind: 'synthetic' }); }
@@ -320,6 +322,7 @@
       if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4) throw new Error('VITE_OVERPASS_CONCURRENCY must be a whole number from 1 to 4');
       // Shared public instances get one request at a time; more applies to private providers.
       overpassConcurrency = isPublicOverpass(providers.overpass) ? 1 : concurrency;
+      overpassFallback = backupProvider(providers.overpass, import.meta.env.VITE_OVERPASS_FALLBACK_URL);
       if (import.meta.env.DEV && overpassConcurrency < concurrency) console.warn(`[citymap] VITE_OVERPASS_CONCURRENCY=${concurrency} is capped at 1 for the public road service ${new URL(providers.overpass).hostname}.`);
       if (linked) {
         if (link.auto && !link.warning) choose(linked, false, false, link.design);
@@ -350,6 +353,7 @@
     {#if SAMPLES}<details class="samples"><summary>Try a sample map</summary><div class="buttons"><button onclick={() => sample('small')}>Small sample</button><button onclick={() => sample('medium')}>Medium sample</button><button onclick={() => sample('large')}>Large sample</button></div><p class="hint">Test build only: synthetic geometry without provider requests.</p></details>{/if}
     <p role="status" aria-live="polite">{status}</p>
     {#if liveCoverage?.stats.staleRegions}<p class="hint older-roads">Showing older cached roads while the road service is unavailable. Oldest download: {date(liveCoverage.stats.oldestFetch ? new Date(liveCoverage.stats.oldestFetch).toISOString() : undefined)}. Use Refresh city data to try a new download.</p>{/if}
+    {#if liveCoverage?.stats.failovers}<p class="hint backup-roads">Using the backup road service: {liveCoverage.stats.activeProvider}.</p>{/if}
     {#if loading}
       <div class="load-status">
         {#if activity.max}<progress aria-label="Map download" max={activity.max} value={activity.value}></progress>{:else}<progress aria-label="Map download"></progress>{/if}

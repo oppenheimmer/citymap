@@ -112,7 +112,7 @@ Before deploying, add these project environment variables. Use the
 | `R2_SECRET_ACCESS_KEY` | Search credential's Secret Access Key | Search function |
 
 Leave `VITE_SEARCH_URL` blank to use same-origin `/api/search`. Leave
-`VITE_OVERPASS_URL`, `VITE_OVERPASS_CONCURRENCY`, `VITE_AREA_SERVER` and
+`VITE_OVERPASS_URL`, `VITE_OVERPASS_FALLBACK_URL`, `VITE_OVERPASS_CONCURRENCY`, `VITE_AREA_SERVER` and
 `SEARCH_PROVIDER_API_KEY` blank for this setup. Do not set `VITE_TEST_FIXTURES`: it enables synthetic sample maps
 meant only for tests, and the normal build ships none. `R2_DATA_BUCKET` is a local publisher
 setting and is not required by Vercel.

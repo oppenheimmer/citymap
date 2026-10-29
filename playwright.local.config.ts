@@ -23,6 +23,7 @@ export default defineConfig({
         VITE_AREA_SERVER: '',
         VITE_SEARCH_URL: '',
         VITE_OVERPASS_URL: 'http://127.0.0.1:8091/roads',
+        VITE_OVERPASS_FALLBACK_URL: '',
         // Cover explicit whole-area rollback here; viewport cases opt in per page.
         VITE_LIVE_VIEWPORT: '0',
         VITE_OVERPASS_CONCURRENCY: '',

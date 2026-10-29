@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { gzipSync } from 'node:zlib';
 import { loadEnv } from 'vite';
 import { BUNDLED_CITIES } from '../src/lib/bundled-cities.ts';
+import { backupProvider } from '../src/lib/live/providers.ts';
 const { values } = parseArgs({ options: { offline: { type: 'boolean' } } });
 const failures = [], checks = [];
 function check(ok, name) { (ok ? checks : failures).push(name); }
@@ -15,11 +16,13 @@ check(!!entry, 'Hashed entry script');
 if (entry) {
   const source = await readFile(`dist/assets/${entry}`, 'utf8');
   check(gzipSync(source).length <= 100_000, 'Entry JavaScript under 100 KB gzip');
-  check(!source.includes('Small sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data'), 'Test sample controls/provider absent');
+  check(!source.includes('Small sample') && !source.includes('Large sample') && !source.includes('http://127.0.0.1:4173/data') && !source.includes('https://backup.citymap.test/api/interpreter'), 'Test sample controls/provider absent');
   const env = { ...loadEnv('production', process.cwd(), ''), ...process.env };
   for (const key of ['R2_SECRET_ACCESS_KEY', 'R2_ACCESS_KEY_ID', 'SEARCH_PROVIDER_API_KEY']) if (env[key]) check(!source.includes(env[key]), `${key} stays server-only`);
   check(['', '0', '1'].includes(env.VITE_LIVE_VIEWPORT || ''), 'Live viewport flag is unset, 1, or explicit rollback 0');
   check(!env.VITE_OVERPASS_CONCURRENCY || /^[1-4]$/.test(env.VITE_OVERPASS_CONCURRENCY), 'Live road concurrency is 1–4');
+  try { backupProvider(env.VITE_OVERPASS_URL || 'https://overpass-api.de/api/interpreter', env.VITE_OVERPASS_FALLBACK_URL); check(true, 'Optional road backup is valid and independent'); }
+  catch { check(false, 'Optional road backup is valid and independent'); }
   if (!values.offline) {
     const provider = new URL(env.SEARCH_PROVIDER_URL || 'https://nominatim.openstreetmap.org/search');
     check(provider.protocol === 'https:', 'HTTPS production search provider');

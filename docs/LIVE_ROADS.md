@@ -100,6 +100,7 @@ this fallback and require a fresh response.
 | --- | --- | --- |
 | `VITE_LIVE_VIEWPORT` | unset (on) | Unset or `1` loads live roads by map view; `0` restores whole-area loading. |
 | `VITE_OVERPASS_URL` | `https://overpass-api.de/api/interpreter` | Overpass-compatible endpoint; must allow browser CORS. |
+| `VITE_OVERPASS_FALLBACK_URL` | unset (off) | One optional independent backup for connection failures or HTTP 500/501; uses the existing delayed retry. Absolute HTTPS URL (localhost HTTP allowed for tests). |
 | `VITE_OVERPASS_CONCURRENCY` | `1` | Requests in flight per browser session, 1–4, for a private provider. Known public instances (overpass-api.de, kumi.systems, private.coffee, maps.mail.ru) always get 1. |
 
 Limits live in `LIVE_LIMITS` (`viewport.ts`, including the 50 km `radiusMetres`), `CELL_LIMITS` (`overpass.ts`),
@@ -156,6 +157,39 @@ all queued requests wait, including cells not yet attempted. They back off from
 2 seconds, doubling to 60 seconds with jitter, or honour a readable Retry-After.
 An individual cell still gets only one extra attempt. This prevents one outage
 from immediately expanding into separate requests for every cell.
+
+## Optional backup provider
+
+Set `VITE_OVERPASS_FALLBACK_URL` to an independent Overpass-compatible endpoint
+that permits your app's use. It is empty by default. After a connection failure
+or HTTP 500/501, the scheduler's existing delayed retry may use this backup.
+Successful browser-cache recovery sends no backup request. A session switches at
+most once and stays on the backup, including explicit retries; it never races
+providers or adds retry attempts. Enabling a backup limits that session to one
+request at a time. Known public endpoints retain shared pacing.
+
+Rate limits, HTTP 502–504 busy responses, readable Retry-After, resource/query/data
+errors, background-processing failures and cancellations do not trigger a switch.
+The original cooldown still applies. Fresh cache lookups try both configured
+providers; outage recovery prefers fresh data over older data. Each cell keeps
+its actual provider URL in its cache key. Split parents containing multiple
+providers are not saved as if all their data came from one provider. Reports show
+sanitized source origins, request totals per origin and actual switch counts.
+
+[Private.coffee](https://overpass.private.coffee/) publishes the interpreter
+`https://overpass.private.coffee/api/interpreter` and asks for efficient POST
+queries and limited concurrency. Its old `overpass.kumi.systems` name is the same
+service, not an independent backup. The
+[OpenStreetMap instance list](https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances)
+also lists `https://maps.mail.ru/osm/tools/overpass/api/interpreter` from VK Maps.
+Check an operator's current terms and reachability before configuring it. Direct
+status probes from this workspace timed out on 2026-10-29 (20 s Private.coffee,
+15 s VK Maps); no real road queries were sent, and live browser CORS/availability
+was not verified. Local tests verify failover mechanics, not public reliability.
+The main service's individual nodes and aliases of Private.coffee are rejected
+as duplicate backup choices. The main operator's
+[guidance](https://dev.overpass-api.de/overpass-doc/en/preface/commons.html)
+does not recommend cycling its nodes to spread load.
 
 ## When loading pauses
 
