@@ -1,7 +1,7 @@
 import type { RoadRank } from '../domain.ts';
 import { children, tileKey } from './grid.ts';
 import type { Tile } from './grid.ts';
-import { CellFailure } from './overpass.ts';
+import { CellFailure, isOutage } from './overpass.ts';
 import type { FailureCode } from './overpass.ts';
 
 /** One road rank in one cell. Lower priorities load first. */
@@ -40,6 +40,8 @@ export interface SchedulerHooks<T> {
   execute(tasks: LeafTask[], signal: AbortSignal): Promise<T[]>;
   /** Optional fast path, such as a browser cache, tried once per new job before any request. */
   lookup?(task: LeafTask, signal: AbortSignal): Promise<T | undefined>;
+  /** Optional outage fallback. Misses retain the original retry/failure state and cooldown. */
+  recover?(task: LeafTask, failure: CellFailure, signal: AbortSignal): Promise<T | undefined>;
   /** A leaf loaded; its job is ready once every leaf has. */
   loaded(task: LeafTask, result: T, cached: boolean): void;
   /** Job, leaf or session state changed. */
@@ -165,16 +167,22 @@ export class CellScheduler<T> {
     const root: Leaf = { key: tileKey(spec.tile), tile: spec.tile, depth: 0, state: this.hooks.lookup ? 'lookup' : 'queued', attempts: 0, notBefore: 0 };
     const job: Job = { spec, leaves: new Map([[root.key, root]]) };
     this.jobs.set(spec.key, job);
-    if (!this.hooks.lookup) return;
+    this.lookup(job, root);
+  }
+
+  /** Split children are cacheable independently; a partial parent is never a whole-cell hit. */
+  private lookup(job: Job, root: Leaf, read = this.hooks.lookup, miss: LeafState = 'queued') {
+    if (!read) return;
+    root.state = 'lookup';
     const controller = root.controller = new AbortController(), task = this.task(job, root);
     const settle = (result: T | undefined) => {
       if (root.controller !== controller || this.disposed) return;
       root.controller = undefined;
-      root.state = result === undefined ? 'queued' : 'ready';
+      root.state = result === undefined ? miss : 'ready';
       if (result !== undefined) this.hooks.loaded(task, result, true);
       this.hooks.changed(); this.pump();
     };
-    this.hooks.lookup(task, controller.signal).then(settle, () => settle(undefined));
+    read(task, controller.signal).then(settle, () => settle(undefined));
   }
 
   private task(job: Job, leaf: Leaf): LeafTask { return { job: job.spec.key, leaf: leaf.key, tile: leaf.tile, rank: job.spec.rank, depth: leaf.depth }; }
@@ -266,6 +274,9 @@ export class CellScheduler<T> {
       return;
     }
     entries.forEach(({ job, leaf, task }, index) => this.fail(job, leaf, task, failure, index > 0));
+    if (this.hooks.recover && isOutage(failure.code)) for (const { job, leaf } of entries) {
+      this.lookup(job, leaf, (task, signal) => this.hooks.recover!(task, failure, signal), leaf.state);
+    }
   }
 
   private backoff(attempt: number, base: number) {
@@ -306,7 +317,11 @@ export class CellScheduler<T> {
         count();
         if (leaf.depth >= this.options.maxDepth) { failed(); break; }
         job.leaves.delete(leaf.key);
-        for (const tile of children(leaf.tile)) job.leaves.set(tileKey(tile), { key: tileKey(tile), tile, depth: leaf.depth + 1, state: 'queued', attempts: 0, notBefore: 0 });
+        for (const tile of children(leaf.tile)) {
+          const child: Leaf = { key: tileKey(tile), tile, depth: leaf.depth + 1, state: this.hooks.lookup ? 'lookup' : 'queued', attempts: 0, notBefore: 0 };
+          job.leaves.set(child.key, child);
+        }
+        for (const child of job.leaves.values()) if (child.state === 'lookup' && !child.controller) this.lookup(job, child);
         outcome = 'split';
         break;
       default: failed();

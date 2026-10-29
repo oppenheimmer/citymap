@@ -9,7 +9,7 @@ import { parseCellQueries, syntheticCells } from './live-roads.ts';
 // `match`: the scenario applies only to road queries containing this text; others succeed.
 // `blocked`: refuse without CORS headers, so browsers see a network failure, as with a blocked connection.
 // `slotWait`: the Overpass-style status page (/status) says a slot frees in this many seconds; otherwise slots are free.
-interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; trickle?: number; failures?: number; retryAfter?: string; dense?: number; match?: string; blocked?: boolean; slotWait?: number }
+interface Scenario { status?: number; body?: unknown; delay?: number; hold?: boolean; holdAfter?: number; trickle?: number; failures?: number; retryAfter?: string; dense?: number; match?: string; blocked?: boolean; slotWait?: number }
 interface SearchCall { query: string; userAgent?: string; format: string | null; limit: string | null }
 let scenarios: { search: Scenario; roads: Scenario } = { search: {}, roads: {} };
 const realCity = buildDataset(JSON.parse(gunzipSync(await readFile(new URL('../fixtures/real-city/monaco.json.gz', import.meta.url))).toString('utf8')), 2048);
@@ -58,6 +58,7 @@ const server = createServer(async (req, res) => {
     const cells = parseCellQueries(query);
     const applies = !scenarios[kind].match || query.includes(scenarios[kind].match!);
     const scenario = applies ? { ...scenarios[kind] } : {};
+    if (kind === 'roads' && scenario.holdAfter !== undefined && roads.length > scenario.holdAfter) scenario.hold = true;
     if (applies && scenarios[kind].failures) scenarios[kind].failures = scenarios[kind].failures! - 1;
     if (scenario.delay || scenario.hold) {
       const finished = await new Promise<boolean>(resolve => {

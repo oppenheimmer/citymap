@@ -28,7 +28,7 @@ export function loadReport(provider: string, coverage: LiveCoverage) {
   const s = coverage.stats;
   return {
     version: 1, generatedAt: new Date().toISOString(), provider: origin,
-    requests: s.requests, cachedRegions: s.cached, downloadedBytes: s.bytes,
+    requests: s.requests, cachedRegions: s.cached, olderRegions: s.staleRegions, oldestDownloadAt: s.oldestFetch, downloadedBytes: s.bytes,
     loadedRegions: s.regions, segments: s.segments, splits: s.splits,
     firstRoadMs: s.firstRoadMs, medianFetchMs: s.medianFetchMs,
     providerWaitMs: s.providerWaitMs,

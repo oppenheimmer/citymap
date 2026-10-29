@@ -6,7 +6,7 @@ import { frameCorners, viewFromCamera } from '../view.ts';
 import { metresPerSceneUnit } from '../scale-bar.ts';
 import { cellLevel, coverTiles, GRID_VERSION, groundDistance, intersects, tileDistance, tileKey, tileRect } from './grid.ts';
 import type { Tile } from './grid.ts';
-import { CellFailure, QUERY_SCHEMA, queryTimeout } from './overpass.ts';
+import { CellFailure, isOutage, QUERY_SCHEMA, queryTimeout } from './overpass.ts';
 import type { FailureCode } from './overpass.ts';
 import { CellScheduler } from './scheduler.ts';
 import type { Clock, JobSpec, LeafTask } from './scheduler.ts';
@@ -74,6 +74,8 @@ export interface LiveSettings {
 export interface LiveStats {
   requests: number;
   cached: number;
+  /** Loaded regions using older geometry after a provider outage. */
+  staleRegions: number;
   /** Bytes received from the road service. */
   bytes: number;
   /** Regions (cells of one road rank) and segments currently loaded. */
@@ -122,9 +124,9 @@ export interface LiveCoverage {
   stats: LiveStats;
 }
 
-interface CellResult { positions: Float32Array; segments: number; bytes: number; fetchMs: number; fetchedAt: number; snapshotAt?: string }
+interface CellResult { positions: Float32Array; segments: number; bytes: number; fetchMs: number; fetchedAt: number; snapshotAt?: string; cacheEpoch: number; stale?: boolean }
 /** `drawing` counts uploads queued or under way; the region is drawn once none is left. */
-interface Region { tile: Tile; rank: RoadRank; bytes: number; segments: number; buffers: Float32Array[]; lastSeen: number; fetchedAt: number; cached: boolean; drawing: number; snapshotAt?: string }
+interface Region { tile: Tile; rank: RoadRank; bytes: number; segments: number; buffers: Float32Array[]; lastSeen: number; fetchedAt: number; cacheEpoch: number; stale: boolean; drawing: number; snapshotAt?: string }
 
 const jobKey = (rank: RoadRank, tile: Tile) => `${rank}:${tileKey(tile)}`;
 
@@ -140,7 +142,7 @@ export class LiveViewport {
   private readonly pacer?: ProviderPacer;
   private providerWait?: ProviderWait;
   private waitId = 0;
-  private readonly pending = new Map<number, { count: number; started: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
+  private readonly pending = new Map<number, { count: number; started: number; cacheEpoch: number; resolve(results: CellResult[]): void; reject(error: unknown): void }>();
   private readonly regions = new Map<string, Region>();
   private readonly scene: SceneController;
   private readonly origin: Origin;
@@ -165,7 +167,7 @@ export class LiveViewport {
   private disposed = false;
   private readonly started = performance.now();
   private readonly fetchTimes: number[] = [];
-  private readonly stats: LiveStats = { requests: 0, cached: 0, bytes: 0, regions: 0, segments: 0, splits: 0, failures: {}, recentFailures: [], providerWaitMs: 0 };
+  private readonly stats: LiveStats = { requests: 0, cached: 0, staleRegions: 0, bytes: 0, regions: 0, segments: 0, splits: 0, failures: {}, recentFailures: [], providerWaitMs: 0 };
 
   constructor(scene: SceneController, origin: Origin, detail: RoadDetail, settings: LiveSettings, onChange: (coverage: LiveCoverage) => void) {
     this.scene = scene; this.origin = origin; this.detail = detail; this.settings = settings; this.onChange = onChange;
@@ -176,11 +178,8 @@ export class LiveViewport {
     const cache = settings.cache;
     this.scheduler = new CellScheduler<CellResult>({ concurrency: this.pacer ? 1 : settings.concurrency, maxDepth: LIVE_LIMITS.maxDepth, retries: LIVE_LIMITS.retries, maxRequests: LIVE_LIMITS.maxRequests, pauseAfter: LIVE_LIMITS.pauseAfter, batch: LIVE_LIMITS.batch, clock: settings.clock }, {
       execute: this.execute,
-      lookup: cache && !settings.forceNetwork ? async (task, signal) => {
-        const hit = await cache.get(this.cacheKey(task.job), this.origin);
-        if (!hit || signal.aborted) return;
-        return { positions: hit.positions, segments: hit.positions.length / 4, bytes: 0, fetchMs: 0, fetchedAt: hit.fetchedAt, snapshotAt: hit.snapshotAt };
-      } : undefined,
+      lookup: cache && !settings.forceNetwork ? (task, signal) => this.cached(task, signal, isOutage(this.scheduler.pauseReason) || this.scheduler.cooldownUntil > (settings.clock || performance).now() && isOutage(this.scheduler.cooldownReason)) : undefined,
+      recover: cache && !settings.forceNetwork ? (task, _failure, signal) => this.cached(task, signal, true) : undefined,
       loaded: this.loaded,
       changed: () => this.emit(),
       failed: (task, failure, outcome) => {
@@ -224,6 +223,7 @@ export class LiveViewport {
     }
     const loading = this.required.length - ready - failed;
     this.stats.regions = this.regions.size;
+    this.stats.staleRegions = [...this.regions.values()].filter(region => region.stale).length;
     this.stats.segments = [...this.regions.values()].reduce((sum, region) => sum + region.segments, 0);
     const sorted = [...this.fetchTimes].sort((a, b) => a - b);
     this.stats.medianFetchMs = sorted.length ? sorted[Math.floor(sorted.length / 2)] : undefined;
@@ -275,6 +275,11 @@ export class LiveViewport {
 
   private ranks(): RoadRank[] { return ([0, 1, 2] as const).filter(rank => rank <= detailRank(this.detail)); }
   private cacheKey(job: string) { return `${GRID_VERSION}|${QUERY_SCHEMA}|${this.settings.overpass}|${job}`; }
+  private async cached(task: LeafTask, signal: AbortSignal, allowStale: boolean): Promise<CellResult | undefined> {
+    const cacheEpoch = cellCacheEpoch(), hit = await this.settings.cache?.get(this.cacheKey(jobKey(task.rank, task.tile)), this.origin, allowStale);
+    if (!hit || signal.aborted) return;
+    return { positions: hit.positions, segments: hit.positions.length / 4, bytes: 0, fetchMs: 0, fetchedAt: hit.fetchedAt, snapshotAt: hit.snapshotAt, cacheEpoch, stale: hit.stale };
+  }
   private drawn(key: string) { return this.scheduler.status(key) === 'ready' && this.regions.has(key) && !this.regions.get(key)!.drawing; }
   private near = (tile: Tile) => tileDistance(tile, this.origin) <= LIVE_LIMITS.radiusMetres;
 
@@ -355,7 +360,7 @@ export class LiveViewport {
     return new Promise<CellResult[]>((resolve, reject) => {
       if (signal.aborted) { reject(new CellFailure('cancelled')); return; }
       const id = ++this.nextId;
-      this.pending.set(id, { count: tasks.length, started: performance.now(), resolve, reject });
+      this.pending.set(id, { count: tasks.length, started: performance.now(), cacheEpoch: cellCacheEpoch(), resolve, reject });
       signal.addEventListener('abort', () => {
         if (!this.pending.delete(id)) return;
         this.post({ type: 'abort', id });
@@ -382,7 +387,7 @@ export class LiveViewport {
       for (const cell of message.cells) {
         const positions = new Float32Array(cell.positions);
         if (positions.length % 4 || positions.length / 4 !== cell.segments) { invalid(); return; }
-        results.push({ positions, segments: cell.segments, bytes: message.bytes, fetchMs: message.fetchMs, fetchedAt, snapshotAt: message.snapshotAt });
+        results.push({ positions, segments: cell.segments, bytes: message.bytes, fetchMs: message.fetchMs, fetchedAt, snapshotAt: message.snapshotAt, cacheEpoch: entry.cacheEpoch });
       }
       this.fetchTimes.push(message.fetchMs); if (this.fetchTimes.length > 200) this.fetchTimes.shift();
       this.stats.bytes += message.bytes;
@@ -400,9 +405,11 @@ export class LiveViewport {
     let region = this.regions.get(task.job);
     // The region's cell: a leaf is that cell, or a quarter of it `depth` times over.
     const tile = { z: task.tile.z - task.depth, x: task.tile.x >> task.depth, y: task.tile.y >> task.depth };
-    if (!region) this.regions.set(task.job, region = { tile, rank: task.rank, bytes: 0, segments: 0, buffers: [], lastSeen: performance.now(), fetchedAt: result.fetchedAt, cached, drawing: 0, snapshotAt: result.snapshotAt });
+    if (!region) this.regions.set(task.job, region = { tile, rank: task.rank, bytes: 0, segments: 0, buffers: [], lastSeen: performance.now(), fetchedAt: result.fetchedAt, cacheEpoch: result.cacheEpoch, stale: false, drawing: 0, snapshotAt: result.snapshotAt });
     region.bytes += result.positions.byteLength; region.segments += result.segments; region.buffers.push(result.positions);
     region.fetchedAt = Math.min(region.fetchedAt, result.fetchedAt);
+    region.cacheEpoch = Math.min(region.cacheEpoch, result.cacheEpoch);
+    region.stale ||= !!result.stale;
     if (result.snapshotAt && (!region.snapshotAt || result.snapshotAt > region.snapshotAt)) region.snapshotAt = result.snapshotAt;
     if (result.snapshotAt && (!this.stats.snapshotAt || result.snapshotAt > this.stats.snapshotAt)) this.stats.snapshotAt = result.snapshotAt;
     if (cached) this.stats.cached++;
@@ -421,12 +428,12 @@ export class LiveViewport {
         }
       });
     }
-    // A complete region fetched from the road service is cached for later sessions.
-    if (!cached && !region.cached && this.settings.cache && this.scheduler.status(task.job) === 'ready') {
-      const cache = this.settings.cache, key = this.cacheKey(task.job), buffers = [...region.buffers], meta = { fetchedAt: region.fetchedAt, snapshotAt: region.snapshotAt };
-      const epoch = cellCacheEpoch();
-      const save = () => { void cache.put(key, this.origin, buffers, meta, epoch); };
-      if ('requestIdleCallback' in globalThis) requestIdleCallback(save, { timeout: 2000 }); else setTimeout(save, 0);
+    const cache = this.settings.cache;
+    if (cache) {
+      // A complete leaf is useful even if its parent is interrupted before all quarters arrive.
+      if (!cached) void cache.defer(this.cacheKey(jobKey(task.rank, task.tile)), this.origin, [result.positions], { fetchedAt: result.fetchedAt, snapshotAt: result.snapshotAt }, result.cacheEpoch);
+      // Aggregate only after every child is ready, including when the last child was cached.
+      if (task.depth > 0 && this.scheduler.status(task.job) === 'ready') void cache.defer(this.cacheKey(task.job), this.origin, [...region.buffers], { fetchedAt: region.fetchedAt, snapshotAt: region.snapshotAt }, region.cacheEpoch);
     }
     this.evict();
   };

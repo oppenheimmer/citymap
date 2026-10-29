@@ -58,6 +58,8 @@ export const cellQuery = (tile: Tile, rank: RoadRank, limits = CELL_LIMITS) => c
  */
 export type FailureCode = 'timeout_or_resource_limit' | 'rate_limited' | 'provider_busy' | 'provider_unavailable' | 'unreachable' | 'invalid_request' | 'response_too_large' | 'decode_failure' | 'cancelled';
 export const FAILURE_CODES: readonly FailureCode[] = ['timeout_or_resource_limit', 'rate_limited', 'provider_busy', 'provider_unavailable', 'unreachable', 'invalid_request', 'response_too_large', 'decode_failure', 'cancelled'];
+/** Provider-wide failures for which validated older geometry can keep a view usable. */
+export const isOutage = (code?: FailureCode) => code === 'rate_limited' || code === 'provider_busy' || code === 'provider_unavailable' || code === 'unreachable';
 
 /**
  * Shared public Overpass instances: one request at a time, whatever the configured

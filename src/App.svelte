@@ -205,7 +205,8 @@
     liveCoverage = value;
     waitClock = performance.now(); resumeAt = value.cooldown > 0 ? waitClock + value.cooldown : 0;
     // Phase changes only, so the live region announces little while loading.
-    if (value.exhausted) status = 'This session has made many road requests. Retry loading roads to continue.';
+    if (value.complete && value.stats.staleRegions) status = `${selected!.name} ready with older cached roads.`;
+    else if (value.exhausted) status = 'This session has made many road requests. Retry loading roads to continue.';
     else if (value.paused) status = PAUSED[value.pauseReason || 'provider_unavailable'] || PAUSED.provider_unavailable!;
     else if (value.loading && value.waiting === 'another_map') status = 'Another map is using the road service. Loading resumes automatically…';
     else if (value.loading && value.cooldown > 0 && (value.waiting === 'pacing' || value.waiting === 'previous_request')) status = 'Giving the road service time between requests. Loading resumes shortly…';
@@ -348,6 +349,7 @@
     </form>
     {#if SAMPLES}<details class="samples"><summary>Try a sample map</summary><div class="buttons"><button onclick={() => sample('small')}>Small sample</button><button onclick={() => sample('medium')}>Medium sample</button><button onclick={() => sample('large')}>Large sample</button></div><p class="hint">Test build only: synthetic geometry without provider requests.</p></details>{/if}
     <p role="status" aria-live="polite">{status}</p>
+    {#if liveCoverage?.stats.staleRegions}<p class="hint older-roads">Showing older cached roads while the road service is unavailable. Oldest download: {date(liveCoverage.stats.oldestFetch ? new Date(liveCoverage.stats.oldestFetch).toISOString() : undefined)}. Use Refresh city data to try a new download.</p>{/if}
     {#if loading}
       <div class="load-status">
         {#if activity.max}<progress aria-label="Map download" max={activity.max} value={activity.value}></progress>{:else}<progress aria-label="Map download"></progress>{/if}

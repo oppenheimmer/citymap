@@ -1,5 +1,46 @@
 import { test, expect, sample, live, stats, status, cacheKeys, detail } from '../support/local.ts';
 
+test('registered cell saves drain after closing a session and preserve geometry subviews', async ({ page }) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const path = '/src/lib/live/cell-cache.ts', { CellCache } = await import(path);
+    const callbacks: IdleRequestCallback[] = [];
+    window.requestIdleCallback = callback => { callbacks.push(callback); return callbacks.length; };
+    const cache = new CellCache(), origin = [139, 35], meta = { fetchedAt: Date.now() };
+    const positions = new Float32Array([99, 99, 1, 2, 3, 4, 88, 88]).subarray(2, 6);
+    const pending = cache.defer('durable', origin, [positions], meta);
+    cache.close();
+    const later = await cache.put('after-close', origin, [positions], meta);
+    callbacks.forEach(callback => callback({ didTimeout: false, timeRemaining: () => 50 }));
+    const saved = await pending;
+    const reader = new CellCache(), hit = await reader.get('durable', origin);
+    reader.close();
+    return { saved, later, positions: hit && [...hit.positions] };
+  });
+  expect(result).toEqual({ saved: true, later: false, positions: [1, 2, 3, 4] });
+});
+
+test('cell freshness misses retain bounded older data and reject invalid or expired records', async ({ page }) => {
+  await page.goto('/');
+  const result = await page.evaluate(async () => {
+    const path = '/src/lib/live/cell-cache.ts', { CellCache, CELL_CACHE } = await import(path);
+    const now = Date.now(), cache = new CellCache(() => now), origin = [139, 35], positions = new Float32Array([1, 2, 3, 4]);
+    const oldAt = now - CELL_CACHE.ttlMs - 1000;
+    await cache.put('older', origin, [positions], { fetchedAt: oldAt });
+    const fresh = await cache.get('older', origin), fallback = await cache.get('older', origin, true);
+    // A later write must not evict older geometry merely because it is not fresh.
+    await cache.put('newer', origin, [positions], { fetchedAt: now });
+    const retained = await cache.get('older', origin, true);
+    await cache.put('expired', origin, [positions], { fetchedAt: now - CELL_CACHE.fallbackAgeMs - 1 });
+    await cache.put('future', origin, [positions], { fetchedAt: now + 120_000 });
+    const expired = await cache.get('expired', origin, true), future = await cache.get('future', origin, true);
+    const freshHit = await cache.get('newer', origin);
+    cache.close();
+    return { fresh: !!fresh, fallback: fallback && { stale: fallback.stale, fetchedAt: fallback.fetchedAt === oldAt, positions: [...fallback.positions] }, retained: !!retained, expired: !!expired, future: !!future, freshStale: freshHit?.stale };
+  });
+  expect(result).toEqual({ fresh: false, fallback: { stale: true, fetchedAt: true, positions: [1, 2, 3, 4] }, retained: true, expired: false, future: false, freshStale: false });
+});
+
 for (const mode of ['city', 'cells']) test(`clearing ${mode} cache cancels deferred saves, and later loads can cache again`, async ({ page }) => {
   await page.addInitScript(() => {
     const callbacks: IdleRequestCallback[] = [];

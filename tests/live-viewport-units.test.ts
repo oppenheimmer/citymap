@@ -6,7 +6,7 @@ import { cellLevel, tileBBox, tileRect } from '../src/lib/live/grid.ts';
 import { LIVE_LIMITS, LiveViewport } from '../src/lib/live/viewport.ts';
 import type { SceneController } from '../src/lib/SceneController.ts';
 import { liveStart, START_METRES } from '../src/lib/live/start.ts';
-import { translate } from '../src/lib/live/cell-cache.ts';
+import { CellCache, cellCacheEpoch, clearCellCache, translate } from '../src/lib/live/cell-cache.ts';
 import { projector } from '../src/lib/geometry.ts';
 import { metresPerSceneUnit } from '../src/lib/scale-bar.ts';
 import { cameraFromView, viewFromCamera } from '../src/lib/view.ts';
@@ -298,6 +298,24 @@ test('an export is complete only once every loaded region of its frame is drawn'
     assert.equal(viewport.coverage().complete, true);
     assert.equal(viewport.coverage().exportable, true);
     assert.equal(viewport.exportRegions(camera, 0).complete, true);
+  } finally { viewport.dispose(); }
+});
+
+test('a response dispatched before cache clearing cannot repopulate cells after it arrives', async t => {
+  const cell = tileRect(originTile(cellLevel(0, origin[1])), origin), cx = (cell.left + cell.right) / 2, cy = (cell.bottom + cell.top) / 2;
+  const camera: Camera = { left: cx - 10, right: cx + 10, bottom: cy - 10, top: cy + 10 }, requests: CellRequest[] = [];
+  const worker = { onmessage: undefined as undefined | ((event: { data: CellReply }) => void), onerror: undefined, postMessage(command: CellCommand) { if (command.type === 'fetch') requests.push(command); }, terminate() {} };
+  const cache = new CellCache(), epochs: number[] = [];
+  t.mock.method(cache, 'defer', async (...args: Parameters<CellCache['defer']>) => { const expected = args[4] ?? cellCacheEpoch(); epochs.push(expected); return expected === cellCacheEpoch(); });
+  const scene = { frame: () => camera, rotation: 0, appendGeometry: async () => undefined, removeOwner: () => 0 } as unknown as SceneController;
+  const viewport = new LiveViewport(scene, origin, 'major', { overpass: 'http://localhost/roads', concurrency: 1, budgetBytes: 1e9, cache, createWorker: () => worker as unknown as Worker }, () => {});
+  try {
+    await new Promise(resolve => setImmediate(resolve));
+    const before = cellCacheEpoch(); await clearCellCache();
+    const request = requests[0];
+    worker.onmessage!({ data: { type: 'cells', id: request.id, cells: [{ positions: new Float32Array([cx, cy, cx + 1, cy]).buffer, segments: 1 }], bytes: 16, fetchMs: 1, decodeMs: 0 } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(epochs, [before]); assert.equal(cellCacheEpoch(), before + 1);
   } finally { viewport.dispose(); }
 });
 

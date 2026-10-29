@@ -24,6 +24,14 @@ and provider isolation. Browser cases exercise actual Web Locks across tabs,
 cache hits during a held network request, cooldown persistence after navigation,
 and request spacing when local storage is denied. Only test builds accept
 `livePacing=1` to opt the local private mock endpoint into public-style pacing.
+Cache-reuse regressions cover an interrupted split with one saved quarter and no
+parent record, three missing quarters fetched on return, and an aggregate parent
+saved only once complete. Held idle callbacks prove saves finish after a map
+switch while cache clearing still invalidates them. Freshness tests preserve
+eligible older records, reject future/expired records, show dated older roads
+during HTTP 500 without another request, and require network success on refresh.
+Scheduler tests cover per-cell outage recovery, misses retaining retry limits,
+rate-limit waits remaining intact, and cancellation of pending recovery.
 
 ## Run the suite
 

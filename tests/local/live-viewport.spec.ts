@@ -9,6 +9,11 @@ const LIVE = 'liveMode=viewport';
 const cellQueries = async (request: APIRequestContext) => (await stats(request)).roads.filter(query => query.includes('out geom'));
 /** Requests combine several cells; these are every requested cell, in order. */
 const requestedCells = async (request: APIRequestContext) => (await cellQueries(request)).flatMap(parseCellQueries);
+const storedCells = (page: Page) => page.evaluate(() => new Promise<string[]>((resolve, reject) => {
+  const open = indexedDB.open('citymap-cells', 1);
+  open.onsuccess = () => { const db = open.result, query = db.transaction('cells').objectStore('cells').getAllKeys(); query.onsuccess = () => { db.close(); resolve(query.result.map(String)); }; query.onerror = () => reject(query.error); };
+  open.onerror = () => reject(open.error);
+}));
 const span = ({ box: [, west, , east] }: CellQuery) => east - west;
 async function choose(page: Page, name: string, query = '') {
   await page.goto(`/?${LIVE}${query}`);
@@ -63,6 +68,81 @@ test('a searched city loads a bounded set of viewport cells, never one whole-are
   await expect(page.locator('aside')).toContainText(/Source date: .*2026/);
   await detail(page, 'Load timings'); await expect(page.locator('aside')).toContainText(`${queries.length} road requests`);
   await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+});
+
+test('completed live cells are saved after a map switch even when idle writes were delayed', async ({ page, request }) => {
+  await page.addInitScript(() => {
+    const callbacks: IdleRequestCallback[] = [];
+    Object.defineProperty(window, 'heldSaves', { value: callbacks });
+    window.requestIdleCallback = callback => { callbacks.push(callback); return callbacks.length; };
+  });
+  await liveCity(page, 'Durable city'); await idle(request);
+  const cells = (await requestedCells(request)).length, queries = (await cellQueries(request)).length, link = await share(page);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { heldSaves: IdleRequestCallback[] }).heldSaves.length)).toBe(cells);
+  await sample(page);
+  await page.evaluate(() => {
+    const callbacks = (window as unknown as { heldSaves: IdleRequestCallback[] }).heldSaves.splice(0);
+    callbacks.forEach(callback => callback({ didTimeout: false, timeRemaining: () => 50 }));
+  });
+  await expect.poll(() => storedCells(page)).toHaveLength(cells);
+  await page.goto(`${link.href}&${LIVE}`); await expect(status(page)).toContainText('Durable city, Japan ready');
+  expect(await cellQueries(request)).toHaveLength(queries);
+});
+
+test('an interrupted split keeps completed quarters and reuses them without caching an incomplete parent', async ({ page, request }) => {
+  const link = `/?${LIVE}&auto=1&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Split+cache`;
+  await control(request, { roads: { dense: 0.1, holdAfter: 2 } });
+  await page.goto(link);
+  await expect.poll(async () => (await cellQueries(request)).length).toBe(3);
+  await expect.poll(() => storedCells(page)).toHaveLength(1);
+  const saved = await storedCells(page);
+  expect(saved[0]).toMatch(/\|0:12\//); expect(saved[0]).not.toMatch(/\|0:11\//);
+  const first = await cellQueries(request), reused = cellName(parseCellQueries(first[1])[0]);
+  await sample(page);
+  await control(request, { roads: { dense: 0.1 } });
+  const before = (await cellQueries(request)).length;
+  await page.goto(link); await expect(status(page)).toContainText('Split cache ready');
+  const after = (await cellQueries(request)).slice(before);
+  expect(after.flatMap(parseCellQueries).map(cellName)).not.toContain(reused);
+  expect(after).toHaveLength(4); // One failed parent and the three missing quarters.
+  await expect.poll(async () => (await storedCells(page)).filter(key => key.includes('|0:11/')).length).toBe(1);
+  const complete = await svg(page);
+  expect(complete.xml).toContain('<path');
+});
+
+test('a provider outage shows dated older roads without retrying them, while refresh requires a new download', async ({ page, request }) => {
+  const link = `/?${LIVE}&auto=1&detail=major&bbox=35,139,35.2,139.3&view=139.1,35.1,500,500&q=Older+roads`;
+  await page.goto(link); await expect(status(page)).toContainText('Older roads ready');
+  await expect.poll(() => storedCells(page)).toHaveLength(1);
+  await page.evaluate(() => new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open('citymap-cells', 1);
+    open.onsuccess = () => {
+      const db = open.result, tx = db.transaction(['cells', 'metadata'], 'readwrite'), fetchedAt = Date.now() - 4 * 24 * 60 * 60 * 1000;
+      for (const name of ['cells', 'metadata']) {
+        const query = tx.objectStore(name).openCursor();
+        query.onsuccess = () => { const cursor = query.result; if (cursor) { cursor.update({ ...cursor.value, fetchedAt }); cursor.continue(); } };
+      }
+      tx.oncomplete = () => { db.close(); resolve(); }; tx.onerror = () => reject(tx.error);
+    }; open.onerror = () => reject(open.error);
+  }));
+  const before = (await cellQueries(request)).length;
+  await control(request, { roads: { status: 500 } });
+  await page.goto(link); await expect(status(page)).toContainText('ready with older cached roads');
+  await expect(page.locator('.older-roads')).toContainText('Oldest download:');
+  await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
+  await page.waitForTimeout(3000); // Beyond the outage retry backoff, proving that cached recovery sends no retry.
+  expect(await cellQueries(request)).toHaveLength(before + 1);
+  await detail(page, 'Load timings');
+  const pending = page.waitForEvent('download'); await page.getByRole('button', { name: 'Download load report' }).click();
+  const report = JSON.parse(await readFile((await (await pending).path())!, 'utf8'));
+  expect(report.olderRegions).toBe(1); expect(report.cachedRegions).toBe(1); expect(report.failures.provider_unavailable).toBe(1);
+  expect(report.oldestDownloadAt).toBeLessThan(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  await detail(page, 'Data and source'); await page.getByRole('button', { name: 'Refresh city data' }).click();
+  await expect(status(page)).toContainText('Some roads in view could not be loaded', { timeout: 10_000 });
+  await expect(page.locator('.older-roads')).toHaveCount(0);
+  await control(request, { roads: {} });
+  await page.getByRole('button', { name: 'Refresh city data' }).click();
+  await expect(status(page)).toContainText('Older roads ready'); await expect(page.locator('.older-roads')).toHaveCount(0);
 });
 
 test('panning loads only new neighbouring cells; panning back, zoom oscillation and restyling reuse loaded roads', async ({ page, request }) => {

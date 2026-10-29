@@ -8,6 +8,9 @@ The [October 29 request-protection checks](20261029-api.md) record shared provid
 pacing, outage retries and failure-report evidence from local mocks. They do not
 measure real Overpass latency or rejection rates.
 
+The [October 29 browser-cache checks](20261029-cache-reuse.md) cover interrupted
+split loads, saved downloads after map switches, and dated older-data recovery.
+
 The [Monaco format comparison](20261009-monaco.md) records real-city stored
 size, decode time and memory for the version-1 and version-2 data formats. The
 browser benchmark below measures the current application only.

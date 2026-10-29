@@ -29,7 +29,7 @@ const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 
 /** One request: `task` is its first leaf; `resolve` takes one result, or one per leaf. */
 interface Call { task: LeafTask; tasks: LeafTask[]; signal: AbortSignal; settled: boolean; resolve(value: string | string[]): void; reject(error: unknown): void }
-function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTask) => string | undefined) {
+function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTask) => string | undefined, recover?: (task: LeafTask, failure: CellFailure, signal: AbortSignal) => Promise<string | undefined>) {
   const clock = fakeClock(), calls: Call[] = [], loaded: { leaf: string; job: string; result: string; cached: boolean }[] = [], outcomes: string[] = [];
   const scheduler = new CellScheduler<string>({ concurrency: 1, maxDepth: 2, retries: 1, maxRequests: 100, pauseAfter: 4, clock, ...options }, {
     execute: (tasks, signal) => new Promise((resolve, reject) => {
@@ -37,6 +37,7 @@ function harness(options: Partial<SchedulerOptions> = {}, lookup?: (task: LeafTa
       calls.push(call);
     }),
     lookup: lookup && (async task => lookup(task)),
+    recover,
     loaded: (task, result, cached) => loaded.push({ leaf: task.leaf, job: task.job, result, cached }),
     changed: () => {},
     failed: (task, failure, outcome) => outcomes.push(`${task.leaf}:${failure.code}:${outcome}`),
@@ -285,6 +286,53 @@ test('a cache lookup serves whole jobs without requests and misses fall through 
   assert.deepEqual(h.loaded, [{ leaf: '13/1/10', job: 'a', result: 'cached-a', cached: true }]);
   assert.deepEqual(h.calls.map(call => call.task.job), ['b']);
   assert.equal(h.scheduler.requests, 1);
+});
+
+test('split cells reuse completed cached quarters while the parent waits for every missing quarter', async () => {
+  const h = harness({ maxDepth: 1 }, task => task.depth === 1 && task.tile.x === 2 ? `cached-${task.leaf}` : undefined);
+  h.scheduler.want([job('a', 1)]); await flush();
+  h.calls[0].reject(fail('timeout_or_resource_limit')); await flush();
+  assert.deepEqual(h.loaded.map(entry => [entry.leaf, entry.cached]), [['14/2/20', true], ['14/2/21', true]]);
+  assert.equal(h.scheduler.status('a'), 'loading');
+  assert.deepEqual(h.calls[1].tasks.map(task => task.leaf), ['14/3/20']);
+  h.calls[1].resolve('new-quarter'); await flush();
+  assert.equal(h.scheduler.status('a'), 'loading', 'Three quarters are not a complete parent');
+  h.calls[2].resolve('last-quarter'); await flush();
+  assert.equal(h.scheduler.status('a'), 'ready'); assert.equal(h.scheduler.requests, 3);
+  assert.equal(h.loaded.length, 4);
+});
+
+test('outage recovery serves older cells individually while misses retain their original retry limit', async () => {
+  const h = harness({ batch: 2, retries: 1 }, undefined, async task => task.job === 'a' ? 'older-a' : undefined);
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  h.calls[0].reject(fail('provider_unavailable')); await flush();
+  assert.deepEqual(h.loaded.map(entry => [entry.job, entry.result, entry.cached]), [['a', 'older-a', true]]);
+  assert.equal(h.scheduler.status('a'), 'ready'); assert.equal(h.scheduler.status('b'), 'pending');
+  await h.clock.advance(2000); assert.deepEqual(h.calls[1].tasks.map(task => task.job), ['b']);
+  h.calls[1].reject(fail('provider_unavailable')); await flush();
+  assert.equal(h.scheduler.status('b'), 'failed'); assert.equal(h.scheduler.failure('b'), 'provider_unavailable');
+});
+
+test('recovering all cells from a rate limit preserves its wait and sends no retry', async () => {
+  const h = harness({ batch: 2 }, undefined, async task => `older-${task.job}`);
+  h.scheduler.want([job('a', 1), job('b', 2)]);
+  h.calls[0].reject(fail('rate_limited', 9000)); await flush();
+  assert.equal(h.scheduler.cooldownUntil, 9000);
+  assert.equal(h.scheduler.status('a'), 'ready'); assert.equal(h.scheduler.status('b'), 'ready');
+  await h.clock.advance(20_000); assert.equal(h.calls.length, 1);
+});
+
+test('outage recovery respects cancellation and never hides invalid queries or resource failures', async () => {
+  let release!: (value: string) => void, recovered = 0;
+  const h = harness({}, undefined, () => { recovered++; return new Promise(resolve => { release = resolve; }); });
+  h.scheduler.want([job('a', 1)]); h.calls[0].reject(fail('provider_busy')); await flush();
+  h.scheduler.want([]); release('late'); await flush();
+  assert.deepEqual(h.loaded, []); assert.equal(h.scheduler.status('a'), undefined);
+  const permanent = harness({ maxDepth: 0 }, undefined, async () => { recovered++; return 'hidden-error'; });
+  permanent.scheduler.want([job('b', 2), job('c', 3)]);
+  permanent.calls[0].reject(fail('invalid_request')); await flush();
+  permanent.calls[1].reject(fail('timeout_or_resource_limit')); await flush();
+  assert.equal(recovered, 1); assert.equal(permanent.scheduler.status('b'), 'failed'); assert.equal(permanent.scheduler.status('c'), 'failed');
 });
 
 test('disposal aborts every request and ignores later results', async () => {

@@ -75,6 +75,25 @@ bundled or R2 dataset. Only when none applies does it hand over to viewport
 loading, so stored and live sources never mix. Links without a location (only
 an `areaId`) still use the whole-area query.
 
+## Keeping useful browser data
+
+Completed quarters of a split cell are saved independently. When an interrupted
+view is reopened, the parent may need another resource-limit response before it
+splits, but completed quarters then load from the browser instead of downloading
+again. A parent record is saved only when every quarter is ready. Deferred saves
+registered before a map closes can finish afterward; new saves on a closed
+session are rejected. Clearing the cache invalidates registered saves and replies
+from requests dispatched before the clear.
+
+Cells are fresh for 72 hours. Older valid records stay within the same 96 MiB LRU
+budget for at most 30 days. They are used only after a rate limit, busy/unavailable
+provider or connection failure, or while that outage's cooldown is already known.
+They never hide invalid queries, malformed data or resource failures. The map
+marks older roads, shows their oldest download date and records them in the load
+report. Reading a record does not change its download date. A mixed-age parent
+keeps its oldest child's date. **Refresh city data** and disabling the cache skip
+this fallback and require a fresh response.
+
 ## Configuration
 
 | Variable | Default | Meaning |

@@ -9,10 +9,10 @@ export const cellCacheEpoch = () => epoch;
  * Short-lived, bounded browser copies of live cells. They spare the road service repeat
  * requests; they are not a map archive and may be dropped at any time.
  */
-export const CELL_CACHE = { maxBytes: 96 * 1024 * 1024, maxRecordBytes: 16 * 1024 * 1024, ttlMs: 72 * 60 * 60 * 1000 };
+export const CELL_CACHE = { maxBytes: 96 * 1024 * 1024, maxRecordBytes: 16 * 1024 * 1024, ttlMs: 72 * 60 * 60 * 1000, fallbackAgeMs: 30 * 24 * 60 * 60 * 1000 };
 interface CellRecord { format: number; origin: Origin; positions: ArrayBuffer; segments: number; fetchedAt: number; snapshotAt?: string }
 interface CellMeta { key: string; bytes: number; lastUsed: number; fetchedAt: number }
-export interface CachedCell { positions: Float32Array; fetchedAt: number; snapshotAt?: string }
+export interface CachedCell { positions: Float32Array; fetchedAt: number; snapshotAt?: string; stale: boolean }
 
 /**
  * Moves geometry projected for one origin to another. Mercator only translates when the
@@ -45,44 +45,71 @@ function complete(transaction: IDBTransaction): Promise<void> {
 export class CellCache {
   private database?: Promise<IDBDatabase | undefined>;
   private closed = false;
+  private writes = 0;
   private readonly now: () => number;
   constructor(now = Date.now) { this.now = now; }
-  // A write deferred past the session's end must not reopen the database.
-  private open() { return this.closed ? Promise.resolve(undefined) : this.database ??= opened(); }
+  private connection() { return this.database ??= opened(); }
+  private open() { return this.closed ? Promise.resolve(undefined) : this.connection(); }
 
-  async get(key: string, origin: Origin): Promise<CachedCell | undefined> {
+  async get(key: string, origin: Origin, allowStale = false): Promise<CachedCell | undefined> {
     try {
       const db = await this.open();
       if (!db) return;
       const transaction = db.transaction(['cells', 'metadata'], 'readwrite');
-      let record: CellRecord | undefined;
-      const request = transaction.objectStore('cells').get(key);
+      let record: CellRecord | undefined, usable = false, stale = false;
+      const cells = transaction.objectStore('cells'), metadata = transaction.objectStore('metadata');
+      const request = cells.get(key);
       request.onsuccess = () => {
         record = request.result;
-        const metadata = transaction.objectStore('metadata');
+        if (!record) return;
+        const age = this.now() - record.fetchedAt;
+        const valid = record.format === FORMAT && record.positions instanceof ArrayBuffer && record.positions.byteLength % 16 === 0 && record.positions.byteLength <= CELL_CACHE.maxRecordBytes && record.segments === record.positions.byteLength / 16
+          && Array.isArray(record.origin) && record.origin.length === 2 && record.origin.every(Number.isFinite) && Math.abs(record.origin[0]) <= 180 && Math.abs(record.origin[1]) < 86
+          && typeof record.fetchedAt === 'number' && Number.isFinite(age) && age >= -60_000 && age < CELL_CACHE.fallbackAgeMs;
+        // Remove invalid records in this transaction, so an old read cannot later
+        // delete a newer replacement. A fresh-only miss keeps useful older data.
+        if (!valid) { cells.delete(key); metadata.delete(key); return; }
+        stale = age >= CELL_CACHE.ttlMs; usable = !stale || allowStale;
+        if (!usable) return;
         const meta = metadata.get(key);
         meta.onsuccess = () => { if (meta.result) metadata.put({ ...meta.result, lastUsed: this.now() }); };
       };
       await complete(transaction);
-      if (!record) return;
-      const age = this.now() - record.fetchedAt;
-      const valid = record.format === FORMAT && record.positions instanceof ArrayBuffer && record.positions.byteLength % 16 === 0 && record.segments === record.positions.byteLength / 16
-        && Array.isArray(record.origin) && record.origin.length === 2 && record.origin.every(Number.isFinite) && Number.isFinite(age) && age >= -60_000 && age < CELL_CACHE.ttlMs;
-      if (!valid) { void this.remove(key); return; }
+      if (!usable || !record) return;
       const positions = translate(new Float32Array(record.positions), record.origin, origin);
-      return positions && { positions, fetchedAt: record.fetchedAt, snapshotAt: typeof record.snapshotAt === 'string' ? record.snapshotAt : undefined };
+      return positions && { positions, fetchedAt: record.fetchedAt, snapshotAt: typeof record.snapshotAt === 'string' ? record.snapshotAt : undefined, stale };
     } catch { return; }
   }
 
   /** Stores a complete cell, evicting the least recently used cells beyond the size limit. */
   async put(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch = epoch): Promise<boolean> {
+    if (this.closed) return false;
+    this.writes++;
+    try { return await this.write(key, origin, buffers, meta, expectedEpoch); }
+    finally { this.finished(); }
+  }
+
+  /** Registers a save now; closing this session drains registered saves before closing its connection. */
+  defer(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch = epoch): Promise<boolean> {
+    if (this.closed) return Promise.resolve(false);
+    this.writes++;
+    return new Promise(resolve => {
+      const save = () => { void this.write(key, origin, buffers, meta, expectedEpoch).then(resolve, () => resolve(false)).finally(() => this.finished()); };
+      try {
+        if ('requestIdleCallback' in globalThis) { requestIdleCallback(save, { timeout: 2000 }); return; }
+      } catch { /* A denied idle API falls back to a normal task. */ }
+      setTimeout(save, 0);
+    });
+  }
+
+  private async write(key: string, origin: Origin, buffers: Float32Array[], meta: { fetchedAt: number; snapshotAt?: string }, expectedEpoch: number): Promise<boolean> {
     const bytes = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
-    if (this.closed || expectedEpoch !== epoch || bytes > CELL_CACHE.maxRecordBytes) return false;
+    if (expectedEpoch !== epoch || bytes > CELL_CACHE.maxRecordBytes) return false;
     const positions = new Float32Array(bytes / 4);
     let offset = 0;
     for (const buffer of buffers) { positions.set(buffer, offset); offset += buffer.length; }
     try {
-      const db = await this.open();
+      const db = await this.connection();
       if (!db || expectedEpoch !== epoch) return false;
       const transaction = db.transaction(['cells', 'metadata'], 'readwrite');
       const cells = transaction.objectStore('cells'), metadata = transaction.objectStore('metadata');
@@ -92,7 +119,7 @@ export class CellCache {
         const records = (all.result as CellMeta[]).filter(record => record.key !== key).sort((a, b) => a.lastUsed - b.lastUsed);
         let total = records.reduce((sum, record) => sum + record.bytes, 0) + bytes;
         for (const record of records) {
-          if (total <= CELL_CACHE.maxBytes && now - record.fetchedAt < CELL_CACHE.ttlMs) continue;
+          if (total <= CELL_CACHE.maxBytes && now - record.fetchedAt < CELL_CACHE.fallbackAgeMs) continue;
           cells.delete(record.key); metadata.delete(record.key); total -= record.bytes;
         }
         const record: CellRecord = { format: FORMAT, origin: [origin[0], origin[1]], positions: positions.buffer, segments: bytes / 16, fetchedAt: meta.fetchedAt, snapshotAt: meta.snapshotAt };
@@ -104,17 +131,12 @@ export class CellCache {
     } catch { return false; }
   }
 
-  private async remove(key: string) {
-    try {
-      const db = await this.open();
-      if (!db) return;
-      const transaction = db.transaction(['cells', 'metadata'], 'readwrite');
-      transaction.objectStore('cells').delete(key); transaction.objectStore('metadata').delete(key);
-      await complete(transaction);
-    } catch { /* A failed removal is retried by the next read or put. */ }
+  private finished() { this.writes--; this.closeWhenDrained(); }
+  private closeWhenDrained() {
+    if (!this.closed || this.writes) return;
+    void this.database?.then(db => db?.close()); this.database = undefined;
   }
-
-  close() { this.closed = true; void this.database?.then(db => db?.close()); this.database = undefined; }
+  close() { this.closed = true; this.closeWhenDrained(); }
 }
 
 export async function clearCellCache(): Promise<boolean> {
